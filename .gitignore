@@ -96,4 +96,3 @@ config/.env
 *.db-journal
 MARKETING.md
 CHANGELOG.md
-AGENTS.md
