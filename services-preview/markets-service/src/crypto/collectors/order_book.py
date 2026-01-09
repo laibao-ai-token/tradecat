@@ -48,9 +48,9 @@ def _get_config() -> dict:
 
 class OrderBookCollector:
     """订单簿采集器 - 混合快照存储
-    
+
     数据流: L2_BOOK → 计算指标 → 1行快照 → raw.crypto_order_book
-    
+
     存储优化:
     - 1 快照 = 1 行 (vs 旧方案 2000 行)
     - 预计算关键指标 (mid_price, spread, 深度)
@@ -99,12 +99,12 @@ class OrderBookCollector:
         self, mid_price: float, bids: List[tuple], asks: List[tuple]
     ) -> Dict[str, Any]:
         """计算深度统计指标
-        
+
         Args:
             mid_price: 中间价
             bids: [(price, size), ...] 价格降序
             asks: [(price, size), ...] 价格升序
-        
+
         Returns:
             深度统计字典
         """
@@ -118,20 +118,20 @@ class OrderBookCollector:
             "bid_notional_5pct": Decimal(0),
             "ask_notional_5pct": Decimal(0),
         }
-        
+
         if mid_price <= 0:
             return stats
-        
+
         thresh_1pct = mid_price * 0.01
         thresh_5pct = mid_price * 0.05
-        
+
         # 买侧: 价格 >= mid - threshold
         for price, size in bids:
             diff = mid_price - price
             p_dec = Decimal(str(price))
             s_dec = Decimal(str(size))
             notional = p_dec * s_dec
-            
+
             if diff <= thresh_1pct:
                 stats["bid_depth_1pct"] += s_dec
                 stats["bid_notional_1pct"] += notional
@@ -140,14 +140,14 @@ class OrderBookCollector:
                 stats["bid_notional_5pct"] += notional
             else:
                 break  # 已排序，后面都超出
-        
+
         # 卖侧: 价格 <= mid + threshold
         for price, size in asks:
             diff = price - mid_price
             p_dec = Decimal(str(price))
             s_dec = Decimal(str(size))
             notional = p_dec * s_dec
-            
+
             if diff <= thresh_1pct:
                 stats["ask_depth_1pct"] += s_dec
                 stats["ask_notional_1pct"] += notional
@@ -156,59 +156,59 @@ class OrderBookCollector:
                 stats["ask_notional_5pct"] += notional
             else:
                 break
-        
+
         return stats
 
     def _build_snapshot(
         self, sym: str, ts: datetime, bids_dict: dict, asks_dict: dict
     ) -> Optional[dict]:
         """构建快照行
-        
+
         Args:
             sym: 标准化交易对
             ts: 时间戳
             bids_dict: {price: size, ...}
             asks_dict: {price: size, ...}
-        
+
         Returns:
             快照字典或 None
         """
         if not bids_dict or not asks_dict:
             return None
-        
+
         depth = self._cfg["depth"]
-        
+
         # 排序: bids 降序, asks 升序
         bid_prices = sorted(bids_dict.keys(), reverse=True)[:depth]
         ask_prices = sorted(asks_dict.keys())[:depth]
-        
+
         if not bid_prices or not ask_prices:
             return None
-        
+
         # 最优档位
         bid1_price = float(bid_prices[0])
         bid1_size = float(bids_dict[bid_prices[0]])
         ask1_price = float(ask_prices[0])
         ask1_size = float(asks_dict[ask_prices[0]])
-        
+
         # 中间价和价差
         mid_price = (bid1_price + ask1_price) / 2
         spread = ask1_price - bid1_price
         spread_bps = (spread / mid_price * 10000) if mid_price > 0 else 0
-        
+
         # 构建盘口数组
         bids = [(float(p), float(bids_dict[p])) for p in bid_prices]
         asks = [(float(p), float(asks_dict[p])) for p in ask_prices]
-        
+
         # 深度统计
         stats = self._compute_depth_stats(mid_price, bids, asks)
-        
+
         # 买卖失衡 (基于 1% 深度)
         total_1pct = stats["bid_depth_1pct"] + stats["ask_depth_1pct"]
         imbalance = float(
             (stats["bid_depth_1pct"] - stats["ask_depth_1pct"]) / total_1pct
         ) if total_1pct > 0 else 0
-        
+
         return {
             "timestamp": ts,
             "exchange": settings.db_exchange,
@@ -253,7 +253,7 @@ class OrderBookCollector:
         ts = datetime.fromtimestamp(book.timestamp, tz=timezone.utc)
         bids_dict = book.book.bids.to_dict()
         asks_dict = book.book.asks.to_dict()
-        
+
         row = self._build_snapshot(sym, ts, bids_dict, asks_dict)
         if not row:
             return

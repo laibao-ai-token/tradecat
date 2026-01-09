@@ -21,9 +21,9 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import seaborn as sns
+from adjustText import adjust_text
 from pydantic import BaseModel
 
-from adjustText import adjust_text
 # 使用无界面后端，避免服务器缺乏显示设备时报错
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -630,7 +630,7 @@ def render_vpvr_zone_strip(params: Dict, output: str) -> Tuple[object, str]:
     VPVR 价值区分布图。
 
     每个币种按当前价格在自身价值区的相对位置(0-100%)分布。
-    
+
     必填 data 字段：symbol, price, value_area_low, value_area_high
     可选 data 字段：
       - market_cap: 市值，决定圆圈大小
@@ -825,28 +825,28 @@ def render_vpvr_zone_strip(params: Dict, output: str) -> Tuple[object, str]:
 
 def _fetch_ridge_data_from_db(symbol: str, interval: str, periods: int = 10, lookback: int = 200, bins: int = 48) -> Tuple[List[Dict], List[Dict]]:
     """从 trading-service 的 VPVR 计算方法获取山脊图数据。
-    
+
     Returns:
         (ridge_data, ohlc_data): ridge_data=[{period, prices, volumes}], ohlc_data=[{period, open, high, low, close}]
     """
-    import sys
     import os
-    
+    import sys
+
     # 添加 trading-service 路径
     trading_service_path = os.path.join(os.path.dirname(__file__), "../../../../services/trading-service/src")
     if trading_service_path not in sys.path:
         sys.path.insert(0, os.path.abspath(trading_service_path))
-    
+
     try:
         from indicators.batch.vpvr import compute_vpvr_ridge_data
     except ImportError as e:
         logger.warning("无法导入 VPVR 计算方法: %s", e)
         return [], []
-    
+
     result = compute_vpvr_ridge_data(symbol, interval, periods, lookback, bins)
     if not result or not result.get("periods"):
         return [], []
-    
+
     ridge_data = []
     ohlc_data = []
     for p in result["periods"]:
@@ -861,7 +861,7 @@ def _fetch_ridge_data_from_db(symbol: str, interval: str, periods: int = 10, loo
             "low": p["ohlc"]["low"],
             "close": p["ohlc"]["close"],
         })
-    
+
     return ridge_data, ohlc_data
 
 
@@ -871,13 +871,13 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
 
     方式1 - 直接传数据：
     - data: [{period, distribution: [{price, volume}]}]
-    
+
     方式2 - 从数据库获取：
     - symbol: 交易对，如 BTCUSDT
     - interval: 周期，如 1h, 5m
     - periods: 周期数量，默认 10
     - lookback: 每个周期的 K 线数量，默认 200（与 trading-service VPVR 一致）
-    
+
     可选：
     - title: 标题
     - bins: 价格分桶数，默认 48（与 trading-service VPVR 一致）
@@ -887,9 +887,9 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
     """
     data = params.get("data")
     ohlc_data = params.get("ohlc_data", [])
-    
+
     bins = int(params.get("bins", 48))  # 与 trading-service VPVR 一致
-    
+
     # 如果没有 data，尝试从数据库获取
     if not data and params.get("symbol"):
         symbol = params["symbol"]
@@ -899,13 +899,13 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
         data, ohlc_data = _fetch_ridge_data_from_db(symbol, interval, periods_count, lookback, bins)
         if not data:
             raise ValueError(f"无法获取 {symbol} {interval} 数据")
-    
+
     if not data or not isinstance(data, list):
         raise ValueError("缺少 data 列表或 symbol 参数")
     overlap = float(params.get("overlap", 0.5))
     cmap_name = params.get("colormap", "viridis")
     show_ohlc = params.get("show_ohlc", True)
-    
+
     # 自动生成标题
     if params.get("symbol"):
         default_title = f"{params['symbol']} VPVR Ridge - {params.get('interval', '1h')} x {params.get('periods', 10)}"
@@ -916,10 +916,10 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
     # 解析数据，构建每个时间段的价格-成交量分布
     periods = []
     distributions = []
-    
+
     for item in data:
         period = item.get("period", str(len(periods)))
-        
+
         if "distribution" in item:
             dist = item["distribution"]
             prices = [d["price"] for d in dist]
@@ -931,7 +931,7 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
                 continue
         else:
             continue
-        
+
         periods.append(period)
         distributions.append((prices, volumes))
 
@@ -958,7 +958,7 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
         histograms.append(hist)
 
     n_periods = len(periods)
-    
+
     if output == "json":
         return (
             {
@@ -975,7 +975,7 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
     import joypy
     import pandas as pd
     from matplotlib import cm
-    
+
     # 构建 DataFrame：每行是一个价格点，包含周期标签和成交量
     df_rows = []
     for period, hist in zip(periods, histograms):
@@ -984,9 +984,9 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
             count = int(vol * 100) + 1
             for _ in range(count):
                 df_rows.append({"period": period, "price": price})
-    
+
     df = pd.DataFrame(df_rows)
-    
+
     # joypy.joyplot 绘制
     fig, axes = joypy.joyplot(
         df,
@@ -1003,40 +1003,40 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
         ylabels=True,
         legend=False,
     )
-    
+
     # 添加标题和 X 轴标签
     fig.suptitle(title, fontsize=12, fontweight="bold", y=0.98)
     axes[-1].set_xlabel("Price", fontsize=10)
-    
+
     # 添加 OHLC 价格线（4 条线连接各山脊子图）
     if show_ohlc and ohlc_data and len(ohlc_data) == n_periods:
         # joypy axes: axes[0] 是顶部子图，axes[-1] 是底部 X 轴
         # 每个子图的基线 y=0，山脊向上延伸
         # 需要在 figure 坐标系上绘制跨子图的线条
-        
+
         # 提取 OHLC 数据
         opens = [d["open"] for d in ohlc_data]
         highs = [d["high"] for d in ohlc_data]
         lows = [d["low"] for d in ohlc_data]
         closes = [d["close"] for d in ohlc_data]
-        
+
         # 获取每个子图的中心 y 位置（figure 坐标）
         y_positions = []
         for i, ax in enumerate(axes[:-1]):  # 排除最后一个（X 轴）
             bbox = ax.get_position()
             y_center = bbox.y0 + bbox.height * 0.3  # 山脊底部偏上一点
             y_positions.append(y_center)
-        
+
         # 获取 x 轴范围（数据坐标 -> figure 坐标）
         main_ax = axes[-1]  # 底部轴共享 x 轴
         xlim = main_ax.get_xlim()
-        
+
         def price_to_fig_x(price):
             """将价格转换为 figure x 坐标"""
             bbox = main_ax.get_position()
             rel = (price - xlim[0]) / (xlim[1] - xlim[0])
             return bbox.x0 + rel * bbox.width
-        
+
         # OHLC 线条颜色和样式
         ohlc_styles = [
             ("open", opens, "#2196F3", "-", 1.5),      # 蓝色 - 开盘价
@@ -1044,7 +1044,7 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
             ("low", lows, "#F44336", "--", 1.2),       # 红色虚线 - 最低价
             ("close", closes, "#FF9800", "-", 1.5),   # 橙色 - 收盘价
         ]
-        
+
         # 在 figure 坐标系上绘制线条
         from matplotlib.lines import Line2D
         for name, prices, color, linestyle, linewidth in ohlc_styles:
@@ -1060,7 +1060,7 @@ def render_vpvr_ridge(params: Dict, output: str) -> Tuple[object, str]:
                 fig.add_artist(plt.Circle(
                     (x, y), 0.006, color=color, transform=fig.transFigure, zorder=11
                 ))
-        
+
         # 更新图例
         from matplotlib.patches import Patch
         legend_elements = [
