@@ -1,0 +1,23 @@
+[project]
+name = "predict-service"
+version = "0.1.0"
+description = "Prediction market signal service - Polymarket, Kalshi, Opinion (Node.js + Python utilities)"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["libs*"]
+
+# Note: predict-service is primarily a Node.js project
+# The Python components are utilities in libs/
+# Main services run via: cd services/polymarket && npm start
