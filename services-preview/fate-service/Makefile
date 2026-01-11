@@ -93,14 +93,14 @@ format:
 
 test:
 	@if [ -f "$(PYTEST)" ]; then \
-		$(PYTEST) services/telegram-service/tests/ -v; \
+		$(PYTEST) tests/ services/telegram-service/tests/ -v; \
 	else \
 		echo "⚠️  pytest 未安装，运行 make install-dev"; \
 	fi
 
 test-cov:
 	@if [ -f "$(PYTEST)" ]; then \
-		$(PYTEST) services/telegram-service/tests/ -v --cov=services --cov-report=term-missing; \
+		$(PYTEST) tests/ services/telegram-service/tests/ -v --cov=services --cov-report=term-missing; \
 	else \
 		echo "⚠️  pytest 未安装，运行 make install-dev"; \
 	fi

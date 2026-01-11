@@ -69,7 +69,7 @@ indent-style = "space"
 
 # ==================== Pytest ====================
 [tool.pytest.ini_options]
-testpaths = ["services/telegram-service/tests"]
+testpaths = ["tests", "services/telegram-service/tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_functions = ["test_*"]
 addopts = ["-v", "--tb=short"]
