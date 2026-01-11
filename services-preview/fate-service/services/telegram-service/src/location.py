@@ -11,8 +11,9 @@ except Exception:
     _CR_AVAILABLE = False
 
 # 回退数据
+from _paths import CHINA_COORDS_CSV
 _DATA = {}
-_csv_path = Path(__file__).parent.parent.parent.parent / "libs/data/china_coordinates.csv"
+_csv_path = CHINA_COORDS_CSV
 
 
 def _load_csv():

@@ -7,8 +7,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 from utils.timezone import now_cn
+from _paths import BAZI_DB_DIR
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "libs/database/bazi"))
+sys.path.insert(0, str(BAZI_DB_DIR))
 
 from models import BaziRequest, BaziResponse, BaziData, TimeInfo, Meta
 from bazi_calculator import BaziCalculator

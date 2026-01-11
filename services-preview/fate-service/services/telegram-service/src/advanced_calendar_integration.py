@@ -24,15 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
-def _repo_root() -> Path:
-    # /fate-engine/services/telegram-service/src/*.py -> repo root is parents[3] == /fate-engine
-    return Path(__file__).resolve().parents[3]
+from _paths import (
+    HOLIDAY_CALENDAR_DIR, CHINESE_CALENDAR_DIR, LUNAR_PYTHON_DIR
+)
 
-
-_LIBS = _repo_root() / "libs" / "external" / "github"
-_HOLIDAY_ICS_DIR = _LIBS / "holiday-and-chinese-almanac-calendar-main"
-_CHINESE_CALENDAR_DIR = _LIBS / "chinese-calendar-master"
-_LUNAR_PY_DIR = _LIBS / "lunar-python-master"
+_HOLIDAY_ICS_DIR = HOLIDAY_CALENDAR_DIR
+_CHINESE_CALENDAR_DIR = CHINESE_CALENDAR_DIR
+_LUNAR_PY_DIR = LUNAR_PYTHON_DIR
 
 # 强依赖复用：运行期直连外部库源码（禁止复制进本项目）
 sys.path.insert(0, str(_CHINESE_CALENDAR_DIR))

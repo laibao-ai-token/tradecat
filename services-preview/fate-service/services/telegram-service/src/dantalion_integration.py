@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
-SERVICE_ROOT = Path(__file__).parent.parent  # services/telegram-service
-BRIDGE = SERVICE_ROOT / "scripts" / "dantalion_bridge.js"
+from _paths import DANTALION_BRIDGE_JS
+BRIDGE = DANTALION_BRIDGE_JS
 
 
 class DantalionCalculator:
