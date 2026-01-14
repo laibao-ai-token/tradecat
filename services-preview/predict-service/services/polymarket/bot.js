@@ -1291,12 +1291,17 @@ class PolymarketSignalBot {
         const newFilters = [];
 
         for (let i = 0; i < normalizedIds.length; i += chunkSize) {
-            newFilters.push(JSON.stringify(normalizedIds.slice(i, i + chunkSize)));
+            newFilters.push(normalizedIds.slice(i, i + chunkSize));
         }
+
+        const isSameGroup = (a, b) => Array.isArray(a)
+            && Array.isArray(b)
+            && a.length === b.length
+            && a.every((v, idx) => v === b[idx]);
 
         const filtersUnchanged = !force
             && this.lastOrderbookFilters.length === newFilters.length
-            && this.lastOrderbookFilters.every((value, index) => value === newFilters[index]);
+            && this.lastOrderbookFilters.every((value, index) => isSameGroup(value, newFilters[index]));
 
         if (filtersUnchanged) {
             return;
@@ -1332,7 +1337,7 @@ class PolymarketSignalBot {
             });
 
             this.orderbookSubscribed = true;
-            this.lastOrderbookFilters = newFilters;
+            this.lastOrderbookFilters = newFilters.map((group) => group.slice());
             console.log(`✅ 订单簿订阅刷新: ${normalizedIds.length} 个 token，${newFilters.length} 条消息`);
         } catch (error) {
             console.error('❌ 订单簿订阅失败:', error.message);
