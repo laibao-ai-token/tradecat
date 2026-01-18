@@ -33,7 +33,7 @@ module.exports = {
         chatId: process.env.TELEGRAM_CHAT_ID || '',
         parseMode: 'Markdown',
         disableNotification: false,
-        // 管理员 ID 列表（可使用 /csv 等管理命令）
+        // 管理员 ID 列表（可用于特权命令/面板扩展）
         adminIds: (process.env.TELEGRAM_ADMIN_IDS || process.env.TELEGRAM_CHAT_ID || '').split(',').map(id => id.trim()).filter(Boolean)
     },
 
