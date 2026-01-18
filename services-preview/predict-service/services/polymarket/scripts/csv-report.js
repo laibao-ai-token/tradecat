@@ -33,9 +33,19 @@ const createProxyAgent = () => {
 };
 
 const proxyAgent = createProxyAgent();
-const fetchJson = async (url) => {
-  const res = await fetch(url, proxyAgent ? { agent: proxyAgent } : undefined);
-  return res.json();
+const DEFAULT_FETCH_TIMEOUT_MS = Number(process.env.CSV_FETCH_TIMEOUT_MS || 15000);
+const fetchJson = async (url, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, proxyAgent ? { agent: proxyAgent, signal: controller.signal } : { signal: controller.signal });
+    return await res.json();
+  } catch (error) {
+    console.error(`⚠️ API 请求失败: ${url} (${error?.message || error})`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const csvEscape = (value) => {
@@ -90,12 +100,19 @@ function categorizeMarket(name) {
 
 async function buildMarketMap() {
   console.error('📥 获取市场数据...');
-  
-  // 获取活跃市场和已关闭市场
-  for (const closed of [false, true]) {
+
+  const includeClosed = process.env.CSV_INCLUDE_CLOSED === 'true';
+  const maxActive = Number(process.env.CSV_MARKET_MAX_ACTIVE || 2000);
+  const maxClosed = Number(process.env.CSV_MARKET_MAX_CLOSED || 1000);
+  const targets = includeClosed ? [false, true] : [false];
+
+  // 获取活跃市场（可选已关闭）
+  for (const closed of targets) {
     let offset = 0;
     const limit = 500;
     const label = closed ? '已关闭' : '活跃';
+    const maxItems = closed ? maxClosed : maxActive;
+    let loaded = 0;
     
     while (true) {
       try {
@@ -117,15 +134,17 @@ async function buildMarketMap() {
             }
           }
         }
+
+        loaded += data.length;
         
         if (!closed) {
           console.error(`  已加载 ${Math.floor(marketSlugs.size / 2)} 个${label}市场...`);
         }
         if (data.length < limit) break;
         offset += limit;
-        
-        // 已关闭市场只取前5000个（最近的）
-        if (closed && offset >= 5000) break;
+
+        // 超过上限就停止
+        if (loaded >= maxItems) break;
       } catch (e) {
         console.error(`  API 错误 (${label}):`, e.message);
         break;

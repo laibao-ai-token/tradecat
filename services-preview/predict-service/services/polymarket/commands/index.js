@@ -1440,10 +1440,11 @@ class CommandHandler {
             const scriptPath = path.join(__dirname, '../scripts/csv-report.js');
             
             // 执行脚本
+            const timeoutMs = Number(process.env.CSV_REPORT_TIMEOUT_MS || 180000);
             const csv = execSync(`node "${scriptPath}"`, {
                 encoding: 'utf-8',
-                timeout: 120000,  // 2分钟超时
-                maxBuffer: 10 * 1024 * 1024  // 10MB
+                timeout: Number.isFinite(timeoutMs) ? timeoutMs : 180000,
+                maxBuffer: 20 * 1024 * 1024
             });
             
             // 保存为文件
