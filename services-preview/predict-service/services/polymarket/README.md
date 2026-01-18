@@ -70,6 +70,19 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 LOG_LEVEL=info
 ```
 
+### CSV 报告（/csv）
+
+默认只使用本地日志统计；如需追加 API 排行数据，开启 `CSV_ENABLE_API_RANKINGS`。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CSV_ENABLE_API_RANKINGS` | `false` | 是否拉取 Gamma API 排行（成交量/流动性/涨跌幅） |
+| `CSV_REPORT_TIMEOUT_MS` | `180000` | /csv 脚本整体超时（毫秒） |
+| `CSV_FETCH_TIMEOUT_MS` | `15000` | 单个 API 请求超时（毫秒） |
+| `CSV_MARKET_MAX_ACTIVE` | `2000` | 活跃市场最大扫描量（用于补全链接） |
+| `CSV_MARKET_MAX_CLOSED` | `1000` | 已关闭市场最大扫描量 |
+| `CSV_INCLUDE_CLOSED` | `false` | 是否扫描已关闭市场 |
+
 ### 步骤5：测试
 
 ```bash

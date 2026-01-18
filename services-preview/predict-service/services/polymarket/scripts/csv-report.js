@@ -80,6 +80,7 @@ function isWithin24Hours(line) {
 }
 
 const marketSlugs = new Map();
+const ENABLE_API_RANKINGS = process.env.CSV_ENABLE_API_RANKINGS === 'true';
 
 // 市场类别关键词
 const CATEGORY_KEYWORDS = {
@@ -98,61 +99,15 @@ function categorizeMarket(name) {
   return 'other';
 }
 
-async function buildMarketMap() {
-  console.error('📥 获取市场数据...');
-
-  const includeClosed = process.env.CSV_INCLUDE_CLOSED === 'true';
-  const maxActive = Number(process.env.CSV_MARKET_MAX_ACTIVE || 2000);
-  const maxClosed = Number(process.env.CSV_MARKET_MAX_CLOSED || 1000);
-  const targets = includeClosed ? [false, true] : [false];
-
-  // 获取活跃市场（可选已关闭）
-  for (const closed of targets) {
-    let offset = 0;
-    const limit = 500;
-    const label = closed ? '已关闭' : '活跃';
-    const maxItems = closed ? maxClosed : maxActive;
-    let loaded = 0;
-    
-    while (true) {
-      try {
-        const url = `${GAMMA_API}/markets?closed=${closed}&limit=${limit}&offset=${offset}`;
-        const data = await fetchJson(url);
-        if (!data || data.length === 0) break;
-        
-        for (const m of data) {
-          if (m.question) {
-            // 优先使用 event slug，回退到 market slug
-            const slug = m.events?.[0]?.slug || m.slug;
-            if (slug) {
-              marketSlugs.set(m.question, slug);
-              marketSlugs.set(m.question.toLowerCase(), slug);
-              const simplified = m.question.replace(/\d{4}-\d{2}-\d{2}/g, '').trim();
-              if (simplified !== m.question) {
-                marketSlugs.set(simplified, slug);
-              }
-            }
-          }
-        }
-
-        loaded += data.length;
-        
-        if (!closed) {
-          console.error(`  已加载 ${Math.floor(marketSlugs.size / 2)} 个${label}市场...`);
-        }
-        if (data.length < limit) break;
-        offset += limit;
-
-        // 超过上限就停止
-        if (loaded >= maxItems) break;
-      } catch (e) {
-        console.error(`  API 错误 (${label}):`, e.message);
-        break;
-      }
-    }
+function rememberSlug(name, slug) {
+  if (!name || !slug) return;
+  marketSlugs.set(name, slug);
+  marketSlugs.set(name.toLowerCase(), slug);
+  const simplified = name.replace(/\d{4}-\d{2}-\d{2}/g, '').trim();
+  if (simplified && simplified !== name) {
+    marketSlugs.set(simplified, slug);
+    marketSlugs.set(simplified.toLowerCase(), slug);
   }
-  
-  console.error(`✅ 共加载 ${Math.floor(marketSlugs.size / 2)} 个市场\n`);
 }
 
 function findSlug(marketName) {
@@ -253,6 +208,15 @@ async function extractData() {
       hourlySignals[hour]++;
     }
     
+    // 从日志中提取市场链接（尽量本地化）
+    const urlMatch = line.match(/https?:\/\/polymarket\.com\/event\/([a-z0-9-]+)/i);
+    if (urlMatch) {
+      const slug = urlMatch[1];
+      const nameMatch = line.match(/市场[:：]\s*([^,，\n]+)/);
+      const name = nameMatch ? nameMatch[1].trim() : lastMarketName;
+      if (name) rememberSlug(name, slug);
+    }
+
     // 聪明钱操作类型统计
     if (line.includes('聪明钱')) {
       if (line.includes('建仓')) { smartMoneyOps.open++; buySellStats.buy++; }
@@ -350,7 +314,6 @@ async function main() {
   const timeRange = `${hours24Ago.toISOString().slice(0, 16)} ~ ${now.toISOString().slice(0, 16)} UTC`;
   console.error(`📊 生成 CSV 报告 (滚动24小时: ${timeRange})...\n`);
   
-  await buildMarketMap();
   const data = await extractData();
   
   const sortTop = (m, n = 15) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
@@ -501,47 +464,54 @@ async function main() {
   });
   
   // ========== API 数据模块 ==========
-  console.error('📥 获取市场排行数据...');
-  
-  const [byVolume, byLiquidity] = await Promise.all([
-    fetchJson(`${GAMMA_API}/markets?limit=20&order=volume24hr&ascending=false&active=true`).catch(() => []),
-    fetchJson(`${GAMMA_API}/markets?limit=20&order=liquidity&ascending=false&active=true`).catch(() => [])
-  ]);
-  
-  const getLink = (m) => {
-    const slug = m.events?.[0]?.slug || m.slug;
-    return `https://polymarket.com/event/${slug}`;
-  };
-  
-  // 18. 24h成交量 Top 15
-  csv += '\n# 24h成交量 Top 15\n排名,市场名称,24h成交量,价格,链接\n';
-  byVolume.slice(0, 15).forEach((m, i) => {
-    const price = parseOutcomePrice(m.outcomePrices);
-    csv += `${i+1},${csvEscape(m.question)},${Math.round(m.volume24hr || 0)},${price},${getLink(m)}\n`;
-  });
-  
-  // 19. 流动性 Top 15
-  csv += '\n# 流动性 Top 15\n排名,市场名称,流动性,24h成交量,链接\n';
-  byLiquidity.slice(0, 15).forEach((m, i) => {
-    csv += `${i+1},${csvEscape(m.question)},${Math.round(m.liquidity || 0)},${Math.round(m.volume24hr || 0)},${getLink(m)}\n`;
-  });
-  
-  // 20. 24h涨幅 Top 15
-  const withChange = byVolume.filter(m => m.oneDayPriceChange != null);
-  const gainers = [...withChange].sort((a, b) => b.oneDayPriceChange - a.oneDayPriceChange);
-  csv += '\n# 24h涨幅 Top 15\n排名,市场名称,涨幅%,当前价格,链接\n';
-  gainers.slice(0, 15).forEach((m, i) => {
-    const price = parseOutcomePrice(m.outcomePrices);
-    csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
-  });
-  
-  // 21. 24h跌幅 Top 15
-  const losers = [...withChange].sort((a, b) => a.oneDayPriceChange - b.oneDayPriceChange);
-  csv += '\n# 24h跌幅 Top 15\n排名,市场名称,跌幅%,当前价格,链接\n';
-  losers.slice(0, 15).forEach((m, i) => {
-    const price = parseOutcomePrice(m.outcomePrices);
-    csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
-  });
+  if (ENABLE_API_RANKINGS) {
+    console.error('📥 获取市场排行数据...');
+
+    const [byVolume, byLiquidity] = await Promise.all([
+      fetchJson(`${GAMMA_API}/markets?limit=20&order=volume24hr&ascending=false&active=true`).catch(() => []),
+      fetchJson(`${GAMMA_API}/markets?limit=20&order=liquidity&ascending=false&active=true`).catch(() => [])
+    ]);
+
+    const getLink = (m) => {
+      const slug = m.events?.[0]?.slug || m.slug;
+      if (m.question && slug) {
+        rememberSlug(m.question, slug);
+      }
+      return slug ? `https://polymarket.com/event/${slug}` : '';
+    };
+
+    // 18. 24h成交量 Top 15
+    csv += '\n# 24h成交量 Top 15\n排名,市场名称,24h成交量,价格,链接\n';
+    byVolume.slice(0, 15).forEach((m, i) => {
+      const price = parseOutcomePrice(m.outcomePrices);
+      csv += `${i+1},${csvEscape(m.question)},${Math.round(m.volume24hr || 0)},${price},${getLink(m)}\n`;
+    });
+
+    // 19. 流动性 Top 15
+    csv += '\n# 流动性 Top 15\n排名,市场名称,流动性,24h成交量,链接\n';
+    byLiquidity.slice(0, 15).forEach((m, i) => {
+      csv += `${i+1},${csvEscape(m.question)},${Math.round(m.liquidity || 0)},${Math.round(m.volume24hr || 0)},${getLink(m)}\n`;
+    });
+
+    // 20. 24h涨幅 Top 15
+    const withChange = byVolume.filter(m => m.oneDayPriceChange != null);
+    const gainers = [...withChange].sort((a, b) => b.oneDayPriceChange - a.oneDayPriceChange);
+    csv += '\n# 24h涨幅 Top 15\n排名,市场名称,涨幅%,当前价格,链接\n';
+    gainers.slice(0, 15).forEach((m, i) => {
+      const price = parseOutcomePrice(m.outcomePrices);
+      csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
+    });
+
+    // 21. 24h跌幅 Top 15
+    const losers = [...withChange].sort((a, b) => a.oneDayPriceChange - b.oneDayPriceChange);
+    csv += '\n# 24h跌幅 Top 15\n排名,市场名称,跌幅%,当前价格,链接\n';
+    losers.slice(0, 15).forEach((m, i) => {
+      const price = parseOutcomePrice(m.outcomePrices);
+      csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
+    });
+  } else {
+    console.error('ℹ️ 已跳过 API 排行数据（CSV_ENABLE_API_RANKINGS 未启用）');
+  }
   
   console.log(csv);
 }
