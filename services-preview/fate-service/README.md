@@ -98,6 +98,7 @@ fate-service/
 │       │   ├── bot.py          # Bot 主程序
 │       │   ├── _paths.py       # 统一路径管理
 │       │   ├── bazi_calculator.py  # 八字计算核心
+│       │   ├── liuyao_factors/ # 六爻量化因子模块
 │       │   └── ...
 │       ├── output/
 │       │   ├── logs/           # 日志目录

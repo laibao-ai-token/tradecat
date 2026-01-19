@@ -18,6 +18,12 @@ if _env_file.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
+# 强制代理为 9910（与外部采集测试保持一致）
+os.environ["http_proxy"] = "http://127.0.0.1:9910"
+os.environ["https_proxy"] = "http://127.0.0.1:9910"
+os.environ["HTTP_PROXY"] = "http://127.0.0.1:9910"
+os.environ["HTTPS_PROXY"] = "http://127.0.0.1:9910"
+
 
 @dataclass
 class Settings:

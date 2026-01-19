@@ -28,6 +28,21 @@ class BaziRequest(BaseModel):
     birthPlace: Optional[BirthPlace] = Field(default=None, description="出生地点")
     options: BaziOptions = Field(default_factory=BaziOptions)
 
+# ========== 六爻因子请求模型 ==========
+
+class LiuyaoFactorRequest(BaseModel):
+    item: str = Field(..., description="标的名称（交易对/商品名）")
+    timestamp: Optional[str] = Field(default=None, description="起卦时间（ISO 格式，可省略）")
+    method: Literal["seeded", "random", "manual"] = Field(
+        default="seeded",
+        description="起卦方式：seeded=可复现，random=随机，manual=手动",
+    )
+    seed: Optional[str] = Field(default=None, description="可复现 seed（seeded 可选）")
+    cnts: Optional[List[int]] = Field(default=None, description="手动起卦铜钱结果（6 个 0-3）")
+    cycleHint: Optional[Literal["intraday", "1-3d", "1-2w", "1-3m"]] = Field(
+        default=None, description="强制周期（可选）"
+    )
+
 
 # ========== 响应模型 ==========
 
@@ -143,5 +158,26 @@ class Meta(BaseModel):
 class BaziResponse(BaseModel):
     success: bool
     data: Optional[BaziData] = None
+    error: Optional[str] = None
+    meta: Meta
+
+# ========== 六爻因子响应模型 ==========
+
+class LiuyaoFactorData(BaseModel):
+    item: str
+    timestamp: str
+    direction: Literal["up", "down", "neutral"]
+    strength: float
+    confidence: float
+    cycle: Literal["intraday", "1-3d", "1-2w", "1-3m"]
+    raw: dict
+    explain: List[str]
+    source: str
+    version: str
+
+
+class LiuyaoFactorResponse(BaseModel):
+    success: bool
+    data: Optional[LiuyaoFactorData] = None
     error: Optional[str] = None
     meta: Meta

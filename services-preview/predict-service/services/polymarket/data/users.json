@@ -25,8 +25,8 @@
     "displayMode": "detailed",
     "lang": "en",
     "registeredAt": 1768729272009,
-    "lastActive": 1768729272009,
-    "visitCount": 1,
+    "lastActive": 1768746957087,
+    "visitCount": 2,
     "username": "tianbing1999",
     "firstName": "blackOne",
     "lastName": null
@@ -57,10 +57,74 @@
     "displayMode": "detailed",
     "lang": "zh-CN",
     "registeredAt": 1768729272015,
-    "lastActive": 1768729272015,
-    "visitCount": 1,
+    "lastActive": 1768747090991,
+    "visitCount": 11,
     "username": "desci0",
     "firstName": "123olp",
+    "lastName": null
+  },
+  {
+    "chatId": 1312177967,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1768765392989,
+    "lastActive": 1768765406039,
+    "visitCount": 2,
+    "username": "world11223344",
+    "firstName": "无",
+    "lastName": "新"
+  },
+  {
+    "chatId": 1847878412,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1768814087781,
+    "lastActive": 1768814087801,
+    "visitCount": 3,
+    "username": "kakaomame",
+    "firstName": "ルパン男性",
     "lastName": null
   }
 ]

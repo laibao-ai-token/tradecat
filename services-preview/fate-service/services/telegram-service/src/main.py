@@ -11,10 +11,20 @@ from _paths import BAZI_DB_DIR
 
 sys.path.insert(0, str(BAZI_DB_DIR))
 
-from models import BaziRequest, BaziResponse, BaziData, TimeInfo, Meta
+from models import (
+    BaziRequest,
+    BaziResponse,
+    BaziData,
+    TimeInfo,
+    Meta,
+    LiuyaoFactorRequest,
+    LiuyaoFactorResponse,
+    LiuyaoFactorData,
+)
 from bazi_calculator import BaziCalculator
 from report_generator import DEFAULT_HIDE as REPORT_HIDE
 import db_v2 as db
+from liuyao_factors import generate_factor
 
 app = FastAPI(title="八字排盘服务", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -106,6 +116,32 @@ def calculate_bazi(req: BaziRequest, user_id: Optional[str] = None):
         )
     except Exception as e:
         return BaziResponse(success=False, error=str(e), meta=Meta(calculatedAt=now_cn().isoformat()))
+
+
+@app.post("/api/v1/liuyao/factor", response_model=LiuyaoFactorResponse)
+def calculate_liuyao_factor(req: LiuyaoFactorRequest):
+    """六爻量化因子 - 统一输出结构"""
+    try:
+        factor = generate_factor(
+            item=req.item,
+            timestamp=req.timestamp,
+            method=req.method,
+            seed=req.seed,
+            cnts=req.cnts,
+            cycle_hint=req.cycleHint,
+        )
+        data = LiuyaoFactorData(**factor.to_dict())
+        return LiuyaoFactorResponse(
+            success=True,
+            data=data,
+            meta=Meta(calculatedAt=now_cn().isoformat(), algorithm="liuyao-divicast", version="1.0.0"),
+        )
+    except Exception as e:
+        return LiuyaoFactorResponse(
+            success=False,
+            error=str(e),
+            meta=Meta(calculatedAt=now_cn().isoformat(), algorithm="liuyao-divicast", version="1.0.0"),
+        )
 
 
 @app.get("/api/v1/records/{record_id}")

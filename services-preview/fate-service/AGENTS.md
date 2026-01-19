@@ -1,6 +1,6 @@
 # AGENTS.md - Fate Service 开发指南
 
-> AI Agent 操作手册 | 最后更新: 2026-01-11
+> AI Agent 操作手册 | 最后更新: 2026-01-18
 
 ## 项目概述
 
@@ -50,6 +50,7 @@ fate-service/
 │       │   ├── _paths.py           # ⭐ 统一路径管理模块
 │       │   ├── bot.py              # Telegram Bot 入口
 │       │   ├── bazi_calculator.py  # 八字计算核心
+│       │   ├── liuyao_factors/     # 六爻量化因子（divicast 封装与映射）
 │       │   ├── report_generator.py # 报告生成
 │       │   ├── location.py         # 地点匹配
 │       │   └── *_integration.py    # 外部库集成模块
@@ -130,6 +131,14 @@ from _paths import (
     check_dependencies,  # 依赖检查
 )
 ```
+
+---
+
+## 架构变更记录
+
+### 2026-01-18
+
+- 新增 `services/telegram-service/src/liuyao_factors/`：以 divicast 为底层，统一输出六爻原始盘面并映射为量化因子，便于后续统计分析与回测。
 
 ### 路径使用规则
 
