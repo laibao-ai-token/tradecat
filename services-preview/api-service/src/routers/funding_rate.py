@@ -10,7 +10,24 @@ from src.utils.symbol import normalize_symbol
 
 router = APIRouter(tags=["futures"])
 
-VALID_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d"]
+VALID_INTERVALS = ["5m", "15m", "1h", "4h", "1d", "1w"]
+
+TABLE_BY_INTERVAL = {
+    "5m": "market_data.binance_futures_metrics_5m",
+    "15m": "market_data.metrics_15m",
+    "1h": "market_data.metrics_1h",
+    "4h": "market_data.metrics_4h",
+    "1d": "market_data.metrics_1d",
+    "1w": "market_data.metrics_1w",
+}
+
+
+def _normalize_exchange(exchange: str) -> str:
+    """标准化交易所标识"""
+    ex = (exchange or "").strip().lower()
+    if ex in {"binance", "binance_futures", "binance_usdm", "binanceusdm", "binance_futures_um"}:
+        return "binance_futures_um"
+    return ex or "binance_futures_um"
 
 
 @router.get("/funding-rate/history")
@@ -28,17 +45,22 @@ async def get_funding_rate_history(
 
     if interval not in VALID_INTERVALS:
         return error_response(ErrorCode.INVALID_INTERVAL, f"无效的 interval: {interval}")
+    table = TABLE_BY_INTERVAL.get(interval)
+    if not table:
+        return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
     try:
         conn = psycopg.connect(settings.DATABASE_URL)
         cursor = conn.cursor()
 
-        query = """
+        exchange_code = _normalize_exchange(exchange)
+
+        query = f"""
             SELECT symbol, create_time, sum_toptrader_long_short_ratio
-            FROM market_data.binance_futures_metrics_5m
-            WHERE symbol = %s
+            FROM {table}
+            WHERE symbol = %s AND exchange = %s
         """
-        params: list = [symbol]
+        params: list = [symbol, exchange_code]
 
         if startTime:
             query += " AND create_time >= to_timestamp(%s / 1000.0)"
