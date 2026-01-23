@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import List
 
 # 加载全局 config/.env
-_SERVICE_ROOT = Path(__file__).parents[4]  # src/core/config.py -> core -> src -> market-maker -> src -> order-service
-_PROJECT_ROOT = _SERVICE_ROOT.parents[1]   # order-service -> services -> tradecat
+_SERVICE_ROOT = Path(__file__).resolve().parents[4]  # src/core/config.py -> core -> src -> market-maker -> src -> order-service
+_PROJECT_ROOT = _SERVICE_ROOT.parents[2]  # order-service -> services-preview -> tradecat
 _env_file = _PROJECT_ROOT / "config" / ".env"
 if _env_file.exists():
     for line in _env_file.read_text().splitlines():

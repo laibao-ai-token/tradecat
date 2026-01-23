@@ -137,8 +137,12 @@ class Engine:
         except Exception as e:
             if "rate limit" in str(e).lower() or "too many" in str(e).lower():
                 self.cancel_rate_limited += 1
-            if "No open orders" not in str(e):
-                print(f"撤单失败: {e}")
+            if "No open orders" in str(e):
+                for order in self.orders_by_symbol.get(symbol, []):
+                    self.orders.pop(order.id, None)
+                self.orders_by_symbol.pop(symbol, None)
+                return
+            print(f"撤单失败: {e}")
 
     def pending_notional(self, symbol: str, mid: Optional[float]) -> float:
         """计算该交易对未成交挂单名义价值"""
@@ -218,6 +222,21 @@ class Engine:
             "flat_failure_count": self.flat_failure_count,
             "cancel_rate_limited": self.cancel_rate_limited,
         }
+
+    def on_order_update(self, order_id: str, status: str):
+        """接收订单更新，清理已终态订单"""
+        terminal_statuses = {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}
+        if status not in terminal_statuses:
+            return
+        order = self.orders.pop(order_id, None)
+        if not order:
+            return
+        orders = self.orders_by_symbol.get(order.symbol)
+        if not orders:
+            return
+        self.orders_by_symbol[order.symbol] = [o for o in orders if o.id != order_id]
+        if not self.orders_by_symbol[order.symbol]:
+            self.orders_by_symbol.pop(order.symbol, None)
 
     def _order_params(self, side: str) -> Dict:
         if self.hedge_mode:

@@ -61,7 +61,7 @@ class BinanceUserStream:
         self.rest_base = rest_base.rstrip("/")
         self.ws_base = ws_base.rstrip("/")
         self.proxy = proxy
-        self.loop = loop or asyncio.get_event_loop()
+        self.loop = loop
         self.use_rest_snapshot = use_rest_snapshot
         self.account_stale_seconds = account_stale_seconds
 
@@ -73,6 +73,7 @@ class BinanceUserStream:
         self._stopped = asyncio.Event()
         self._position_listeners = []
         self._trade_listeners = []
+        self._order_listeners = []
         self._last_account_update_ts: Optional[float] = None
         self._last_event_ts: Optional[float] = None
         self._stale_logged = False
@@ -81,6 +82,8 @@ class BinanceUserStream:
     async def start(self):
         if self._ws_task:
             return
+        if self.loop is None:
+            self.loop = asyncio.get_running_loop()
         self._session = aiohttp.ClientSession()
         if self.use_rest_snapshot:
             print("[UserStream][WARN] use_rest_snapshot=true 将在启动时调用一次 REST 账户快照，违反零 REST 严格模式")
@@ -111,6 +114,10 @@ class BinanceUserStream:
     def register_trade_listener(self, listener):
         """listener(symbol, side, position_side, qty, price)"""
         self._trade_listeners.append(listener)
+
+    def register_order_listener(self, listener):
+        """listener(symbol, order_id, status)"""
+        self._order_listeners.append(listener)
 
     def positions_snapshot(self) -> Dict[str, Dict[str, float]]:
         return self.positions.snapshot()
@@ -195,11 +202,19 @@ class BinanceUserStream:
     def _handle_order_trade_update(self, payload: dict):
         o = payload.get("o", {})
         symbol = o.get("s")
+        order_id = o.get("i")
+        status = o.get("X")
+        if symbol and order_id and status:
+            for listener in self._order_listeners:
+                try:
+                    listener(symbol, order_id, status)
+                except Exception:
+                    continue
         side = o.get("S")  # BUY/SELL
         position_side = o.get("ps")  # LONG/SHORT/BOTH
         last_filled = float(o.get("l", 0))  # last filled qty
         price = float(o.get("L", 0))  # last filled price
-        exec_type = payload.get("x")  # e.g., TRADE
+        exec_type = o.get("x")  # e.g., TRADE
         if exec_type != "TRADE" or last_filled == 0 or not symbol or not side:
             return
         for listener in self._trade_listeners:

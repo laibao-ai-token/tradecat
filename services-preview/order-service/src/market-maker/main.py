@@ -101,11 +101,16 @@ class MarketMaker:
                 if symbol_ccxt == sym:
                     self.strategies[sym].on_trade(price, amount, mid)
             return _cb
+        def _make_order_cb():
+            def _cb(symbol_ccxt, order_id, status):
+                self.engine.on_order_update(order_id, status)
+            return _cb
 
         for sym in config.strategy.symbols:
             self.feed.register_trade_listener(_make_public_trade_cb(sym))
             self.user_stream.register_trade_listener(_make_trade_cb(sym))
             self.user_stream.register_position_listener(_make_position_cb(sym))
+        self.user_stream.register_order_listener(_make_order_cb())
 
         # 风控
         self.risk = RiskManager(
@@ -207,9 +212,8 @@ class MarketMaker:
                 if not strategy.should_update():
                     continue
 
-                bid, bid_qty, ask, ask_qty = strategy.get_quotes(mid)
-
-                if bid_qty <= 0 and ask_qty <= 0:
+                quotes = strategy.get_quotes(mid)
+                if not quotes:
                     continue
 
                 # 按 TTL / 价差偏离刷新挂单；未配置则保持原有全撤重下
@@ -221,11 +225,16 @@ class MarketMaker:
                 else:
                     self.engine.cancel_stale_orders(symbol, mid, ttl, deviation_bps, min_interval=min_cancel)
 
-                quote = Quote(bid, bid_qty, ask, ask_qty)
-                self.engine.place_quote(symbol, quote)
-
-                spread_bps = (ask - bid) / mid * 10000
-                logger.info(f"{symbol} | mid={mid:,.2f} | spread={spread_bps:.1f}bps | inv={strategy.inventory:.4f}")
+                for idx, (bid, bid_qty, ask, ask_qty) in enumerate(quotes):
+                    if bid_qty <= 0 and ask_qty <= 0:
+                        continue
+                    quote = Quote(bid, bid_qty, ask, ask_qty)
+                    self.engine.place_quote(symbol, quote)
+                    if idx == 0:
+                        spread_bps = (ask - bid) / mid * 10000
+                        logger.info(
+                            f"{symbol} | mid={mid:,.2f} | spread={spread_bps:.1f}bps | inv={strategy.inventory:.4f}"
+                        )
 
             except Exception as e:
                 logger.error(f"{symbol} 错误: {e}")
@@ -243,6 +252,7 @@ class MarketMaker:
         for symbol in self.strategies:
             self.engine.cancel_all(symbol)
             self.engine.flat_position(symbol)
+        self.feed.stop()
         stats = self.engine.flat_stats()
         if stats["flat_failure_count"] > 0 or stats["cancel_rate_limited"] > 0:
             logger.warning(f"退出统计: flat_failure_count={stats['flat_failure_count']} cancel_rate_limited={stats['cancel_rate_limited']}")
