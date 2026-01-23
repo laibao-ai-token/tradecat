@@ -57,32 +57,31 @@ async def get_ohlc_history(
         return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
     try:
-        conn = psycopg.connect(settings.DATABASE_URL)
-        cursor = conn.cursor()
+        with psycopg.connect(settings.DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
 
-        exchange_code = _normalize_exchange(exchange)
+                exchange_code = _normalize_exchange(exchange)
 
-        # 构建查询
-        query = f"""
-            SELECT symbol, bucket_ts, open, high, low, close, volume, quote_volume
-            FROM {table}
-            WHERE symbol = %s AND exchange = %s
-        """
-        params: list = [symbol, exchange_code]
+                # 构建查询
+                query = f"""
+                    SELECT symbol, bucket_ts, open, high, low, close, volume, quote_volume
+                    FROM {table}
+                    WHERE symbol = %s AND exchange = %s
+                """
+                params: list = [symbol, exchange_code]
 
-        if startTime:
-            query += " AND bucket_ts >= to_timestamp(%s / 1000.0)"
-            params.append(startTime)
-        if endTime:
-            query += " AND bucket_ts <= to_timestamp(%s / 1000.0)"
-            params.append(endTime)
+                if startTime:
+                    query += " AND bucket_ts >= to_timestamp(%s / 1000.0)"
+                    params.append(startTime)
+                if endTime:
+                    query += " AND bucket_ts <= to_timestamp(%s / 1000.0)"
+                    params.append(endTime)
 
-        query += " ORDER BY bucket_ts DESC LIMIT %s"
-        params.append(limit)
+                query += " ORDER BY bucket_ts DESC LIMIT %s"
+                params.append(limit)
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
 
         # 转换为 CoinGlass 格式
         data = [

@@ -50,31 +50,30 @@ async def get_funding_rate_history(
         return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
     try:
-        conn = psycopg.connect(settings.DATABASE_URL)
-        cursor = conn.cursor()
+        with psycopg.connect(settings.DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
 
-        exchange_code = _normalize_exchange(exchange)
+                exchange_code = _normalize_exchange(exchange)
 
-        query = f"""
-            SELECT symbol, create_time, sum_toptrader_long_short_ratio
-            FROM {table}
-            WHERE symbol = %s AND exchange = %s
-        """
-        params: list = [symbol, exchange_code]
+                query = f"""
+                    SELECT symbol, create_time, sum_toptrader_long_short_ratio
+                    FROM {table}
+                    WHERE symbol = %s AND exchange = %s
+                """
+                params: list = [symbol, exchange_code]
 
-        if startTime:
-            query += " AND create_time >= to_timestamp(%s / 1000.0)"
-            params.append(startTime)
-        if endTime:
-            query += " AND create_time <= to_timestamp(%s / 1000.0)"
-            params.append(endTime)
+                if startTime:
+                    query += " AND create_time >= to_timestamp(%s / 1000.0)"
+                    params.append(startTime)
+                if endTime:
+                    query += " AND create_time <= to_timestamp(%s / 1000.0)"
+                    params.append(endTime)
 
-        query += " ORDER BY create_time DESC LIMIT %s"
-        params.append(limit)
+                query += " ORDER BY create_time DESC LIMIT %s"
+                params.append(limit)
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
 
         # CoinGlass FR 格式 (OHLC style)
         data = []

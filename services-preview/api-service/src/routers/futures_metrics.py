@@ -28,20 +28,19 @@ async def get_futures_metrics(
         return error_response(ErrorCode.INVALID_INTERVAL, f"无效的 interval: {interval}")
 
     try:
-        conn = psycopg.connect(settings.DATABASE_URL)
-        cursor = conn.cursor()
+        with psycopg.connect(settings.DATABASE_URL) as conn:
+            with conn.cursor() as cursor:
 
-        query = """
-            SELECT symbol, create_time, sum_open_interest_value, 
-                   sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
-            FROM market_data.binance_futures_metrics_5m
-            WHERE symbol = %s
-            ORDER BY create_time DESC
-            LIMIT %s
-        """
-        cursor.execute(query, (symbol, limit))
-        rows = cursor.fetchall()
-        conn.close()
+                query = """
+                    SELECT symbol, create_time, sum_open_interest_value, 
+                           sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
+                    FROM market_data.binance_futures_metrics_5m
+                    WHERE symbol = %s
+                    ORDER BY create_time DESC
+                    LIMIT %s
+                """
+                cursor.execute(query, (symbol, limit))
+                rows = cursor.fetchall()
 
         data = [
             {
