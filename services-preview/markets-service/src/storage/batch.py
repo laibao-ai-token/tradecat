@@ -3,11 +3,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from psycopg_pool import ConnectionPool
-
 from config import settings
+from .timescale import get_shared_pool
 
-_pool = ConnectionPool(settings.database_url, min_size=1, max_size=3, timeout=10.0)
+_pool = get_shared_pool()
 
 
 def start_batch(source: str, data_type: str, market: Optional[str] = None,

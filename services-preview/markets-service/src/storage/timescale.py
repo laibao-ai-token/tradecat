@@ -2,12 +2,32 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from threading import Lock
 from typing import Iterator, Sequence
 
 from psycopg_pool import ConnectionPool
 
 from config import settings
 from models.candle import Candle
+
+
+_SHARED_POOL: ConnectionPool | None = None
+_SHARED_POOL_LOCK = Lock()
+
+
+def get_shared_pool() -> ConnectionPool:
+    """获取共享连接池（全服务复用）"""
+    global _SHARED_POOL
+    if _SHARED_POOL is None:
+        with _SHARED_POOL_LOCK:
+            if _SHARED_POOL is None:
+                _SHARED_POOL = ConnectionPool(
+                    settings.database_url,
+                    min_size=2,
+                    max_size=10,
+                    timeout=30.0,
+                )
+    return _SHARED_POOL
 
 
 class TimescaleStorage:
@@ -20,6 +40,8 @@ class TimescaleStorage:
 
     @property
     def pool(self) -> ConnectionPool:
+        if self.db_url == settings.database_url:
+            return get_shared_pool()
         if self._pool is None:
             self._pool = ConnectionPool(
                 self.db_url,
@@ -30,7 +52,7 @@ class TimescaleStorage:
         return self._pool
 
     def close(self):
-        if self._pool:
+        if self._pool and self.db_url != settings.database_url:
             self._pool.close()
             self._pool = None
 

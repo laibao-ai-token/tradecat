@@ -307,7 +307,7 @@ def _replace_embedded_payload(html: str, payload: Dict, title: str | None = None
 def _fetch_multi_interval_klines(params: Dict) -> Dict:
     """按时间窗口逐周期查询 TimescaleDB，构造包络可视化数据。"""
     from core.settings import get_settings
-    import psycopg2
+    import psycopg
 
     symbol = params.get("symbol")
     if not symbol:
@@ -337,7 +337,7 @@ def _fetch_multi_interval_klines(params: Dict) -> Dict:
     if not settings.database_url:
         raise ValueError("未配置 DATABASE_URL / VIS_SERVICE_DATABASE_URL")
 
-    with psycopg2.connect(settings.database_url) as conn:
+    with psycopg.connect(settings.database_url, connect_timeout=3) as conn:
         if end_ms is None:
             with conn.cursor() as cur:
                 candidates = []

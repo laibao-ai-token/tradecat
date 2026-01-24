@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from ..config import normalize_interval, settings
+from ...storage.timescale import get_shared_pool
 from ..schema_adapter import (
     KlineAdapter,
     MetricsAdapter,
@@ -47,6 +48,8 @@ class TimescaleAdapter:
 
     @property
     def pool(self) -> ConnectionPool:
+        if self.db_url == settings.database_url:
+            return get_shared_pool()
         if self._pool is None:
             self._pool = ConnectionPool(
                 self.db_url,
@@ -59,7 +62,7 @@ class TimescaleAdapter:
         return self._pool
 
     def close(self) -> None:
-        if self._pool:
+        if self._pool and self.db_url != settings.database_url:
             self._pool.close()
             self._pool = None
 

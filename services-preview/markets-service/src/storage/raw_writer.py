@@ -13,6 +13,7 @@ from psycopg import sql
 from psycopg_pool import ConnectionPool
 
 from config import settings
+from .timescale import get_shared_pool
 
 
 class TimescaleRawWriter:
@@ -20,7 +21,10 @@ class TimescaleRawWriter:
 
     def __init__(self, db_url: Optional[str] = None):
         self.db_url = db_url or settings.database_url
-        self.pool = ConnectionPool(self.db_url, min_size=1, max_size=5, timeout=30.0)
+        if self.db_url == settings.database_url:
+            self.pool = get_shared_pool()
+        else:
+            self.pool = ConnectionPool(self.db_url, min_size=1, max_size=5, timeout=30.0)
 
     def upsert_kline_1m(self, rows: Sequence[dict], ingest_batch_id: int, source: str = "binance_ws") -> int:
         """批量写入/更新 1m K 线到 raw.crypto_kline_1m"""

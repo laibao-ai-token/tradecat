@@ -21,7 +21,8 @@ packaging==25.0
 pandas==2.3.3
 pillow==12.1.0
 plotly==6.5.2
-psycopg2-binary==2.9.11
+psycopg==3.3.2
+psycopg-binary==3.3.2
 pydantic==2.12.5
 pydantic-settings==2.12.0
 pydantic_core==2.41.5

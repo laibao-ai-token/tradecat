@@ -3,6 +3,7 @@
 import sqlite3
 
 from fastapi import APIRouter, Query
+from fastapi.concurrency import run_in_threadpool
 
 from src.config import get_settings
 from src.utils.errors import ErrorCode, api_response, error_response
@@ -20,14 +21,15 @@ async def get_indicator_list() -> dict:
     if not db_path.exists():
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, "指标数据库不可用")
 
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        rows = cursor.fetchall()
-        conn.close()
+    def _fetch_tables():
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            rows = cursor.fetchall()
+            return [row[0] for row in rows]
 
-        tables = [row[0] for row in rows]
+    try:
+        tables = await run_in_threadpool(_fetch_tables)
         return api_response(tables)
     except Exception as e:
         return error_response(ErrorCode.INTERNAL_ERROR, f"查询失败: {e}")
@@ -47,40 +49,42 @@ async def get_indicator_data(
     if not db_path.exists():
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, "指标数据库不可用")
 
+    def _fetch_rows():
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # 检查表是否存在
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            if not cursor.fetchone():
+                return None
+
+            # 构建查询
+            query = f'SELECT * FROM "{table}"'
+            params: list = []
+            conditions = []
+
+            if symbol:
+                conditions.append('"交易对" = ?')
+                params.append(normalize_symbol(symbol))
+
+            if interval:
+                conditions.append('"周期" = ?')
+                params.append(interval)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+
+            query += f" LIMIT {limit}"
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # 检查表是否存在
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
-        if not cursor.fetchone():
-            conn.close()
+        data = await run_in_threadpool(_fetch_rows)
+        if data is None:
             return error_response(ErrorCode.TABLE_NOT_FOUND, f"表 '{table}' 不存在")
-
-        # 构建查询
-        query = f'SELECT * FROM "{table}"'
-        params: list = []
-        conditions = []
-
-        if symbol:
-            conditions.append('"交易对" = ?')
-            params.append(normalize_symbol(symbol))
-
-        if interval:
-            conditions.append('"周期" = ?')
-            params.append(interval)
-
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-
-        query += f" LIMIT {limit}"
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
-
-        data = [dict(row) for row in rows]
         return api_response(data)
     except Exception as e:
         return error_response(ErrorCode.INTERNAL_ERROR, f"查询失败: {e}")
