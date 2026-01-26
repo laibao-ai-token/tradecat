@@ -3,8 +3,9 @@
 import psycopg
 
 from fastapi import APIRouter, Query
+from fastapi.concurrency import run_in_threadpool
 
-from src.config import get_settings
+from src.config import get_pg_pool
 from src.utils.errors import ErrorCode, api_response, error_response
 from src.utils.symbol import normalize_symbol
 
@@ -47,7 +48,6 @@ async def get_ohlc_history(
     endTime: int | None = Query(default=None, description="结束时间 (毫秒)"),
 ) -> dict:
     """获取K线历史数据"""
-    settings = get_settings()
     symbol = normalize_symbol(symbol)
 
     if interval not in VALID_INTERVALS:
@@ -56,10 +56,9 @@ async def get_ohlc_history(
     if not table:
         return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
-    try:
-        with psycopg.connect(settings.DATABASE_URL) as conn:
+    def _fetch_rows():
+        with get_pg_pool().connection() as conn:
             with conn.cursor() as cursor:
-
                 exchange_code = _normalize_exchange(exchange)
 
                 # 构建查询
@@ -81,8 +80,10 @@ async def get_ohlc_history(
                 params.append(limit)
 
                 cursor.execute(query, params)
-                rows = cursor.fetchall()
+                return cursor.fetchall()
 
+    try:
+        rows = await run_in_threadpool(_fetch_rows)
         # 转换为 CoinGlass 格式
         data = [
             {
@@ -92,11 +93,10 @@ async def get_ohlc_history(
                 "low": str(row[4]),
                 "close": str(row[5]),
                 "volume": str(row[6]),
-                "volume_usd": str(row[7]) if row[7] else "0"
+                "volume_usd": str(row[7]) if row[7] else "0",
             }
             for row in reversed(rows)
         ]
-
         return api_response(data)
     except psycopg.OperationalError as e:
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, f"数据库连接失败: {e}")

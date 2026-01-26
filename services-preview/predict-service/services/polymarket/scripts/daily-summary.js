@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const { getFetchProxyOptions } = require('../utils/proxyAgent');
 
 const LOG_PATH = process.env.LOG_PATH || path.join(__dirname, '../logs/pm2-out.log');
 const GAMMA_API = 'https://gamma-api.polymarket.com';
@@ -64,7 +65,11 @@ async function parseLog(logPath, targetDate) {
 async function fetchMarketData() {
     try {
         const fetch = (await import('node-fetch')).default;
-        const res = await fetch(`${GAMMA_API}/markets?active=true&closed=false&limit=200&order=volume24hr&ascending=false`);
+        const fetchOptions = getFetchProxyOptions();
+        const res = await fetch(
+            `${GAMMA_API}/markets?active=true&closed=false&limit=200&order=volume24hr&ascending=false`,
+            fetchOptions
+        );
         return res.ok ? await res.json() : [];
     } catch (e) {
         console.warn('获取市场数据失败:', e.message);

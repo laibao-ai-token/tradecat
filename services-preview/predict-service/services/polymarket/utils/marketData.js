@@ -4,7 +4,8 @@
  * 从 CLOB API 获取市场元数据（slug等）
  */
 
-const https = require('https');
+const fetch = require('node-fetch');
+const { getFetchProxyOptions } = require('./proxyAgent');
 
 const REQUEST_TIMEOUT_MS = 3000;
 const CACHE_TTL_MS = 30 * 60 * 1000;  // 30分钟
@@ -82,66 +83,47 @@ class MarketDataFetcher {
      * @param {string} conditionId
      * @returns {Promise<Object|null>}
      */
-    fetchMarketData(conditionId) {
-        return new Promise((resolve, reject) => {
-            const url = `https://clob.polymarket.com/markets/${conditionId}`;
-            const req = https.get(url, (res) => {
-                let data = '';
-
-                res.on('data', (chunk) => {
-                    data += chunk;
-                });
-
-                res.on('end', () => {
-                    try {
-                        if (res.statusCode === 200) {
-                            const marketData = JSON.parse(data);
-
-                            // 容量限制：超过时清理最旧的 10%
-                            if (this.cache.size >= this.cacheMaxSize) {
-                                const toDelete = Math.floor(this.cacheMaxSize * 0.1);
-                                const keys = Array.from(this.cache.keys()).slice(0, toDelete);
-                                keys.forEach(k => this.cache.delete(k));
-                            }
-
-                            // 缓存数据（注意：字段名是market_slug，不是slug）
-                            this.cache.set(conditionId, {
-                                slug: marketData.market_slug,
-                                eventSlug: marketData.event_slug,
-                                question: marketData.question,
-                                description: marketData.description,
-                                clob_token_ids: marketData.clob_token_ids,
-                                fetched: Date.now()
-                            });
-
-                            if (process.env.DEBUG === 'true') {
-                                console.debug(`✅ 获取市场数据: ${conditionId.substring(0, 12)}... -> ${marketData.market_slug}`);
-                            }
-                            resolve(marketData);
-                        } else {
-                            console.warn(`⚠️ CLOB API返回 ${res.statusCode}: ${conditionId.substring(0, 12)}...`);
-                            resolve(null);
-                        }
-                    } catch (error) {
-                        console.error(`❌ 解析市场数据失败:`, error.message);
-                        resolve(null);
-                    }
-                });
-
-                res.on('error', (error) => {
-                    reject(error);
-                });
+    async fetchMarketData(conditionId) {
+        const url = `https://clob.polymarket.com/markets/${conditionId}`;
+        try {
+            const response = await fetch(url, {
+                headers: { 'Accept': 'application/json' },
+                ...getFetchProxyOptions(),
+                timeout: this.requestTimeoutMs
             });
 
-            req.setTimeout(this.requestTimeoutMs, () => {
-                req.destroy(new Error('Market data request timed out'));
+            if (!response.ok) {
+                console.warn(`⚠️ CLOB API返回 ${response.status}: ${conditionId.substring(0, 12)}...`);
+                return null;
+            }
+
+            const marketData = await response.json();
+
+            // 容量限制：超过时清理最旧的 10%
+            if (this.cache.size >= this.cacheMaxSize) {
+                const toDelete = Math.floor(this.cacheMaxSize * 0.1);
+                const keys = Array.from(this.cache.keys()).slice(0, toDelete);
+                keys.forEach(k => this.cache.delete(k));
+            }
+
+            // 缓存数据（注意：字段名是market_slug，不是slug）
+            this.cache.set(conditionId, {
+                slug: marketData.market_slug,
+                eventSlug: marketData.event_slug,
+                question: marketData.question,
+                description: marketData.description,
+                clob_token_ids: marketData.clob_token_ids,
+                fetched: Date.now()
             });
 
-            req.on('error', (error) => {
-                console.error(`❌ CLOB API请求失败:`, error.message);
-                reject(error);
-            });
-        });
+            if (process.env.DEBUG === 'true') {
+                console.debug(`✅ 获取市场数据: ${conditionId.substring(0, 12)}... -> ${marketData.market_slug}`);
+            }
+            return marketData;
+        } catch (error) {
+            console.error('❌ CLOB API请求失败:', error.message);
+            throw error;
+        }
     }
 
     /**
@@ -196,16 +178,16 @@ class MarketDataFetcher {
         try {
             const fetch = require('node-fetch');
             // 先尝试 condition_id，再尝试 clob_token_ids
-            let res = await fetch(`https://gamma-api.polymarket.com/markets?condition_id=${conditionId}`, {
+            const fetchOptions = {
+                ...getFetchProxyOptions(),
                 timeout: this.requestTimeoutMs
-            });
+            };
+            let res = await fetch(`https://gamma-api.polymarket.com/markets?condition_id=${conditionId}`, fetchOptions);
             let markets = res.ok ? await res.json() : [];
             
             // 如果没找到，尝试用 clob_token_ids 查询
             if (!markets || !markets.length) {
-                res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${conditionId}`, {
-                    timeout: this.requestTimeoutMs
-                });
+                res = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${conditionId}`, fetchOptions);
                 markets = res.ok ? await res.json() : [];
             }
             

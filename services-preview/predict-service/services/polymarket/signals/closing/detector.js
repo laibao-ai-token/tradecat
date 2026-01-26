@@ -1,3 +1,6 @@
+const fetch = require('node-fetch');
+const { getFetchProxyOptions } = require('../../utils/proxyAgent');
+
 /**
  * 扫尾盘检测器 (SDK 版本)
  * 
@@ -16,6 +19,8 @@ class ClosingMarketScanner {
         this.minAbsoluteThreshold = config.minAbsoluteThreshold || 0;
         this.maxMarkets = config.maxMarkets || 10;
         this.refreshIntervalMs = config.refreshIntervalMs || 300000;
+        this.gammaApi = config.gammaApi || 'https://gamma-api.polymarket.com';
+        this.fetchTimeoutMs = config.fetchTimeoutMs || 15000;
         this.emitEmpty = config.emitEmpty === true;
         this.debug = Boolean(config.debug);
 
@@ -137,6 +142,8 @@ class ClosingMarketScanner {
         const allMarkets = [];
         let offset = 0;
         const limit = 500;
+        const baseUrl = (this.gammaApi || 'https://gamma-api.polymarket.com').replace(/\/$/, '');
+        const fetchProxyOptions = getFetchProxyOptions();
 
         while (true) {
             const params = new URLSearchParams({
@@ -148,8 +155,12 @@ class ClosingMarketScanner {
                 ascending: 'true'
             });
 
-            const url = `https://gamma-api.polymarket.com/markets?${params}`;
-            const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            const url = `${baseUrl}/markets?${params}`;
+            const response = await fetch(url, {
+                headers: { 'Accept': 'application/json' },
+                ...fetchProxyOptions,
+                timeout: this.fetchTimeoutMs
+            });
 
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();

@@ -6,11 +6,13 @@
 
 import os
 from functools import lru_cache
-from typing import Optional
 from pathlib import Path
+from threading import Lock
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from psycopg_pool import ConnectionPool
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -62,3 +64,26 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.indicator_sqlite_path = _resolve_sqlite(settings.indicator_sqlite_path)
     return settings
+
+
+_PG_POOL: ConnectionPool | None = None
+_PG_POOL_LOCK = Lock()
+
+
+def get_pg_pool() -> ConnectionPool:
+    """获取共享 PG 连接池"""
+    global _PG_POOL
+    if _PG_POOL is None:
+        with _PG_POOL_LOCK:
+            if _PG_POOL is None:
+                settings = get_settings()
+                if not settings.database_url:
+                    raise ValueError("未配置 DATABASE_URL / VIS_SERVICE_DATABASE_URL")
+                _PG_POOL = ConnectionPool(
+                    settings.database_url,
+                    min_size=1,
+                    max_size=5,
+                    timeout=30.0,
+                    kwargs={"connect_timeout": 3},
+                )
+    return _PG_POOL

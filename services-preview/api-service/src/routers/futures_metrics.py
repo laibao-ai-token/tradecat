@@ -3,8 +3,9 @@
 import psycopg
 
 from fastapi import APIRouter, Query
+from fastapi.concurrency import run_in_threadpool
 
-from src.config import get_settings
+from src.config import get_pg_pool
 from src.utils.errors import ErrorCode, api_response, error_response
 from src.utils.symbol import normalize_symbol
 
@@ -21,16 +22,14 @@ async def get_futures_metrics(
     limit: int = Query(default=100, ge=1, le=1000, description="返回数量"),
 ) -> dict:
     """获取期货综合指标数据"""
-    settings = get_settings()
     symbol = normalize_symbol(symbol)
 
     if interval not in VALID_INTERVALS:
         return error_response(ErrorCode.INVALID_INTERVAL, f"无效的 interval: {interval}")
 
-    try:
-        with psycopg.connect(settings.DATABASE_URL) as conn:
+    def _fetch_rows():
+        with get_pg_pool().connection() as conn:
             with conn.cursor() as cursor:
-
                 query = """
                     SELECT symbol, create_time, sum_open_interest_value, 
                            sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
@@ -40,19 +39,20 @@ async def get_futures_metrics(
                     LIMIT %s
                 """
                 cursor.execute(query, (symbol, limit))
-                rows = cursor.fetchall()
+                return cursor.fetchall()
 
+    try:
+        rows = await run_in_threadpool(_fetch_rows)
         data = [
             {
                 "time": int(row[1].timestamp() * 1000),
                 "symbol": row[0],
                 "openInterest": str(row[2]) if row[2] else "0",
                 "longShortRatio": str(row[3]) if row[3] else "0",
-                "takerLongShortRatio": str(row[4]) if row[4] else "0"
+                "takerLongShortRatio": str(row[4]) if row[4] else "0",
             }
             for row in reversed(rows)
         ]
-
         return api_response(data)
     except psycopg.OperationalError as e:
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, f"数据库连接失败: {e}")

@@ -52,7 +52,7 @@ const marketDataFetcher = require('./utils/marketData');
 const UserManager = require('./utils/userManager');
 
 // 加载代理配置
-const { getTelegramBotOptions, testProxyConnection } = require('./utils/proxyAgent');
+const { getTelegramBotOptions, testProxyConnection, getFetchProxyOptions } = require('./utils/proxyAgent');
 
 // 加载翻译服务
 // ⚡ Google免费接口（推荐 - 速度快，内存占用小）
@@ -2521,7 +2521,11 @@ class PolymarketSignalBot {
                 const isBaseline = !this.newMarketBaselineLoaded;
                 try {
                     const fetch = require('node-fetch');
-                    const response = await fetch(`${this.config.newMarket.gammaApi}/markets?active=true&closed=false&limit=${this.config.newMarket.limit}&order=createdAt&ascending=false`);
+                    const fetchOptions = getFetchProxyOptions();
+                    const response = await fetch(
+                        `${this.config.newMarket.gammaApi}/markets?active=true&closed=false&limit=${this.config.newMarket.limit}&order=createdAt&ascending=false`,
+                        fetchOptions
+                    );
                     if (!response.ok) return;
                     
                     const markets = await response.json();
@@ -2563,7 +2567,11 @@ class PolymarketSignalBot {
                 const isBaseline = !this.smartMoneyBaselineLoaded;
                 try {
                     const fetch = require('node-fetch');
-                    const response = await fetch(`${this.config.smartMoney.dataApi}/v1/leaderboard?limit=${this.config.smartMoney.trackTopN}`);
+                    const fetchOptions = getFetchProxyOptions();
+                    const response = await fetch(
+                        `${this.config.smartMoney.dataApi}/v1/leaderboard?limit=${this.config.smartMoney.trackTopN}`,
+                        fetchOptions
+                    );
                     if (!response.ok) return;
                     
                     const data = await response.json();
@@ -2573,7 +2581,10 @@ class PolymarketSignalBot {
                         const address = trader.proxyWallet || trader.address;
                         if (!address) continue;
                         
-                        const posResponse = await fetch(`${this.config.smartMoney.dataApi}/positions?user=${address}&limit=50`);
+                        const posResponse = await fetch(
+                            `${this.config.smartMoney.dataApi}/positions?user=${address}&limit=50`,
+                            fetchOptions
+                        );
                         if (!posResponse.ok) continue;
                         
                         const positions = await posResponse.json();

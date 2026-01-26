@@ -3,8 +3,9 @@
 import psycopg
 
 from fastapi import APIRouter, Query
+from fastapi.concurrency import run_in_threadpool
 
-from src.config import get_settings
+from src.config import get_pg_pool
 from src.utils.errors import ErrorCode, api_response, error_response
 from src.utils.symbol import normalize_symbol
 
@@ -40,7 +41,6 @@ async def get_funding_rate_history(
     endTime: int | None = Query(default=None, description="结束时间 (毫秒)"),
 ) -> dict:
     """获取 Funding Rate 历史数据"""
-    settings = get_settings()
     symbol = normalize_symbol(symbol)
 
     if interval not in VALID_INTERVALS:
@@ -49,10 +49,9 @@ async def get_funding_rate_history(
     if not table:
         return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
-    try:
-        with psycopg.connect(settings.DATABASE_URL) as conn:
+    def _fetch_rows():
+        with get_pg_pool().connection() as conn:
             with conn.cursor() as cursor:
-
                 exchange_code = _normalize_exchange(exchange)
 
                 query = f"""
@@ -73,20 +72,23 @@ async def get_funding_rate_history(
                 params.append(limit)
 
                 cursor.execute(query, params)
-                rows = cursor.fetchall()
+                return cursor.fetchall()
 
+    try:
+        rows = await run_in_threadpool(_fetch_rows)
         # CoinGlass FR 格式 (OHLC style)
         data = []
         for row in reversed(rows):
             fr_value = float(row[2]) if row[2] else 0
-            data.append({
-                "time": int(row[1].timestamp() * 1000),
-                "open": str(fr_value),
-                "high": str(fr_value),
-                "low": str(fr_value),
-                "close": str(fr_value)
-            })
-
+            data.append(
+                {
+                    "time": int(row[1].timestamp() * 1000),
+                    "open": str(fr_value),
+                    "high": str(fr_value),
+                    "low": str(fr_value),
+                    "close": str(fr_value),
+                }
+            )
         return api_response(data)
     except psycopg.OperationalError as e:
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, f"数据库连接失败: {e}")

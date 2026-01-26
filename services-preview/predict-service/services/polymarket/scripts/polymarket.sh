@@ -6,10 +6,14 @@
 # ============================================================================
 
 # 项目配置
-PROJECT_DIR="/home/lenovo/.projects/polymarket"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROXY_CONFIG="$PROJECT_DIR/proxychains.conf"
+if [ ! -f "$PROXY_CONFIG" ] && [ -f "/etc/proxychains.conf" ]; then
+    PROXY_CONFIG="/etc/proxychains.conf"
+fi
 PROXY_HOST="127.0.0.1"
-PROXY_PORT="9910"
+PROXY_PORT="7890"
 
 # 颜色定义
 RED='\033[0;31m'
