@@ -254,5 +254,101 @@
     "username": "NEIROBSC1",
     "firstName": "NEIROBSC",
     "lastName": null
+  },
+  {
+    "chatId": 5700670848,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769506103091,
+    "lastActive": 1769506109272,
+    "visitCount": 2,
+    "username": null,
+    "firstName": "阿宝",
+    "lastName": null
+  },
+  {
+    "chatId": 691885290,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769507490090,
+    "lastActive": 1769507490090,
+    "visitCount": 1,
+    "username": "kk772689",
+    "firstName": "K",
+    "lastName": null
+  },
+  {
+    "chatId": 5462334959,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769509114102,
+    "lastActive": 1769509114102,
+    "visitCount": 1,
+    "username": null,
+    "firstName": "Steven",
+    "lastName": null
   }
 ]
