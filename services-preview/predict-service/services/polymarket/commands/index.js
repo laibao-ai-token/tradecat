@@ -1433,19 +1433,32 @@ class CommandHandler {
         await this.bot.sendMessage(chatId, '📊 正在生成 CSV 报告 (滚动24小时)...\n⏳ 预计需要1-2分钟，请稍候...');
         
         try {
-            const { execSync } = require('child_process');
+            const { spawnSync } = require('child_process');
             const path = require('path');
             const fs = require('fs');
             
             const scriptPath = path.join(__dirname, '../scripts/csv-report.js');
+            const defaultLogPath = path.join(__dirname, '../logs/polymarket.log');
+            const logPath = process.env.CSV_LOG_FILE || defaultLogPath;
             
             // 执行脚本
             const timeoutMs = Number(process.env.CSV_REPORT_TIMEOUT_MS || 180000);
-            const csv = execSync(`node "${scriptPath}"`, {
+            const result = spawnSync('node', [scriptPath, logPath], {
                 encoding: 'utf-8',
                 timeout: Number.isFinite(timeoutMs) ? timeoutMs : 180000,
                 maxBuffer: 20 * 1024 * 1024
             });
+            if (result.error) {
+                throw new Error(`CSV脚本执行失败: ${result.error.message}`);
+            }
+            if (result.status !== 0) {
+                throw new Error(`CSV脚本退出码=${result.status}: ${String(result.stderr || '').trim() || '未知错误'}`);
+            }
+            const csv = String(result.stdout || '');
+            if (!csv.trim()) {
+                const stderrPreview = String(result.stderr || '').trim().split('\n').slice(0, 3).join(' | ');
+                throw new Error(`CSV输出为空${stderrPreview ? `: ${stderrPreview}` : ''}`);
+            }
             
             // 保存为文件
             const date = new Date().toISOString().slice(0, 10);

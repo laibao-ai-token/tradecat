@@ -23,7 +23,7 @@ module.exports = {
         name: 'polymarket-bot',
 
         // 启动脚本
-        script: './src/bot.js',
+        script: './bot.js',
 
         // 工作目录
         cwd: __dirname,
@@ -46,18 +46,18 @@ module.exports = {
         ],
 
         // 最大内存限制（超过后自动重启）
-        max_memory_restart: '2G',
+        max_memory_restart: '10G',
 
         // 环境变量
         env: {
             NODE_ENV: 'production',
-            NODE_OPTIONS: '--max-old-space-size=2048'
+            NODE_OPTIONS: '--max-old-space-size=8192'
         },
 
         // 开发环境变量
         env_development: {
             NODE_ENV: 'development',
-            NODE_OPTIONS: '--max-old-space-size=2048'
+            NODE_OPTIONS: '--max-old-space-size=8192'
         },
 
         // 日志配置
@@ -115,7 +115,7 @@ module.exports = {
         // Node.js参数
         node_args: [
             '--expose-gc',               // 暴露垃圾回收
-            '--max-old-space-size=2048'  // 最大堆内存
+            '--max-old-space-size=8192'  // 最大堆内存
         ]
     }]
 };

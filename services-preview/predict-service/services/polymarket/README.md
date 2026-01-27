@@ -82,6 +82,9 @@ LOG_LEVEL=info
 | `CSV_MARKET_MAX_ACTIVE` | `2000` | 活跃市场最大扫描量（用于补全链接） |
 | `CSV_MARKET_MAX_CLOSED` | `1000` | 已关闭市场最大扫描量 |
 | `CSV_INCLUDE_CLOSED` | `false` | 是否扫描已关闭市场 |
+| `CSV_TRANSLATE` | `true` | 是否强制输出中文市场名（命中缓存优先，缺失时走代理翻译） |
+| `CSV_TRANSLATE_MAX` | `120` | 单次 CSV 最多翻译的市场名数量 |
+| `CSV_TRANSLATE_CACHE_FILE` | `data/translation-cache.json` | 翻译缓存路径 |
 
 ### 步骤5：测试
 

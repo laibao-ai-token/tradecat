@@ -5,7 +5,7 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const http = require('http');
 const https = require('https');
 
-const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:9910';
+const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:7890';
 const agent = new HttpsProxyAgent(proxy);
 
 // 覆盖全局 agent

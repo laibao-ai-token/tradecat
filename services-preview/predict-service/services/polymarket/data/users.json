@@ -57,8 +57,8 @@
     "displayMode": "detailed",
     "lang": "zh-CN",
     "registeredAt": 1768729272015,
-    "lastActive": 1768747090991,
-    "visitCount": 11,
+    "lastActive": 1769492223961,
+    "visitCount": 18,
     "username": "desci0",
     "firstName": "123olp",
     "lastName": null
@@ -125,6 +125,134 @@
     "visitCount": 3,
     "username": "kakaomame",
     "firstName": "ルパン男性",
+    "lastName": null
+  },
+  {
+    "chatId": 7259550047,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769481083260,
+    "lastActive": 1769481109807,
+    "visitCount": 3,
+    "username": "XIXIXIUP",
+    "firstName": "XX",
+    "lastName": "XX"
+  },
+  {
+    "chatId": 5616350489,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769481085701,
+    "lastActive": 1769481090820,
+    "visitCount": 2,
+    "username": "Funnyskr",
+    "firstName": "oXfunny",
+    "lastName": null
+  },
+  {
+    "chatId": 5908081338,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769487485939,
+    "lastActive": 1769487485939,
+    "visitCount": 1,
+    "username": "AnThing01",
+    "firstName": "小何一定行 #FF",
+    "lastName": null
+  },
+  {
+    "chatId": 7108879799,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769492816558,
+    "lastActive": 1769492816558,
+    "visitCount": 1,
+    "username": "NEIROBSC1",
+    "firstName": "NEIROBSC",
     "lastName": null
   }
 ]

@@ -2,7 +2,7 @@
 - 任务范围：live-signal-monitor.js 实时订阅解析
 - 关键改动：新增 normalizeEvent，按 event_type 对象数组逐条处理；修正 WS 消息解析错误日志
 - 涉及文件：live-signal-monitor.js
-- 验证：GLOBAL_AGENT_HTTP_PROXY=http://127.0.0.1:9910 timeout 12s node live-signal-monitor.js（收到流动性/订单簿信号，消息计数增长）
+- 验证：GLOBAL_AGENT_HTTP_PROXY=http://127.0.0.1:7890 timeout 12s node live-signal-monitor.js（收到流动性/订单簿信号，消息计数增长）
 - 遗留/下一步：完善其他信号阈值与长期运行观察 TODO
 2025-12-25T02:25:52+08:00 新功能文档同步与SDK格式适配
 - 任务范围：记录新增信号模块、SDK 消息格式兼容

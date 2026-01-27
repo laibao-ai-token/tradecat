@@ -15,7 +15,8 @@ function getProxyConfig() {
         || process.env.https_proxy
         || process.env.HTTP_PROXY
         || process.env.http_proxy
-        || process.env.PROXY;
+        || process.env.PROXY
+        || 'http://127.0.0.1:7890';
 
     if (!proxy) {
         console.log('⚠️  未配置代理,可能无法访问 Telegram API');

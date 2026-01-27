@@ -10,6 +10,11 @@ const dotenvPath = path.join(projectRoot, 'config', '.env');
 
 // 全局代理注入 - 必须在最开头
 require('dotenv').config({ path: dotenvPath, override: true });
+const defaultProxy = 'http://127.0.0.1:7890';
+if (!process.env.HTTP_PROXY && !process.env.HTTPS_PROXY && !process.env.GLOBAL_AGENT_HTTP_PROXY && !process.env.GLOBAL_AGENT_HTTPS_PROXY) {
+    process.env.HTTP_PROXY = defaultProxy;
+    process.env.HTTPS_PROXY = defaultProxy;
+}
 if (process.env.HTTP_PROXY && !process.env.GLOBAL_AGENT_HTTP_PROXY) {
     process.env.GLOBAL_AGENT_HTTP_PROXY = process.env.HTTP_PROXY;
 }

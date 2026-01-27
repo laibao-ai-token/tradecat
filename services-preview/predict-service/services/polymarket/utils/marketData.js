@@ -7,7 +7,9 @@
 const fetch = require('node-fetch');
 const { getFetchProxyOptions } = require('./proxyAgent');
 
-const REQUEST_TIMEOUT_MS = 3000;
+const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_MAX_RETRIES = 2;
+const REQUEST_RETRY_BACKOFF_MS = 300;
 const CACHE_TTL_MS = 30 * 60 * 1000;  // 30分钟
 const CACHE_MAX_SIZE = 200000;         // 20万条
 
@@ -85,45 +87,60 @@ class MarketDataFetcher {
      */
     async fetchMarketData(conditionId) {
         const url = `https://clob.polymarket.com/markets/${conditionId}`;
-        try {
-            const response = await fetch(url, {
-                headers: { 'Accept': 'application/json' },
-                ...getFetchProxyOptions(),
-                timeout: this.requestTimeoutMs
-            });
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const fetchOptions = {
+            headers: { 'Accept': 'application/json' },
+            ...getFetchProxyOptions(),
+            timeout: this.requestTimeoutMs
+        };
 
-            if (!response.ok) {
-                console.warn(`⚠️ CLOB API返回 ${response.status}: ${conditionId.substring(0, 12)}...`);
-                return null;
+        for (let attempt = 0; attempt <= REQUEST_MAX_RETRIES; attempt++) {
+            try {
+                const response = await fetch(url, fetchOptions);
+
+                if (!response.ok) {
+                    const shouldRetry = response.status === 429 || response.status >= 500;
+                    if (shouldRetry && attempt < REQUEST_MAX_RETRIES) {
+                        await wait(REQUEST_RETRY_BACKOFF_MS * (attempt + 1));
+                        continue;
+                    }
+                    console.warn(`⚠️ CLOB API返回 ${response.status}: ${conditionId.substring(0, 12)}...`);
+                    return null;
+                }
+
+                const marketData = await response.json();
+
+                // 容量限制：超过时清理最旧的 10%
+                if (this.cache.size >= this.cacheMaxSize) {
+                    const toDelete = Math.floor(this.cacheMaxSize * 0.1);
+                    const keys = Array.from(this.cache.keys()).slice(0, toDelete);
+                    keys.forEach(k => this.cache.delete(k));
+                }
+
+                // 缓存数据（注意：字段名是market_slug，不是slug）
+                this.cache.set(conditionId, {
+                    slug: marketData.market_slug,
+                    eventSlug: marketData.event_slug,
+                    question: marketData.question,
+                    description: marketData.description,
+                    clob_token_ids: marketData.clob_token_ids,
+                    fetched: Date.now()
+                });
+
+                if (process.env.DEBUG === 'true') {
+                    console.debug(`✅ 获取市场数据: ${conditionId.substring(0, 12)}... -> ${marketData.market_slug}`);
+                }
+                return marketData;
+            } catch (error) {
+                if (attempt < REQUEST_MAX_RETRIES) {
+                    await wait(REQUEST_RETRY_BACKOFF_MS * (attempt + 1));
+                    continue;
+                }
+                console.error('❌ CLOB API请求失败:', error.message);
+                throw error;
             }
-
-            const marketData = await response.json();
-
-            // 容量限制：超过时清理最旧的 10%
-            if (this.cache.size >= this.cacheMaxSize) {
-                const toDelete = Math.floor(this.cacheMaxSize * 0.1);
-                const keys = Array.from(this.cache.keys()).slice(0, toDelete);
-                keys.forEach(k => this.cache.delete(k));
-            }
-
-            // 缓存数据（注意：字段名是market_slug，不是slug）
-            this.cache.set(conditionId, {
-                slug: marketData.market_slug,
-                eventSlug: marketData.event_slug,
-                question: marketData.question,
-                description: marketData.description,
-                clob_token_ids: marketData.clob_token_ids,
-                fetched: Date.now()
-            });
-
-            if (process.env.DEBUG === 'true') {
-                console.debug(`✅ 获取市场数据: ${conditionId.substring(0, 12)}... -> ${marketData.market_slug}`);
-            }
-            return marketData;
-        } catch (error) {
-            console.error('❌ CLOB API请求失败:', error.message);
-            throw error;
         }
+        return null;
     }
 
     /**

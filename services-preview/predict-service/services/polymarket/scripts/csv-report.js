@@ -10,13 +10,18 @@ const readline = require('readline');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const fetch = require('node-fetch');
+const GoogleTranslateProxy = require('../translation/google-proxy');
 
 const projectRoot = path.resolve(__dirname, '../../../../../');
 const dotenvPath = path.join(projectRoot, 'config', '.env');
 require('dotenv').config({ path: dotenvPath, override: true });
 
 const GAMMA_API = 'https://gamma-api.polymarket.com';
-const LOG_FILE = process.argv[2] || '/root/.pm2/logs/polymarket-bot-out.log';
+const TRANSLATE_ENABLED = process.env.CSV_TRANSLATE !== 'false';
+const TRANSLATE_MAX = Number(process.env.CSV_TRANSLATE_MAX || 120);
+const TRANSLATE_CACHE_FILE = process.env.CSV_TRANSLATE_CACHE_FILE || path.join(__dirname, '../data/translation-cache.json');
+const DEFAULT_LOG_FILE = process.env.CSV_LOG_FILE || path.join(__dirname, '../logs/polymarket.log');
+const LOG_FILE = process.argv[2] || DEFAULT_LOG_FILE;
 
 const getProxyUrl = () =>
   process.env.HTTPS_PROXY
@@ -93,9 +98,9 @@ const parseLineTime = (line, state) => {
   }
 
   // 仅时间: 00:25:22
-  const timeOnlyMatch = line.match(/(^|\\s)(\\d{2}:\\d{2}:\\d{2})/);
+  const timeOnlyMatch = line.match(/(\d{2}:\d{2}:\d{2})/);
   if (timeOnlyMatch) {
-    const [h, m, s] = timeOnlyMatch[2].split(':').map(Number);
+    const [h, m, s] = timeOnlyMatch[1].split(':').map(Number);
     if (!state.currentDate) {
       state.currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     }
@@ -114,6 +119,115 @@ const parseLineTime = (line, state) => {
 
 const marketSlugs = new Map();
 const ENABLE_API_RANKINGS = process.env.CSV_ENABLE_API_RANKINGS === 'true';
+let translationCache = null;
+let translationCacheDirty = false;
+
+const normalizeKey = (text) => text.trim().toLowerCase();
+const hasChinese = (text) => /[\u4e00-\u9fff]/.test(text);
+const simplifyName = (text) => text.replace(/\d{4}-\d{2}-\d{2}/g, '').replace(/\s+/g, ' ').trim();
+
+const loadTranslationCache = () => {
+  if (translationCache) return translationCache;
+  translationCache = new Map();
+  try {
+    if (fs.existsSync(TRANSLATE_CACHE_FILE)) {
+      const raw = fs.readFileSync(TRANSLATE_CACHE_FILE, 'utf-8');
+      const data = JSON.parse(raw);
+      Object.entries(data).forEach(([key, value]) => {
+        translationCache.set(key, value);
+      });
+    }
+  } catch (e) {
+    console.error(`⚠️ 翻译缓存加载失败: ${e?.message || e}`);
+  }
+  return translationCache;
+};
+
+const saveTranslationCache = () => {
+  if (!translationCacheDirty || !translationCache) return;
+  try {
+    const obj = {};
+    translationCache.forEach((value, key) => {
+      obj[key] = value;
+    });
+    fs.writeFileSync(TRANSLATE_CACHE_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+    translationCacheDirty = false;
+  } catch (e) {
+    console.error(`⚠️ 翻译缓存写入失败: ${e?.message || e}`);
+  }
+};
+
+const getCachedTranslation = (name) => {
+  if (!name) return null;
+  const cache = loadTranslationCache();
+  const key = normalizeKey(name);
+  if (cache.has(key)) return cache.get(key);
+  const simplified = simplifyName(name);
+  if (simplified && simplified !== name) {
+    const skey = normalizeKey(simplified);
+    if (cache.has(skey)) return cache.get(skey);
+  }
+  return null;
+};
+
+const setCachedTranslation = (name, translation) => {
+  if (!name || !translation) return;
+  const cache = loadTranslationCache();
+  const key = normalizeKey(name);
+  if (!cache.has(key)) {
+    cache.set(key, translation);
+    translationCacheDirty = true;
+  }
+};
+
+const translateNames = async (names) => {
+  const result = new Map();
+  const unique = Array.from(new Set(names.filter(Boolean)));
+  const pending = [];
+
+  unique.forEach((name) => {
+    if (!name) return;
+    if (hasChinese(name)) {
+      result.set(name, name);
+      return;
+    }
+    const cached = getCachedTranslation(name);
+    if (cached) {
+      result.set(name, cached);
+      return;
+    }
+    pending.push(name);
+  });
+
+  if (!TRANSLATE_ENABLED || pending.length === 0) {
+    return result;
+  }
+
+  const translator = new GoogleTranslateProxy(getProxyUrl());
+  const limit = Math.min(pending.length, Math.max(0, TRANSLATE_MAX));
+  for (let i = 0; i < limit; i++) {
+    const name = pending[i];
+    try {
+      const translated = await translator.translate(name, 'en', 'zh-CN');
+      if (translated && translated !== name) {
+        result.set(name, translated);
+        setCachedTranslation(name, translated);
+      } else {
+        result.set(name, name);
+      }
+    } catch (e) {
+      result.set(name, name);
+    }
+  }
+
+  // 超出翻译上限的直接回退为原文
+  for (let i = limit; i < pending.length; i++) {
+    result.set(pending[i], pending[i]);
+  }
+
+  saveTranslationCache();
+  return result;
+};
 
 // 市场类别关键词
 const CATEGORY_KEYWORDS = {
@@ -204,12 +318,30 @@ async function extractData() {
   const smartMoneyByCategory = { sports: 0, crypto: 0, politics: 0, entertainment: 0, finance: 0, other: 0 };
   const signalBursts = [];
   const marketSignalTypes = new Map();
+  const seenSignals = new Set();
   let lastBurstCheck = null;
   let burstCount = 0;
   
   let lastMarketName = null;
   let lastMarketTime = null;
   const timeState = { currentDate: null, lastTimeSec: null };
+  const getSignalType = (s) => {
+    if (s.includes('大额交易')) return 'large';
+    if (s.includes('订单簿')) return 'orderbook';
+    if (s.includes('聪明钱')) return 'smart';
+    if (s.includes('新市场')) return 'newMarket';
+    if (s.includes('套利')) return 'arb';
+    return null;
+  };
+
+  if (!fs.existsSync(LOG_FILE)) {
+    console.error(`⚠️ 日志文件不存在: ${LOG_FILE}`);
+    return { 
+      arbCounts, arbProfits, largeTradeCounts, orderbookCounts, smartMoneyCounts, newMarketCounts,
+      hourlySignals, hourlyByType, buySellStats, smartMoneyOps, profitRanges, categoryStats,
+      smartMoneyByCategory, signalBursts, marketSignalTypes
+    };
+  }
   
   const rl = readline.createInterface({
     input: fs.createReadStream(LOG_FILE),
@@ -219,12 +351,33 @@ async function extractData() {
   for await (const rawLine of rl) {
     const line = stripAnsi(rawLine);
     const lineTime = parseLineTime(line, timeState);
+    
+    // 从日志中提取市场链接（尽量本地化）
+    const urlMatch = line.match(/https?:\/\/polymarket\.com\/event\/([a-z0-9-]+)/i);
+    if (urlMatch) {
+      const slug = urlMatch[1];
+      const nameMatch = line.match(/市场[:：]\s*([^,，\n]+)/);
+      const name = nameMatch ? nameMatch[1].trim() : lastMarketName;
+      if (name) rememberSlug(name, slug);
+    }
+    
+    // 🏷️ 标签行（可能无时间戳）
+    const tagMatch = line.match(/🏷️\s*(.+)$/);
+    if (tagMatch) {
+      lastMarketName = tagMatch[1].trim();
+      if (lineTime) {
+        lastMarketTime = lineTime;
+      }
+      categoryStats[categorizeMarket(lastMarketName)]++;
+      continue;
+    }
+    
     if (!lineTime || lineTime < hours24Ago || lineTime > now) {
       continue;
     }
     
     // 提取时间戳用于爆发检测
-    if (line.includes('⏱️')) {
+    if (line.includes('⏱')) {
       const tsKey = formatLocalMinute(lineTime);
       if (lastBurstCheck === tsKey) {
         burstCount++;
@@ -240,17 +393,8 @@ async function extractData() {
     // 提取小时
     const hour = lineTime.getHours();
     
-    if (hour >= 0 && line.includes('⏱️')) {
+    if (hour >= 0 && line.includes('⏱')) {
       hourlySignals[hour]++;
-    }
-    
-    // 从日志中提取市场链接（尽量本地化）
-    const urlMatch = line.match(/https?:\/\/polymarket\.com\/event\/([a-z0-9-]+)/i);
-    if (urlMatch) {
-      const slug = urlMatch[1];
-      const nameMatch = line.match(/市场[:：]\s*([^,，\n]+)/);
-      const name = nameMatch ? nameMatch[1].trim() : lastMarketName;
-      if (name) rememberSlug(name, slug);
     }
 
     // 聪明钱操作类型统计
@@ -258,8 +402,6 @@ async function extractData() {
       if (line.includes('建仓')) { smartMoneyOps.open++; buySellStats.buy++; }
       else if (line.includes('加仓')) { smartMoneyOps.add++; buySellStats.buy++; }
       else if (line.includes('清仓')) { smartMoneyOps.close++; buySellStats.sell++; }
-      
-      if (hour >= 0) hourlyByType.smart[hour]++;
     }
     
     // 套利
@@ -290,13 +432,42 @@ async function extractData() {
       if (hour >= 0) hourlySignals[hour]++;
     }
     
-    // 🏷️ 标签行
-    const tagMatch = line.match(/(\d{2}:\d{2}:\d{2}).*?🏷️\s*(.+)$/);
-    if (tagMatch) {
-      lastMarketTime = lineTime;
-      lastMarketName = tagMatch[2].trim();
-      categoryStats[categorizeMarket(lastMarketName)]++;
-      continue;
+    // ⏱️ 信号行统计（依赖前置 🏷️ 市场名）
+    if (line.includes('⏱')) {
+      const signalType = getSignalType(line);
+      if (signalType && lastMarketName) {
+        const name = lastMarketName;
+        const dedupKey = `${signalType}:${name}:${lineTime.getTime()}`;
+        if (!seenSignals.has(dedupKey)) {
+          seenSignals.add(dedupKey);
+          
+          if (!marketSignalTypes.has(name)) marketSignalTypes.set(name, new Set());
+          
+          if (signalType === 'large') {
+            largeTradeCounts.set(name, (largeTradeCounts.get(name) || 0) + 1);
+            marketSignalTypes.get(name).add('large');
+            if (hour >= 0) hourlyByType.large[hour]++;
+          } else if (signalType === 'orderbook') {
+            orderbookCounts.set(name, (orderbookCounts.get(name) || 0) + 1);
+            marketSignalTypes.get(name).add('orderbook');
+            if (hour >= 0) hourlyByType.orderbook[hour]++;
+          } else if (signalType === 'smart') {
+            smartMoneyCounts.set(name, (smartMoneyCounts.get(name) || 0) + 1);
+            marketSignalTypes.get(name).add('smart');
+            smartMoneyByCategory[categorizeMarket(name)]++;
+            if (hour >= 0) hourlyByType.smart[hour]++;
+          } else if (signalType === 'newMarket') {
+            newMarketCounts.set(name, (newMarketCounts.get(name) || 0) + 1);
+          } else if (signalType === 'arb') {
+            arbCounts.set(name, (arbCounts.get(name) || 0) + 1);
+            marketSignalTypes.get(name).add('arb');
+            if (hour >= 0) hourlyByType.arb[hour]++;
+          }
+        }
+      }
+      if (lineTime) {
+        lastMarketTime = lineTime;
+      }
     }
     
     // MessageUpdater
@@ -305,6 +476,20 @@ async function extractData() {
       const type = msgMatch[2];
       if (Math.abs(lineTime.getTime() - lastMarketTime.getTime()) / 1000 <= 2) {
         const name = lastMarketName;
+        const typeMap = {
+          largeTrade: 'large',
+          orderbook: 'orderbook',
+          smartMoney: 'smart',
+          newMarket: 'newMarket'
+        };
+        const mappedType = typeMap[type] || null;
+        const dedupKey = mappedType ? `${mappedType}:${name}:${lineTime.getTime()}` : null;
+        if (dedupKey && seenSignals.has(dedupKey)) {
+          continue;
+        }
+        if (dedupKey) {
+          seenSignals.add(dedupKey);
+        }
         
         if (!marketSignalTypes.has(name)) marketSignalTypes.set(name, new Set());
         
@@ -366,27 +551,36 @@ async function main() {
   });
   const combinedTop = sortTop(combined);
   
+  const nameSet = new Set();
+  [arbTop, largeTop, obTop, smartTop, newMarketTop, combinedTop].forEach((list) => {
+    list.forEach(([n]) => nameSet.add(n));
+  });
+  const highFreqArb = [...data.arbCounts.entries()].filter(([, c]) => c >= 10).sort((a, b) => b[1] - a[1]);
+  highFreqArb.forEach(([n]) => nameSet.add(n));
+  const translatedNames = await translateNames(Array.from(nameSet));
+  const displayName = (name) => translatedNames.get(name) || name;
+
   let csv = '';
   
   // 1. 套利信号
   csv += '# 套利信号 Top 15\n排名,市场名称,出现次数,最高利润%,链接\n';
-  arbTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(n)},${c},${data.arbProfits.get(n)||''},${link(n)}\n`);
+  arbTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(displayName(n))},${c},${data.arbProfits.get(n)||''},${link(n)}\n`);
   
   // 2. 大额交易
   csv += '\n# 大额交易 Top 15\n排名,市场名称,交易次数,链接\n';
-  largeTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(n)},${c},${link(n)}\n`);
+  largeTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(displayName(n))},${c},${link(n)}\n`);
   
   // 3. 订单簿失衡
   csv += '\n# 订单簿失衡 Top 15\n排名,市场名称,失衡次数,链接\n';
-  obTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(n)},${c},${link(n)}\n`);
+  obTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(displayName(n))},${c},${link(n)}\n`);
   
   // 4. 聪明钱
   csv += '\n# 聪明钱 Top 15\n排名,市场名称,信号次数,链接\n';
-  smartTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(n)},${c},${link(n)}\n`);
+  smartTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(displayName(n))},${c},${link(n)}\n`);
   
   // 5. 新市场 Top 15
   csv += '\n# 新市场 Top 15\n排名,市场名称,出现次数,链接\n';
-  newMarketTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(n)},${c},${link(n)}\n`);
+  newMarketTop.forEach(([n, c], i) => csv += `${i+1},${csvEscape(displayName(n))},${c},${link(n)}\n`);
   
   // 6. 综合热门市场 Top 15
   csv += '\n# 综合热门市场 Top 15\n排名,市场名称,套利,大额,订单簿,聪明钱,总计,链接\n';
@@ -395,7 +589,7 @@ async function main() {
     const large = data.largeTradeCounts.get(n) || 0;
     const ob = data.orderbookCounts.get(n) || 0;
     const smart = data.smartMoneyCounts.get(n) || 0;
-    csv += `${i+1},${csvEscape(n)},${arb},${large},${ob},${smart},${total},${link(n)}\n`;
+    csv += `${i+1},${csvEscape(displayName(n))},${arb},${large},${ob},${smart},${total},${link(n)}\n`;
   });
   
   // 7. 活跃时段分布 (本地时间)
@@ -452,9 +646,8 @@ async function main() {
   
   // 13. 高频套利市场 (10次以上)
   csv += '\n# 高频套利市场 (10次以上)\n排名,市场名称,出现次数,最高利润%,链接\n';
-  const highFreqArb = [...data.arbCounts.entries()].filter(([, c]) => c >= 10).sort((a, b) => b[1] - a[1]);
   highFreqArb.forEach(([n, c], i) => {
-    csv += `${i+1},${csvEscape(n)},${c},${data.arbProfits.get(n)||''},${link(n)}\n`;
+    csv += `${i+1},${csvEscape(displayName(n))},${c},${data.arbProfits.get(n)||''},${link(n)}\n`;
   });
   
   // 14. 聪明钱偏好类别
@@ -503,6 +696,12 @@ async function main() {
       fetchJson(`${GAMMA_API}/markets?limit=20&order=liquidity&ascending=false&active=true`).catch(() => [])
     ]);
 
+    const apiNames = []
+      .concat(byVolume.map(m => m.question).filter(Boolean))
+      .concat(byLiquidity.map(m => m.question).filter(Boolean));
+    const apiTranslated = await translateNames(apiNames);
+    apiTranslated.forEach((value, key) => translatedNames.set(key, value));
+
     const getLink = (m) => {
       const slug = m.events?.[0]?.slug || m.slug;
       if (m.question && slug) {
@@ -515,13 +714,13 @@ async function main() {
     csv += '\n# 24h成交量 Top 15\n排名,市场名称,24h成交量,价格,链接\n';
     byVolume.slice(0, 15).forEach((m, i) => {
       const price = parseOutcomePrice(m.outcomePrices);
-      csv += `${i+1},${csvEscape(m.question)},${Math.round(m.volume24hr || 0)},${price},${getLink(m)}\n`;
+      csv += `${i+1},${csvEscape(displayName(m.question))},${Math.round(m.volume24hr || 0)},${price},${getLink(m)}\n`;
     });
 
     // 19. 流动性 Top 15
     csv += '\n# 流动性 Top 15\n排名,市场名称,流动性,24h成交量,链接\n';
     byLiquidity.slice(0, 15).forEach((m, i) => {
-      csv += `${i+1},${csvEscape(m.question)},${Math.round(m.liquidity || 0)},${Math.round(m.volume24hr || 0)},${getLink(m)}\n`;
+      csv += `${i+1},${csvEscape(displayName(m.question))},${Math.round(m.liquidity || 0)},${Math.round(m.volume24hr || 0)},${getLink(m)}\n`;
     });
 
     // 20. 24h涨幅 Top 15
@@ -530,7 +729,7 @@ async function main() {
     csv += '\n# 24h涨幅 Top 15\n排名,市场名称,涨幅%,当前价格,链接\n';
     gainers.slice(0, 15).forEach((m, i) => {
       const price = parseOutcomePrice(m.outcomePrices);
-      csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
+      csv += `${i+1},${csvEscape(displayName(m.question))},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
     });
 
     // 21. 24h跌幅 Top 15
@@ -538,7 +737,7 @@ async function main() {
     csv += '\n# 24h跌幅 Top 15\n排名,市场名称,跌幅%,当前价格,链接\n';
     losers.slice(0, 15).forEach((m, i) => {
       const price = parseOutcomePrice(m.outcomePrices);
-      csv += `${i+1},${csvEscape(m.question)},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
+      csv += `${i+1},${csvEscape(displayName(m.question))},${(m.oneDayPriceChange * 100).toFixed(1)},${price},${getLink(m)}\n`;
     });
   } else {
     console.error('ℹ️ 已跳过 API 排行数据（CSV_ENABLE_API_RANKINGS 未启用）');
