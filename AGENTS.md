@@ -198,7 +198,7 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 - **配置统一**：所有配置集中在 `config/.env`，各服务共用
 - **数据流向**：`data-service → TimescaleDB → trading-service → SQLite → telegram/ai/signal/vis`
 
-### 4.2 服务清单（13 个）
+### 4.2 服务清单（14 个）
 
 | 服务 | 位置 | 职责 | 入口 |
 |:---|:---|:---|:---|
@@ -215,6 +215,7 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 | predict-service | services-preview/ | 预测市场（Node.js） | `services/*/` |
 | fate-service | services-preview/ | 命理服务（端口 8001） | `services/telegram-service/` |
 | nofx-dev | services-preview/ | NOFX AI 交易系统（预览） | `main.go` |
+| datacat-service | services-preview/ | 数据采集基建（分层预览） | `src/__main__.py` |
 
 ### 4.3 模块边界
 
@@ -347,8 +348,9 @@ tradecat/
 │   ├── ai-service/                 # AI 分析
 │   └── signal-service/             # 信号检测（129条规则）
 │
-├── services-preview/               # 预览版微服务 (6个)
+├── services-preview/               # 预览版微服务 (7个)
 │   ├── api-service/                # REST API 服务（端口 8000）
+│   ├── datacat-service/            # 数据采集基建（分层预览）
 │   ├── markets-service/            # 全市场数据采集
 │   ├── vis-service/                # 可视化渲染（端口 8087）
 │   ├── order-service/              # 交易执行
@@ -541,6 +543,7 @@ sudo cp /tmp/tradecat-logrotate.conf /etc/logrotate.d/tradecat
 # - 检查间隔：30 秒
 # - 最大重试：5 次/5分钟窗口
 # - 指数退避：10s → 20s → 40s → ... → 300s (最大)
+# - telegram-service 定时重启：每 1 小时一次（临时止血）
 # - 超过上限后暂停重启，告警写入 alerts.log
 ```
 
