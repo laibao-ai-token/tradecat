@@ -46,6 +46,10 @@ datacat-service/
 ├── requirements.lock.txt
 ├── scripts/
 │   └── start.sh
+├── tasks/                    # 重构计划与任务清单
+│   ├── PLAN.md
+│   ├── TODO.md
+│   └── task-*.md
 └── src/
     ├── __main__.py
     ├── config.py
@@ -76,3 +80,4 @@ datacat-service/
 ## 7. 变更日志
 
 - 2026-01-28: 初始化 datacat-service 严格分层目录与文档模板。
+- 2026-01-28: 新增重构计划与任务清单目录。

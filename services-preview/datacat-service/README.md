@@ -25,6 +25,10 @@ datacat-service/
 ├── requirements.lock.txt
 ├── scripts/
 │   └── start.sh
+├── tasks/
+│   ├── PLAN.md
+│   ├── TODO.md
+│   └── task-*.md
 └── src/
     ├── __main__.py
     ├── config.py
