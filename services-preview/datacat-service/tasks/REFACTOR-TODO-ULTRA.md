@@ -108,6 +108,27 @@
 - [ ] collectors/README：规范与模板更新
 - [ ] 任务变更日志记录
 
+## H. 拆分偏差修复（必须完成）
+
+### H1. WS 文件去回填残留
+- [ ] 扫描 `.../realtime/push/ws/klines/cryptofeed.py` 内是否存在 ZIP/REST 回填逻辑
+- [ ] 删除 BINANCE_DATA_URL / ZipBackfiller / RestBackfiller / GapScanner 相关代码
+- [ ] 仅保留 WS 订阅、缓冲、批量写入逻辑
+- [ ] 若需要缺口触发，保留“触发钩子”而非回填实现
+
+### H2. REST/ZIP 完全解耦
+- [ ] 扫描 `.../backfill/pull/rest/klines/ccxt.py` 是否残留 ZipBackfiller/MetricsRestBackfiller/DataBackfiller
+- [ ] 扫描 `.../backfill/pull/rest/metrics/http.py` 是否残留 ZIP 逻辑
+- [ ] 扫描 `.../backfill/pull/file/klines/http_zip.py` 是否残留 REST 逻辑
+- [ ] 扫描 `.../backfill/pull/file/metrics/http_zip.py` 是否残留 REST 逻辑
+- [ ] 确保 ZIP 文件内仅包含“下载/解压/解析/写库”
+- [ ] 确保 REST 文件内仅包含“REST 分页/拉取/写库”
+
+### H3. 入口调度完整覆盖
+- [ ] `__main__.py` 调度项包含 WS + REST metrics + REST backfill + ZIP backfill
+- [ ] Alpha 采集器加入入口或明确为手动运行（需在 README 标注）
+- [ ] 入口命令与日志文件名对齐新路径
+
 ---
 
 ## 完成标准（必须全部满足）
