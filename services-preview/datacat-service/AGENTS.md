@@ -74,6 +74,7 @@ datacat-service/
 - 禁止调整层级顺序。
 - 新增只允许扩展“取值集合”。
 - 任意结构变更必须同步更新 `README.md` 与 `src/collectors/README.md`。
+- 配置优先级固定为：DATACAT_* > 原变量 > 默认值。
 
 ---
 

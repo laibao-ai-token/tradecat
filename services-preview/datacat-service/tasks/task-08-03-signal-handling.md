@@ -4,6 +4,10 @@
 
 - SIGINT/SIGTERM 行为一致。
 
+## 执行记录（已完成）
+
+- 已在 `src/__main__.py` 保持 signal 处理逻辑。
+
 ## 验收
 
 - 退出正常。

@@ -62,7 +62,20 @@ src/collectors/<source>/<market>/<scope>/<mode>/<direction>/<channel>/<type>/<gr
 
 ---
 
-## 5. 规范要求（硬性）
+## 5. 配置优先级（DATACAT_* 优先）
+
+```
+DATACAT_* > 原服务环境变量 > 默认值
+```
+
+示例：
+- `DATACAT_DATABASE_URL` 覆盖 `DATABASE_URL`
+- `DATACAT_LOG_DIR` 覆盖 `DATA_SERVICE_LOG_DIR`
+- `DATACAT_DATA_DIR` 覆盖 `DATA_SERVICE_DATA_DIR`
+
+---
+
+## 6. 规范要求（硬性）
 
 - 层级顺序不可改动。
 - 不允许裁剪任何层级。

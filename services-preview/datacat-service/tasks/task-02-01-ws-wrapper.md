@@ -4,6 +4,12 @@
 
 - 在新 collector.py 中以 wrapper 方式调用旧 WSCollector。
 
+## 执行记录（已完成）
+
+- 已在目标路径创建 wrapper：
+  `services-preview/datacat-service/src/collectors/binance/um_futures/all/realtime/push/ws/klines/interval_1m/cryptofeed/collector.py`
+- 通过 `_legacy_src()` 定位旧服务 `services/data-service/src` 并导入 `collectors.ws.WSCollector`
+
 ## 验收
 
 - 可运行且行为等价。
