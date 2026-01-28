@@ -1,6 +1,18 @@
 """Alpha 代币列表采集（Binance）"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# -------------------- 路径修正：避免 http.py 影子 --------------------
+_THIS_DIR = Path(__file__).resolve().parent
+if sys.path and sys.path[0] == str(_THIS_DIR):
+    sys.path.pop(0)
+for p in _THIS_DIR.parents:
+    if (p / 'config.py').exists() and p.name == 'src':
+        sys.path.insert(0, str(p))
+        break
+
 import asyncio
 import json
 import logging
@@ -9,7 +21,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import aiohttp

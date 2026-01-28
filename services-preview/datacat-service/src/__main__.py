@@ -112,7 +112,7 @@ def main() -> None:
         sched.add("ws", ws_cmd)
     if args.all or args.metrics:
         sched.add("metrics", metrics_cmd)
-    if args.alpha:
+    if args.all or args.alpha:
         sched.add("alpha", alpha_cmd)
     if args.backfill:
         sched.add("backfill", [py, "__main__.py", "--backfill"])

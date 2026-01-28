@@ -7,22 +7,29 @@
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# -------------------- 路径修正：避免 http.py 影子 --------------------
+_THIS_DIR = Path(__file__).resolve().parent
+if sys.path and sys.path[0] == str(_THIS_DIR):
+    sys.path.pop(0)
+for p in _THIS_DIR.parents:
+    if (p / 'config.py').exists() and p.name == 'src':
+        sys.path.insert(0, str(p))
+        break
+
 import asyncio
-import csv
 import json
 import logging
 import os
-import sys
 import threading
 import time
-import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Set
+from typing import Dict, Iterator, List, Optional, Sequence
 
 import requests
 from psycopg import sql
@@ -42,15 +49,10 @@ class Metrics:
     requests_total: int = 0
     requests_failed: int = 0
     rows_written: int = 0
-    gaps_found: int = 0
-    gaps_filled: int = 0
     zip_downloads: int = 0
 
     last_collect_duration: float = 0
-    last_backfill_duration: float = 0
-
     last_collect_time: float = 0
-    last_backfill_time: float = 0
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -68,13 +70,9 @@ class Metrics:
                 "requests_total": self.requests_total,
                 "requests_failed": self.requests_failed,
                 "rows_written": self.rows_written,
-                "gaps_found": self.gaps_found,
-                "gaps_filled": self.gaps_filled,
                 "zip_downloads": self.zip_downloads,
                 "last_collect_duration": self.last_collect_duration,
-                "last_backfill_duration": self.last_backfill_duration,
                 "last_collect_time": self.last_collect_time,
-                "last_backfill_time": self.last_backfill_time,
             }
 
     def __str__(self) -> str:
@@ -622,18 +620,6 @@ class TimescaleAdapter:
                 cur.execute(f"SELECT symbol, COUNT(*) FROM {table} WHERE exchange = %s AND symbol = ANY(%s) GROUP BY symbol", (exchange, list(symbols)))
                 return {r[0]: r[1] for r in cur.fetchall()}
 
-    def detect_gaps(self, exchange: str, interval: str, symbols: Sequence[str], lookback_min: int = 10080, threshold_sec: int = 120, limit: int = 50) -> List[tuple]:
-        table = f"{self.schema}.candles_{normalize_interval(interval)}"
-        sql_str = f"""
-            WITH o AS (SELECT symbol, bucket_ts, LEAD(bucket_ts) OVER (PARTITION BY symbol ORDER BY bucket_ts) AS next_ts
-                       FROM {table} WHERE exchange = %(ex)s AND symbol = ANY(%(sym)s) AND bucket_ts >= NOW() - INTERVAL '{lookback_min} minutes')
-            SELECT symbol, bucket_ts, next_ts FROM o WHERE next_ts IS NOT NULL AND next_ts - bucket_ts >= INTERVAL '{threshold_sec} seconds' ORDER BY bucket_ts LIMIT %(lim)s
-        """
-        with self.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql_str, {"ex": exchange, "sym": list(symbols), "lim": limit})
-                return cur.fetchall()
-
     def query(self, exchange: str, symbol: str, interval: str, start: Optional[datetime] = None, end: Optional[datetime] = None, limit: int = 1000) -> List[dict]:
         table = f"{self.schema}.candles_{normalize_interval(interval)}"
         conds, params = ["exchange = %s", "symbol = %s"], [exchange, symbol]
@@ -650,266 +636,6 @@ class TimescaleAdapter:
                 return cur.fetchall()
 
 
-# ==================== 回填相关（K线） ====================
-
-BINANCE_DATA_URL = "https://data.binance.vision"
-EXPECTED_1M_PER_DAY = 1440
-EXPECTED_5M_PER_DAY = 288
-
-
-@dataclass
-class GapInfo:
-    """缺口信息"""
-    symbol: str
-    date: date
-    expected: int
-    actual: int
-    missing: int = field(init=False)
-
-    def __post_init__(self):
-        self.missing = self.expected - self.actual
-
-
-class GapScanner:
-    """精确缺口扫描器"""
-
-    def __init__(self, ts: TimescaleAdapter):
-        self._ts = ts
-
-    def scan_klines(self, symbols: Sequence[str], start: date, end: date,
-                    interval: str = "1m", threshold: float = 0.95) -> Dict[str, List[GapInfo]]:
-        expected = EXPECTED_1M_PER_DAY if interval == "1m" else int(EXPECTED_1M_PER_DAY / INTERVAL_TO_MS.get(interval, 60000) * 60000)
-        min_count = int(expected * threshold)
-
-        table = f"{self._ts.schema}.candles_{interval}"
-        sql_str = f"""
-            SELECT symbol, DATE(bucket_ts AT TIME ZONE 'UTC') AS d, COUNT(*) AS c
-            FROM {table}
-            WHERE exchange = %s AND symbol = ANY(%s)
-              AND bucket_ts >= %s AND bucket_ts < %s
-            GROUP BY symbol, DATE(bucket_ts AT TIME ZONE 'UTC')
-        """
-        start_ts = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
-        end_ts = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-
-        counts: Dict[tuple, int] = {}
-        with self._ts.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql_str, (settings.db_exchange, list(symbols), start_ts, end_ts))
-                for sym, d, c in cur.fetchall():
-                    counts[(sym, d)] = c
-
-        gaps: Dict[str, List[GapInfo]] = {}
-        for sym in symbols:
-            sym_gaps = []
-            for i in range((end - start).days + 1):
-                d = start + timedelta(days=i)
-                actual = counts.get((sym, d), 0)
-                if actual < min_count:
-                    sym_gaps.append(GapInfo(sym, d, expected, actual))
-            if sym_gaps:
-                gaps[sym] = sym_gaps
-        return gaps
-
-
-class RestBackfiller:
-    """REST API 分页补齐 (用于小缺口) - 并行版"""
-
-    def __init__(self, ts: TimescaleAdapter, workers: int = 8):
-        self._ts = ts
-        self._workers = workers
-
-    def fill_kline_gap(self, symbol: str, gap: GapInfo, interval: str = "1m") -> int:
-        start_ts = datetime.combine(gap.date, datetime.min.time(), tzinfo=timezone.utc)
-        end_ts = datetime.combine(gap.date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-        since_ms = int(start_ts.timestamp() * 1000)
-        target_ms = int(end_ts.timestamp() * 1000)
-
-        all_rows = []
-        max_iterations = 100
-
-        for _ in range(max_iterations):
-            candles = fetch_ohlcv(settings.ccxt_exchange, symbol, interval, since_ms, 1000)
-            if not candles:
-                break
-
-            rows = [r for r in to_rows(settings.db_exchange, symbol, candles, "ccxt_gap")
-                    if start_ts <= r["bucket_ts"] < end_ts]
-            all_rows.extend(rows)
-
-            last_ms = int(candles[-1][0])
-            if last_ms == since_ms or last_ms >= target_ms:
-                break
-            since_ms = last_ms + INTERVAL_TO_MS.get(interval, 60000)
-
-        if all_rows:
-            self._ts.upsert_candles(interval, all_rows)
-        return len(all_rows)
-
-    def fill_gaps(self, gaps: Dict[str, List[GapInfo]], interval: str = "1m") -> int:
-        tasks = [(sym, gap, interval) for sym, sym_gaps in gaps.items() for gap in sym_gaps]
-        if not tasks:
-            return 0
-
-        total = 0
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            futures = {pool.submit(self.fill_kline_gap, sym, gap, iv): (sym, gap.date) for sym, gap, iv in tasks}
-            for future in as_completed(futures):
-                sym, d = futures[future]
-                try:
-                    n = future.result()
-                    if n > 0:
-                        logger.info("[%s] %s REST补齐 %d 条", sym, d, n)
-                        total += n
-                except Exception as e:
-                    logger.warning("[%s] %s REST失败: %s", sym, d, e)
-        return total
-
-
-class ZipBackfiller:
-    """Binance Vision ZIP 补齐 - 智能颗粒度 + 代理重试"""
-
-    MAX_CACHE_DAYS = 7
-
-    def __init__(self, ts: TimescaleAdapter, workers: int = 8):
-        self._ts = ts
-        self.workers = workers
-        self._kline_dir = settings.data_dir / "downloads" / "klines"
-        self._metrics_dir = settings.data_dir / "downloads" / "metrics"
-        self._kline_dir.mkdir(parents=True, exist_ok=True)
-        self._metrics_dir.mkdir(parents=True, exist_ok=True)
-        self._proxies = {"http": settings.http_proxy, "https": settings.http_proxy} if settings.http_proxy else {}
-        self._fallback_proxies = self._proxies
-
-    def cleanup_old_files(self, max_age_days: int = None) -> int:
-        max_age = max_age_days or self.MAX_CACHE_DAYS
-        cutoff = time.time() - max_age * 86400
-        removed = 0
-        for d in [self._kline_dir, self._metrics_dir]:
-            for f in d.glob("*.zip"):
-                try:
-                    if f.stat().st_mtime < cutoff:
-                        f.unlink()
-                        removed += 1
-                except OSError:
-                    pass
-        if removed:
-            logger.info("清理 %d 个过期 ZIP 文件", removed)
-        return removed
-
-    def _download_with_retry(self, url: str, path: Path) -> bool:
-        acquire(1)
-        try:
-            for attempt, proxies in enumerate([self._proxies, self._fallback_proxies]):
-                try:
-                    r = requests.get(url, proxies=proxies, timeout=60)
-                    if r.status_code == 404:
-                        return False
-                    if r.status_code == 429:
-                        retry_after = int(r.headers.get("Retry-After", 60))
-                        set_ban(time.time() + retry_after)
-                        return False
-                    if r.status_code == 418:
-                        retry_after = int(r.headers.get("Retry-After", 0))
-                        ban_time = parse_ban(r.text) if not retry_after else time.time() + retry_after
-                        set_ban(ban_time if ban_time > time.time() else time.time() + 120)
-                        return False
-                    r.raise_for_status()
-                    path.write_bytes(r.content)
-                    metrics.inc("zip_downloads")
-                    return True
-                except Exception as e:
-                    if attempt == 0:
-                        logger.debug("直连失败，尝试代理: %s", url)
-                    else:
-                        logger.debug("代理也失败 %s: %s", url, e)
-            return False
-        finally:
-            release()
-
-    def fill_kline_gaps(self, gaps: Dict[str, List[GapInfo]], interval: str = "1m") -> int:
-        if not gaps:
-            return 0
-
-        month_groups: Dict[tuple, List[date]] = {}
-        for sym, sym_gaps in gaps.items():
-            for gap in sym_gaps:
-                key = (sym, gap.date.strftime("%Y-%m"))
-                month_groups.setdefault(key, []).append(gap.date)
-
-        tasks = [(sym, month, dates, interval) for (sym, month), dates in month_groups.items()]
-        logger.info("K线 ZIP 补齐: %d 个月度任务 (原 %d 个日任务)", len(tasks), sum(len(g) for g in gaps.values()))
-
-        total = 0
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {pool.submit(self._download_kline_month, sym, month, dates, iv): (sym, month) for sym, month, dates, iv in tasks}
-            for future in as_completed(futures):
-                sym, month = futures[future]
-                try:
-                    n = future.result()
-                    if n > 0:
-                        logger.info("[%s] %s ZIP导入 %d 条", sym, month, n)
-                        total += n
-                except Exception as e:
-                    logger.warning("[%s] %s 失败: %s", sym, month, e)
-
-        return total
-
-    def _download_kline_month(self, symbol: str, month: str, dates: List[date], interval: str) -> int:
-        sym = symbol.upper()
-        url = f"{BINANCE_DATA_URL}/data/futures/um/daily/klines/{sym}/{interval}/{sym}-{interval}-{month}.zip"
-        path = self._kline_dir / f"{sym}-{interval}-{month}.zip"
-
-        if not path.exists():
-            if not self._download_with_retry(url, path):
-                return 0
-
-        return self._import_kline_zip(path, sym, dates, interval)
-
-    def _import_kline_zip(self, path: Path, symbol: str, dates: List[date], interval: str) -> int:
-        rows = []
-        try:
-            with zipfile.ZipFile(path) as zf:
-                for name in zf.namelist():
-                    if not name.endswith(".csv"):
-                        continue
-                    with zf.open(name) as f:
-                        for row in csv.reader(line.decode() for line in f):
-                            if len(row) < 6:
-                                continue
-                            ts = int(row[0])
-                            dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                            if dates and dt.date() not in dates:
-                                continue
-                            rows.append({
-                                "exchange": settings.db_exchange,
-                                "symbol": symbol,
-                                "bucket_ts": dt,
-                                "open": float(row[1]),
-                                "high": float(row[2]),
-                                "low": float(row[3]),
-                                "close": float(row[4]),
-                                "volume": float(row[5]),
-                                "quote_volume": float(row[7]) if len(row) > 7 and row[7] else None,
-                                "trade_count": int(row[8]) if len(row) > 8 and row[8] else None,
-                                "is_closed": True,
-                                "source": "binance_zip",
-                                "taker_buy_volume": float(row[9]) if len(row) > 9 and row[9] else None,
-                                "taker_buy_quote_volume": float(row[10]) if len(row) > 10 and row[10] else None,
-                            })
-        except Exception as e:
-            logger.error("解析失败 %s: %s", path, e)
-            return 0
-
-        if rows:
-            n = self._ts.upsert_candles(interval, rows)
-            metrics.inc("rows_written", n)
-            return n
-        return 0
-
-
-# ==================== WS 采集器 ====================
-
 class WSCollector:
     """WebSocket 1m K线采集器 - 时间窗口批量写入"""
 
@@ -919,8 +645,6 @@ class WSCollector:
     def __init__(self):
         self._ts = TimescaleAdapter()
         self._symbols = self._load_symbols()
-        self._gap_stop = threading.Event()
-        self._gap_thread: Optional[threading.Thread] = None
 
         self._buffer: List[dict] = []
         self._buffer_lock = asyncio.Lock()
@@ -985,14 +709,6 @@ class WSCollector:
             logger.error("批量写入失败: %s", e)
 
     def run(self) -> None:
-        if self._symbols:
-            threading.Thread(target=self._run_backfill, args=(1,), daemon=True).start()
-
-        if settings.ws_gap_interval > 0:
-            self._gap_stop.clear()
-            self._gap_thread = threading.Thread(target=self._gap_loop, daemon=True)
-            self._gap_thread.start()
-
         ws = BinanceWSAdapter(http_proxy=settings.http_proxy)
         ws.subscribe(list(self._symbols.keys()), self._on_candle_sync)
 
@@ -1000,7 +716,6 @@ class WSCollector:
             ws.run()
         finally:
             asyncio.run(self._final_flush())
-            self._gap_stop.set()
             self._ts.close()
 
     def _on_candle_sync(self, e: CandleEvent) -> None:
@@ -1016,69 +731,6 @@ class WSCollector:
     async def _final_flush(self) -> None:
         async with self._buffer_lock:
             await self._flush()
-
-    def _gap_loop(self) -> None:
-        lookback_days = 2
-        unfillable: Set[tuple] = set()
-
-        while not self._gap_stop.wait(settings.ws_gap_interval):
-            try:
-                has_gaps, lookback_days = self._smart_backfill(lookback_days, unfillable)
-                if not has_gaps:
-                    lookback_days = max(1, lookback_days - 1)
-                else:
-                    lookback_days = min(7, lookback_days + 1)
-            except Exception as e:
-                logger.error("周期缺口检查失败: %s", e)
-
-    def _smart_backfill(self, lookback_days: int, unfillable: Set[tuple]) -> tuple:
-        t0 = time.perf_counter()
-        symbols = list(self._symbols.values())
-        end = date.today()
-        start = end - timedelta(days=lookback_days)
-
-        scanner = GapScanner(self._ts)
-        gaps = scanner.scan_klines(symbols, start, end, "1m", 0.95)
-
-        if not gaps:
-            return False, lookback_days
-
-        filtered = {}
-        for sym, sym_gaps in gaps.items():
-            new_gaps = [g for g in sym_gaps if (sym, g.date) not in unfillable]
-            if new_gaps:
-                filtered[sym] = new_gaps
-
-        if not filtered:
-            logger.debug("所有缺口已知无法补齐，跳过")
-            return False, lookback_days
-
-        total_gaps = sum(len(g) for g in filtered.values())
-        metrics.inc("gaps_found", total_gaps)
-        logger.info("发现 %d 个符号 %d 个缺口，开始补齐 (回溯%d天)", len(filtered), total_gaps, lookback_days)
-
-        zip_bf = ZipBackfiller(self._ts, workers=2)
-        zip_bf.cleanup_old_files()
-        filled = zip_bf.fill_kline_gaps(filtered, "1m")
-
-        remaining = scanner.scan_klines(list(filtered.keys()), start, end, "1m", 0.95)
-        if remaining:
-            rest_bf = RestBackfiller(self._ts, workers=2)
-            filled += rest_bf.fill_gaps(remaining, "1m")
-
-            still_missing = scanner.scan_klines(list(remaining.keys()), start, end, "1m", 0.95)
-            if still_missing:
-                for sym, sym_gaps in still_missing.items():
-                    for g in sym_gaps:
-                        unfillable.add((sym, g.date))
-                logger.debug("记录 %d 个无法补齐的缺口", sum(len(g) for g in still_missing.values()))
-
-        metrics.inc("gaps_filled", filled)
-        logger.info("缺口补齐完成: 填充 %d 条, 耗时 %.1fs", filled, time.perf_counter() - t0)
-        return True, lookback_days
-
-    def _run_backfill(self, lookback_days: int = 1, lookback_hours: int = 0) -> None:
-        self._smart_backfill(lookback_days or 1, set())
 
 
 def main() -> None:

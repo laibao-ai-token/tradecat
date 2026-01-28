@@ -1,10 +1,21 @@
 """期货指标采集器 - 高性能版"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# -------------------- 路径修正：避免 http.py 影子 --------------------
+_THIS_DIR = Path(__file__).resolve().parent
+if sys.path and sys.path[0] == str(_THIS_DIR):
+    sys.path.pop(0)
+for p in _THIS_DIR.parents:
+    if (p / 'config.py').exists() and p.name == 'src':
+        sys.path.insert(0, str(p))
+        break
+
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +23,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence
 
 import requests

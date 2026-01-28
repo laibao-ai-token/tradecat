@@ -102,6 +102,7 @@ make run
 ```bash
 python src/__main__.py --backfill   # 按 ZIP → REST 顺序回填
 python src/__main__.py --alpha      # Alpha 列表采集
+python src/__main__.py --all        # WS + Metrics + Backfill + Alpha
 ```
 
 ---
