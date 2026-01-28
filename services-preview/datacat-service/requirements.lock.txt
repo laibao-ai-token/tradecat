@@ -1,0 +1,17 @@
+certifi==2026.1.4
+charset-normalizer==3.4.4
+idna==3.11
+iniconfig==2.3.0
+librt==0.7.8
+mypy==1.19.1
+mypy_extensions==1.1.0
+packaging==26.0
+pathspec==1.0.4
+pluggy==1.6.0
+Pygments==2.19.2
+pytest==9.0.2
+python-dotenv==1.2.1
+requests==2.32.5
+ruff==0.14.14
+typing_extensions==4.15.0
+urllib3==2.6.3

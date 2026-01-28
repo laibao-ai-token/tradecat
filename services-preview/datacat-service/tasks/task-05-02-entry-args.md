@@ -7,7 +7,7 @@
 ## 执行记录（已完成）
 
 - 已在 `src/__main__.py` 复制 Scheduler，并保留 `--ws/--metrics/--backfill/--all`。
-- 子进程路径指向严格分层 collector.py。
+- 子进程路径指向严格分层 <impl>.py。
 
 ## 验收
 

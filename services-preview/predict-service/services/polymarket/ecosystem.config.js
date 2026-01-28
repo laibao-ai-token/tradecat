@@ -109,8 +109,8 @@ module.exports = {
         vizion: false,                   // 禁用版本控制元数据
         post_update: ['npm install'],    // 更新后执行的命令
 
-        // cron重启（可选：每天凌晨3点重启）
-        // cron_restart: '0 3 * * *',
+        // cron重启（每1小时重启一次）
+        cron_restart: '0 * * * *',
 
         // Node.js参数
         node_args: [

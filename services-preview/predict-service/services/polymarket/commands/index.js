@@ -481,7 +481,7 @@ class CommandHandler {
         const main = lang === 'en' ? '🏠 Menu' : '🏠 主菜单';
         return {
             keyboard: [
-                [i18n.panel.closing, i18n.panel.threshold, i18n.panel.notification, langBtn],
+                [i18n.panel.closing, i18n.panel.threshold, i18n.panel.notification, i18n.panel.stats, langBtn],
                 [main, help]
             ],
             resize_keyboard: true,

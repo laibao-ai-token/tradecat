@@ -15,7 +15,7 @@
 1) 复制原 Settings 字段结构。
 2) 增加 DATACAT_* 变量并设置优先级。
 3) __main__ 中保留 --ws/--metrics/--backfill/--all。
-4) 子进程命令行指向新 collector.py。
+4) 子进程命令行指向新 <impl>.py。
 
 ## 验收
 

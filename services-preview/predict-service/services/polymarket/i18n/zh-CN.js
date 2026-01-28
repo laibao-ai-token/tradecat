@@ -109,6 +109,7 @@ module.exports = {
     closing: '📋 扫尾盘',
     threshold: '🎚️ 阈值',
     notification: '📢 通知',
+    stats: '📊 统计',
     compactMode: '🔫 颗秒版',
     detailedMode: '📝 详细版',
     langSwitch: '🌐 EN',

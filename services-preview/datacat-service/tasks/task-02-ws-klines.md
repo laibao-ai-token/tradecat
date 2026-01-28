@@ -3,7 +3,7 @@
 ## 目标
 
 - 迁移 WS K线采集逻辑到严格路径：
-  `binance/um_futures/all/realtime/push/ws/klines/interval_1m/cryptofeed/collector.py`
+  `binance/um_futures/all/realtime/push/ws/klines/cryptofeed.py`
 
 ## 子任务拆分
 
@@ -20,7 +20,7 @@
 ## 执行步骤（更细）
 
 1) 先用 wrapper 方式直接调用旧 `WSCollector`，确保能运行。
-2) 将 `WSCollector` 复制进新 collector.py。
+2) 将 `WSCollector` 复制进新 <impl>.py。
 3) 将 cryptofeed/timecale/metrics 依赖内聚进同一文件。
 4) 明确 `_smart_backfill` 依赖路径与回填逻辑落位。
 5) 保持批量写入与缺口巡检策略一致。
@@ -35,4 +35,4 @@
 ## 进度
 
 - 已完成：02-01 WS wrapper 复用旧逻辑
-- 待完成：02-02 内聚化、02-03 回填依赖落位
+- 已完成：02-02 内聚化、02-03 回填依赖落位

@@ -163,3 +163,28 @@ codex resume 019bfd0f-8b32-75d3-a19e-cdf05fa24e21
 
 https://x.com/immersivetran/status/2015978209209434389?s=20
 学习这个里面的可视化工具 https://github.com/owid
+
+完善内部 API 调用链路，提升稳定性、可观测性与一致性。（制作skill，暴露给ai分析调用）
+
+源；pg，tradecat\libs\database\services\signal-service\signal_history.db，tradecat\libs\database\services\telegram-service\market_data.db，datacat\libs\database\unified.db
+
+对于币种，复用（币种查询功能的数据处理的范围，结构化后返回完整的），数据猫使用内部的（\\wsl.localhost\Ubuntu\home\lenovo\.projects\datacat\services\api-service，分析后给出优化方案）
+
+先加入守护脚本里面的定时重启，临时解决
+
+重新设计数据采集结构，继续细分
+
+拓提示词，
+
+polymarket数据集成
+
+api，提示词拓展，安全复用nofxfork仓库实现交易的数据源规范化拓展追加方法
+
+llm调用新增 https://aistudio.google key的方法
+
+使用提示词审计task；https://docs.google.com/spreadsheets/d/1Ifk_dLF25ULSxcfGem1hXzJsi7_RBUNAki8SBCuvkJA/edit?gid=1777853069#gid=1777853069&range=R73
+
+
+检查提交信息，nofx官方是什么时候加入测试网功能的
+
+优化订单块的信号

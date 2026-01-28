@@ -3300,6 +3300,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        # 自动为所有用户开启信号订阅（首次 /start 即注册）
+        try:
+            from signals import ui as signal_ui
+            target_id = signal_ui.resolve_target_id(update)
+            if target_id:
+                signal_ui.get_sub(target_id)
+                logger.info("✅ 自动订阅信号: %s", target_id)
+        except Exception as e:
+            logger.warning(f"自动订阅信号失败: {e}")
+
         # 先发送带键盘的消息刷新底部键盘
         await update.message.reply_text(_t(update, "start.greet"), reply_markup=user_handler.get_reply_keyboard(update))
 
@@ -3357,6 +3367,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     button_data = query.data
+
+    # 自动为所有互动会话注册信号订阅（按钮点击即可注册）
+    try:
+        from signals import ui as signal_ui
+        target_id = signal_ui.resolve_target_id(update)
+        if target_id:
+            signal_ui.get_sub(target_id)
+    except Exception as e:
+        logger.debug(f"自动订阅信号失败(回调): {e}")
 
     # =============================================================================
     # 全局统一快速响应 - 方案C（详细提示）
@@ -3511,8 +3530,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if button_data == "signal_menu":
                 # 注意: 即时响应已在前面统一处理
                 await query.edit_message_text(
-                    signal_ui.get_menu_text(user_id),
-                    reply_markup=signal_ui.get_menu_kb(user_id, update=update),
+                    signal_ui.get_menu_text(signal_ui.resolve_target_id(update) or user_id),
+                    reply_markup=signal_ui.get_menu_kb(signal_ui.resolve_target_id(update) or user_id, update=update),
                     parse_mode='HTML'
                 )
             else:

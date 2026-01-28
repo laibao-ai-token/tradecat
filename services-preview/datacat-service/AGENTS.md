@@ -6,16 +6,18 @@
 
 ## 1. 使命与范围
 
-- 使命：提供“严格分层”的采集基建目录结构。
-- 范围：仅定义采集结构与模板，不包含业务逻辑实现。
+- 使命：提供“严格分层”的采集基建目录结构，并承载可执行的采集实现。
+- 范围：采集/回填/拉取逻辑与必要的落库为主；编排与管道目录仅作结构预留，不承载业务策略。
 
 ---
 
 ## 2. 严格分层顺序（不可变）
 
 ```
-source → market → scope → mode → direction → channel → type → granularity → impl
+source → market → scope → mode → direction → channel → type
 ```
+
+> 粒度（interval/depth）不再作为目录层级，统一在实现文件内部处理。
 
 ---
 
@@ -27,9 +29,8 @@ source → market → scope → mode → direction → channel → type → gran
 - mode: realtime / backfill / sync
 - direction: pull / push / sync
 - channel: rest / ws / file / stream / grpc / kafka
-- type: aggTrades / bookDepth / bookTicker / indexPriceKlines / klines / markPriceKlines / metrics / premiumIndexKlines / trades
-- granularity: interval_1m / interval_5m / depth_20 / depth_1000
-- impl: http / ccxt / cryptofeed / raw_ws / official_sdk / http_zip
+- type: aggTrades / bookDepth / bookTicker / indexPriceKlines / klines / markPriceKlines / metrics / premiumIndexKlines / trades / alpha
+- impl (文件名): http / ccxt / cryptofeed / raw_ws / official_sdk / http_zip
 
 ---
 
@@ -49,22 +50,33 @@ datacat-service/
 ├── tasks/                    # 重构计划与任务清单
 │   ├── PLAN.md
 │   ├── TODO.md
+│   ├── validation-report.md
 │   └── task-*.md
 └── src/
     ├── __main__.py
     ├── config.py
+    ├── adapters/              # 结构预留：协议/存储适配（暂空）
+    ├── orchestration/         # 结构预留：编排/调度（暂空）
+    ├── pipeline/              # 结构预留：处理管道（暂空）
     └── collectors/
         ├── README.md
-        └── <source>/<market>/<scope>/<mode>/<direction>/<channel>/<type>/<granularity>/<impl>/
-            └── collector.py
+        └── <source>/<market>/<scope>/<mode>/<direction>/<channel>/<type>/
+            └── <impl>.py
 ```
 
 ---
 
 ## 5. 模块职责与边界
 
-- collectors/: 仅负责采集，不做规范化、校验、落库、编排。
-- 目录中所有采集实现必须以 `collector.py` 命名。
+- collectors/: 仅负责采集/回填/拉取与必要的落库，不承担业务规则与策略计算。
+- 目录中所有采集实现必须以 `<impl>.py` 命名。
+    - 允许附带运行入口（CLI）以便独立执行。
+- adapters/: 结构预留，未来用于协议/存储等适配层，不落业务逻辑。
+- adapters/README.md: 适配层结构说明与使用边界。
+- orchestration/: 结构预留，未来用于编排与调度，不直接落采集逻辑。
+- orchestration/README.md: 编排层结构说明与使用边界。
+- pipeline/: 结构预留，未来用于规范化/校验等处理步骤，不直接落采集逻辑。
+- pipeline/README.md: 处理层结构说明与使用边界。
 
 ---
 
@@ -82,3 +94,8 @@ datacat-service/
 
 - 2026-01-28: 初始化 datacat-service 严格分层目录与文档模板。
 - 2026-01-28: 新增重构计划与任务清单目录。
+- 2026-01-28: 回填与文件 ZIP 采集细分落位，补齐 REST/ZIP/Alpha 实现与验收模板。
+- 2026-01-28: backfill pipeline 调度与 Alpha 入口补齐。
+- 2026-01-28: 恢复 src 预留目录（adapters/orchestration/pipeline）。
+- 2026-01-28: collectors 全深度补齐占位文件（不覆盖既有实现）。
+- 2026-01-28: collectors 结构改为 type/<impl>.py（粒度内置）。

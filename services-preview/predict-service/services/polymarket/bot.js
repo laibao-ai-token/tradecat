@@ -403,6 +403,9 @@ class PolymarketSignalBot {
                     forwardAction('menu_notifications');
                     break;
                 case '📊 统计':
+                case '📊 Stats':
+                    this.commandHandler.handleCsvReport(msg).catch(() => {});
+                    break;
                 case '📊 统计数据':
                     this.commandHandler.showMainPanel(chatId, { flashMessage: '统计摘要已刷新。' }).catch(() => {});
                     break;

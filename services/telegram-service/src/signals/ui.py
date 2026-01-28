@@ -84,6 +84,25 @@ ALL_TABLES = list(RULES_BY_TABLE.keys())
 # 内存缓存
 _subs: Dict[int, Dict] = {}
 
+def resolve_target_id(update=None, user_id: int | None = None) -> int | None:
+    """解析订阅目标ID：优先 chat_id（群/私聊），再回退 user_id。"""
+    if user_id is not None:
+        return user_id
+    if update is None:
+        return None
+    chat = getattr(update, "effective_chat", None)
+    if chat is not None and getattr(chat, "id", None) is not None:
+        return chat.id
+    q = getattr(update, "callback_query", None)
+    if q is not None and getattr(q, "message", None) is not None:
+        msg_chat = getattr(q.message, "chat", None)
+        if msg_chat is not None and getattr(msg_chat, "id", None) is not None:
+            return msg_chat.id
+    user = getattr(update, "effective_user", None)
+    if user is not None and getattr(user, "id", None) is not None:
+        return user.id
+    return None
+
 
 @contextmanager
 def _conn():
@@ -231,7 +250,7 @@ async def handle(update, context) -> bool:
     """处理 sig_ 开头的回调"""
     q = update.callback_query
     data = q.data
-    uid = q.from_user.id
+    uid = resolve_target_id(update) or q.from_user.id
 
     if not data.startswith("sig_"):
         return False

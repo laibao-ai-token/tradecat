@@ -10,8 +10,9 @@
 - **禁止**修改原服务任何文件。
 - **仅**在 `services-preview/datacat-service` 内新增/调整内容。
 - 严格遵循分层顺序：
-  `source → market → scope → mode → direction → channel → type → granularity → impl`
-- 所有采集实现必须放在 `collector.py`（不新增其他 Python 模块文件）。
+  `source → market → scope → mode → direction → channel → type`
+  （粒度在实现文件内部处理）
+- 所有采集实现必须放在 `<impl>.py`（不新增其他 Python 模块文件）。
 
 ## 3. 基线说明
 
@@ -51,7 +52,7 @@
 ## 7. 交付物（必须存在）
 
 - 映射表（原路径 → 新路径）
-- 严格分层下的 collector.py 复用/复制实现
+- 严格分层下的 <impl>.py 复用/复制实现
 - 配置矩阵与运行入口说明
 - 对照验收报告（日志/行数/字段）
 

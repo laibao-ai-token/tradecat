@@ -15,16 +15,16 @@
 
 ## 目标路径
 
-- K线 ZIP：`.../backfill/pull/file/klines/interval_1m/http_zip/collector.py`
-- Metrics ZIP：`.../backfill/pull/file/metrics/interval_5m/http_zip/collector.py`
-- K线 REST：`.../backfill/pull/rest/klines/interval_1m/ccxt/collector.py`
-- Metrics REST：`.../backfill/pull/rest/metrics/interval_5m/http/collector.py`
+- K线 ZIP：`.../backfill/pull/file/klines/http_zip.py`
+- Metrics ZIP：`.../backfill/pull/file/metrics/http_zip.py`
+- K线 REST：`.../backfill/pull/rest/klines/ccxt.py`
+- Metrics REST：`.../backfill/pull/rest/metrics/http.py`
 
 ## 执行步骤（更细）
 
 1) 拆出 GapScanner（K线/指标两类扫描）。
-2) 将 ZipBackfiller 与 Downloader 合并到 file/…/collector.py。
-3) 将 RestBackfiller/MetricsRestBackfiller 合并到 rest/…/collector.py。
+2) 将 ZipBackfiller 与 Downloader 合并到 file/…/<impl>.py。
+3) 将 RestBackfiller/MetricsRestBackfiller 合并到 rest/…/<impl>.py。
 4) 保持“先 ZIP 后 REST，复检”策略不变。
 5) 保持 ZIP 缓存目录与清理策略一致。
 

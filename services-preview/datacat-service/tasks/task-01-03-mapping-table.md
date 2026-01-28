@@ -8,15 +8,15 @@
 
 | 原路径 | 新路径 |
 |:---|:---|
-| collectors/ws.py | binance/um_futures/all/realtime/push/ws/klines/interval_1m/cryptofeed/collector.py |
-| collectors/metrics.py | binance/um_futures/all/realtime/pull/rest/metrics/interval_5m/http/collector.py |
-| collectors/backfill.py (RestBackfiller) | binance/um_futures/all/backfill/pull/rest/klines/interval_1m/ccxt/collector.py |
-| collectors/backfill.py (MetricsRestBackfiller) | binance/um_futures/all/backfill/pull/rest/metrics/interval_5m/http/collector.py |
-| collectors/backfill.py (ZipBackfiller Klines) | binance/um_futures/all/backfill/pull/file/klines/interval_1m/http_zip/collector.py |
-| collectors/backfill.py (ZipBackfiller Metrics) | binance/um_futures/all/backfill/pull/file/metrics/interval_5m/http_zip/collector.py |
+| collectors/ws.py | binance/um_futures/all/realtime/push/ws/klines/cryptofeed.py |
+| collectors/metrics.py | binance/um_futures/all/realtime/pull/rest/metrics/http.py |
+| collectors/backfill.py (RestBackfiller) | binance/um_futures/all/backfill/pull/rest/klines/ccxt.py |
+| collectors/backfill.py (MetricsRestBackfiller) | binance/um_futures/all/backfill/pull/rest/metrics/http.py |
+| collectors/backfill.py (ZipBackfiller Klines) | binance/um_futures/all/backfill/pull/file/klines/http_zip.py |
+| collectors/backfill.py (ZipBackfiller Metrics) | binance/um_futures/all/backfill/pull/file/metrics/http_zip.py |
 | collectors/backfill.py (GapScanner) | 内聚至对应回填 collector 内部 |
 | collectors/backfill.py (DataBackfiller) | 内聚至回填统一入口逻辑 |
-| collectors/downloader.py | 融入 file/.../http_zip/collector.py |
+| collectors/downloader.py | 融入 file/.../http_zip/<impl>.py |
 | collectors/alpha.py | 内聚至 symbol_group 相关 collector |
 | adapters/ccxt.py | 融入 REST K线补齐 collector（ccxt impl） |
 | adapters/cryptofeed.py | 融入 WS K线 collector（cryptofeed impl） |

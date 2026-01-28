@@ -5,10 +5,13 @@
 
 const https = require('https');
 const http = require('http');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 class MyMemoryTranslation {
   constructor() {
     this.baseUrl = 'https://api.mymemory.translated.net/get';
+    this.proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    this.agent = this.proxyUrl ? new HttpsProxyAgent(this.proxyUrl) : null;
   }
 
   async translate(text, from = 'en', to = 'zh') {
@@ -17,7 +20,7 @@ class MyMemoryTranslation {
     const url = `${this.baseUrl}?q=${encodeURIComponent(text)}&langpair=${from}|${to}`;
     
     return new Promise((resolve, reject) => {
-      https.get(url, { timeout: 5000 }, (res) => {
+      https.get(url, { timeout: 5000, agent: this.agent }, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {

@@ -109,6 +109,7 @@ module.exports = {
     closing: '📋 Closing',
     threshold: '🎚️ Threshold',
     notification: '📢 Notif',
+    stats: '📊 Stats',
     compactMode: '🔫 Compact',
     detailedMode: '📝 Detailed',
     langSwitch: '🌐 中文',

@@ -57,8 +57,8 @@
     "displayMode": "detailed",
     "lang": "zh-CN",
     "registeredAt": 1768729272015,
-    "lastActive": 1769492223961,
-    "visitCount": 18,
+    "lastActive": 1769589671799,
+    "visitCount": 24,
     "username": "desci0",
     "firstName": "123olp",
     "lastName": null
@@ -89,8 +89,8 @@
     "displayMode": "detailed",
     "lang": "zh-CN",
     "registeredAt": 1768765392989,
-    "lastActive": 1768765406039,
-    "visitCount": 2,
+    "lastActive": 1769548859370,
+    "visitCount": 3,
     "username": "world11223344",
     "firstName": "无",
     "lastName": "新"
@@ -349,6 +349,198 @@
     "visitCount": 1,
     "username": null,
     "firstName": "Steven",
+    "lastName": null
+  },
+  {
+    "chatId": 7355387021,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769548859355,
+    "lastActive": 1769548859355,
+    "visitCount": 1,
+    "username": null,
+    "firstName": "历",
+    "lastName": "飞雨"
+  },
+  {
+    "chatId": 396837567,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769548859365,
+    "lastActive": 1769548859367,
+    "visitCount": 2,
+    "username": "Jeremyai",
+    "firstName": "angojay",
+    "lastName": null
+  },
+  {
+    "chatId": 8265443697,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769548859367,
+    "lastActive": 1769548859368,
+    "visitCount": 3,
+    "username": null,
+    "firstName": "玉楠",
+    "lastName": "李"
+  },
+  {
+    "chatId": 5960016950,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769548859369,
+    "lastActive": 1769548886396,
+    "visitCount": 3,
+    "username": null,
+    "firstName": "z",
+    "lastName": null
+  },
+  {
+    "chatId": 934752062,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": false,
+      "orderbook": false,
+      "closing": false,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": false,
+      "smartMoney": false
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "en",
+    "registeredAt": 1769581650976,
+    "lastActive": 1769581659246,
+    "visitCount": 6,
+    "username": null,
+    "firstName": "Han_tiv",
+    "lastName": null
+  },
+  {
+    "chatId": 6794098503,
+    "subscribed": true,
+    "notifications": {
+      "arbitrage": true,
+      "orderbook": true,
+      "closing": true,
+      "whale": true,
+      "priceSpike": true,
+      "newMarket": false,
+      "largeTrade": true,
+      "smartMoney": true
+    },
+    "thresholds": {
+      "arbitrage": 1,
+      "orderbook": 1,
+      "closing": 1,
+      "priceSpike": 1,
+      "whale": 1,
+      "largeTrade": 1,
+      "smartMoney": 1,
+      "newMarket": 1
+    },
+    "displayMode": "detailed",
+    "lang": "zh-CN",
+    "registeredAt": 1769589876574,
+    "lastActive": 1769591168698,
+    "visitCount": 4,
+    "username": "mrdmjy",
+    "firstName": "mnnnn2",
     "lastName": null
   }
 ]

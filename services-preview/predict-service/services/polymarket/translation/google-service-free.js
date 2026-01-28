@@ -12,6 +12,7 @@
 
 const translate = require('translate-google');
 const TranslationCache = require('./cache');
+const GoogleTranslateProxy = require('./google-proxy');
 
 class GoogleTranslationServiceFree {
     constructor(config = {}) {
@@ -41,6 +42,8 @@ class GoogleTranslationServiceFree {
         this.isDisabled = false;
         this.disabledUntil = 0;
         this.recoverAfter = config.recoverAfter || 1800000; // 30分钟后恢复（原5分钟太短）
+        this.proxyService = null;
+        this.fallbackService = null;
 
         console.log('✅ [GoogleTranslateFree] 免费翻译服务初始化成功（缓存容量: 10万条）');
     }
@@ -106,15 +109,28 @@ class GoogleTranslationServiceFree {
      * 备用翻译（MyMemory）
      */
     async translateWithFallback(text, from, to) {
+        const sourceLang = from || 'en';
+        const targetLang = to || 'zh-CN';
+
+        if (!this.proxyService) {
+            this.proxyService = new GoogleTranslateProxy();
+        }
+        try {
+            const result = await this.proxyService.translate(text, sourceLang, targetLang);
+            this.cache.set(text, result);
+            return result;
+        } catch (e) {
+            console.warn('⚠️ [Translation] 代理翻译失败，切换 MyMemory:', e?.message || e);
+        }
+
         if (!this.fallbackService) {
             const MyMemoryTranslation = require('./mymemory-service');
             this.fallbackService = new MyMemoryTranslation();
             console.log('🔄 [Translation] 启用备用翻译服务 (MyMemory)');
         }
-        
+
         try {
-            const result = await this.fallbackService.translate(text, from || 'en', to || 'zh');
-            // 存入缓存
+            const result = await this.fallbackService.translate(text, sourceLang, targetLang);
             this.cache.set(text, result);
             return result;
         } catch (e) {
@@ -132,7 +148,15 @@ class GoogleTranslationServiceFree {
     async translateBatch(texts, from = null, to = null) {
         // 检查服务是否可用
         if (!this.isAvailable()) {
-            throw new Error('翻译服务暂时不可用');
+            const results = [];
+            for (const text of texts) {
+                try {
+                    results.push(await this.translateWithFallback(text, from, to));
+                } catch (e) {
+                    results.push(text);
+                }
+            }
+            return results;
         }
 
         // 分离已缓存和未缓存的文本
@@ -159,11 +183,24 @@ class GoogleTranslationServiceFree {
         const targetLang = to || this.config.targetLang;
 
         // 批量翻译未缓存的文本
-        const translations = await this.translateBatchWithRetry(
-            toTranslate,
-            sourceLang,
-            targetLang
-        );
+        let translations = null;
+        try {
+            translations = await this.translateBatchWithRetry(
+                toTranslate,
+                sourceLang,
+                targetLang
+            );
+        } catch (error) {
+            console.warn('⚠️ [GoogleTranslateFree] 批量翻译失败，降级为逐条备用翻译');
+            translations = [];
+            for (const text of toTranslate) {
+                try {
+                    translations.push(await this.translateWithFallback(text, sourceLang, targetLang));
+                } catch (e) {
+                    translations.push(text);
+                }
+            }
+        }
 
         // 填充结果并更新缓存
         for (let i = 0; i < translations.length; i++) {
