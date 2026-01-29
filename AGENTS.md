@@ -336,6 +336,7 @@ tradecat/
 │   ├── check_env.sh                # 环境检查
 │   ├── check_i18n_keys.py          # i18n 翻译键对齐检查
 │   ├── download_hf_data.py         # HuggingFace 数据下载
+│   ├── signal_correlation_analysis.py # 信号相关性分析（cooldown + PG）
 │   ├── sync_market_data_to_rds.py  # SQLite -> PostgreSQL 增量同步
 │   ├── export_timescaledb.sh       # 数据导出（默认端口 5433）
 │   ├── export_timescaledb_main4.sh # 导出 Main4 精简数据集（默认端口 5433）
@@ -385,6 +386,8 @@ tradecat/
 │   └── SECURITY.md                 # 安全政策
 │
 ├── artifacts/                      # 构建/测试产物
+│   ├── analysis/                   # 分析产物
+│   │   └── signal_correlation/     # 信号相关性分析输出
 │   ├── coverage/                   # 覆盖率数据
 │   ├── dist/                       # 构建输出
 │   └── i18n/                       # i18n 编译产物
@@ -394,7 +397,11 @@ tradecat/
 │   └── ruff/
 │
 ├── docs/                           # 项目文档
+│   ├── analysis/                   # 分析文档
+│   │   └── signal_correlation.md   # 信号相关性分析说明
 │   ├── CHANGELOG.md                # 变更日志
+│   ├── COMPETITION_REPORT.md       # 比赛汇报材料
+│   ├── MARKETING_PROMO.md          # 宣传材料
 │   └── TODO.md                     # 待办清单
 │
 ├── logs/                           # 顶层日志
@@ -731,3 +738,10 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 # 备份
 ./scripts/export_timescaledb.sh
 ```
+
+---
+
+## 12. 变更日志
+
+- 2026-01-28: 新增信号相关性分析脚本与文档，输出分析产物目录。
+- 2026-01-29: 新增宣传材料与比赛汇报材料文档。

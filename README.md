@@ -994,6 +994,8 @@ tradecat/
 │
 ├── 📂 docs/                        # 项目文档
 │   ├── CHANGELOG.md
+│   ├── COMPETITION_REPORT.md
+│   ├── MARKETING_PROMO.md
 │   └── TODO.md
 │
 ├── 📂 .github/                     # 社区与安全规范

@@ -1002,6 +1002,8 @@ tradecat/
 │
 ├── 📂 docs/                        # Project docs
 │   ├── CHANGELOG.md
+│   ├── COMPETITION_REPORT.md
+│   ├── MARKETING_PROMO.md
 │   └── TODO.md
 │
 ├── 📂 .github/                     # Community & security
