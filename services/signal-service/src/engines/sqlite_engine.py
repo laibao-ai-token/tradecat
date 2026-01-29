@@ -15,11 +15,13 @@ try:
     from ..events import SignalEvent, SignalPublisher
     from ..rules import ALL_RULES, RULES_BY_TABLE, SignalRule
     from ..storage.cooldown import get_cooldown_storage
+    from ..storage.history import get_history
 except ImportError:
     from config import DATA_MAX_AGE_SECONDS, get_sqlite_path
     from events import SignalEvent, SignalPublisher
     from rules import ALL_RULES, RULES_BY_TABLE, SignalRule
     from storage.cooldown import get_cooldown_storage
+    from storage.history import get_history
 
 from .base import BaseEngine, Signal
 from .pg_engine import _get_default_symbols  # 复用统一符号选择
@@ -61,6 +63,7 @@ class SQLiteSignalEngine(BaseEngine):
         self._cooldown_storage = get_cooldown_storage()
         self.cooldown: dict[str, float] = self._cooldown_storage.load_all()
         logger.info(f"加载 {len(self.cooldown)} 条冷却记录")
+        self._history = get_history()
 
         # 符号白名单：与 PG 引擎一致，遵守 SIGNAL_SYMBOLS / SYMBOLS_GROUPS / EXTRA / EXCLUDE
         self.allowed_symbols = set(_get_default_symbols())
@@ -364,6 +367,11 @@ class SQLiteSignalEngine(BaseEngine):
                                 if self._set_cooldown(rule, symbol, timeframe):
                                     signals.append(signal)
                                     self.stats["signals"] += 1
+                                    try:
+                                        if self._history.save(signal, source="sqlite") < 0:
+                                            logger.warning("信号历史写入失败: %s", rule.name)
+                                    except Exception as e:
+                                        logger.warning("信号历史写入异常: %s", e)
 
                                     logger.info(
                                         f"信号触发: {symbol} {rule.direction} - {rule.name} ({timeframe})"

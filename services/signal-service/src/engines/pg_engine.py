@@ -18,10 +18,12 @@ try:
     from ..config import COOLDOWN_SECONDS, DATA_MAX_AGE_SECONDS, get_database_url
     from ..events import SignalEvent, SignalPublisher
     from ..storage.cooldown import get_cooldown_storage
+    from ..storage.history import get_history
 except ImportError:
     from config import COOLDOWN_SECONDS, DATA_MAX_AGE_SECONDS, get_database_url
     from events import SignalEvent, SignalPublisher
     from storage.cooldown import get_cooldown_storage
+    from storage.history import get_history
 
 from .base import BaseEngine
 
@@ -414,6 +416,7 @@ class PGSignalEngine(BaseEngine):
         self._conn = None
         self._conn_last_check = 0.0
         self._cooldown_storage = get_cooldown_storage()
+        self._history = get_history()
         # 只加载 PG 前缀的冷却记录，避免与 SQLite 互相干扰
         self.cooldowns = {
             k: v for k, v in self._cooldown_storage.load_all().items() if k.startswith("pg:")
@@ -650,6 +653,11 @@ class PGSignalEngine(BaseEngine):
                                 if self._set_cooldown(signal_key):
                                     signals.append(signal)
                                     self.stats["signals"] += 1
+                                    try:
+                                        if self._history.save(signal, source="pg") < 0:
+                                            logger.warning("信号历史写入失败: %s", signal_key)
+                                    except Exception as e:
+                                        logger.warning("信号历史写入异常: %s", e)
                                     logger.info(f"PG Signal: {signal.symbol} - {signal.signal_type}")
                                     # 发布事件
                                     self._publish_event(signal)

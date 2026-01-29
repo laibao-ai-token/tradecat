@@ -33,6 +33,7 @@
 | `config/.env` | 生产配置（含密钥） | 只读 |
 | `libs/database/services/telegram-service/market_data.db` | SQLite 指标数据 | 只读 |
 | `libs/database/services/signal-service/cooldown.db` | 信号冷却持久化 | 只读 |
+| `libs/database/services/signal-service/signal_history.db` | 信号触发历史 | 只读 |
 | `backups/timescaledb/` | 数据库备份 | 禁止修改 |
 
 > 提醒：服务启动脚本会检查 `config/.env` 权限（需 600/400），不符合直接退出。
@@ -365,7 +366,8 @@ tradecat/
 │   │       ├── telegram-service/
 │   │       │   └── market_data.db      # 指标数据（Telegram 展示使用）
 │   │       └── signal-service/
-│   │           └── cooldown.db         # 冷却状态持久化（防重复推送）
+│   │           ├── cooldown.db         # 冷却状态持久化（防重复推送）
+│   │           └── signal_history.db   # 信号触发历史（append-only）
 │   ├── common/                     # 共享工具库
 │   │   ├── i18n.py                 # 国际化模块
 │   │   ├── symbols.py              # 币种管理模块
