@@ -15,11 +15,11 @@ VALID_INTERVALS = ["5m", "15m", "1h", "4h", "1d", "1w"]
 
 TABLE_BY_INTERVAL = {
     "5m": "market_data.binance_futures_metrics_5m",
-    "15m": "market_data.metrics_15m",
-    "1h": "market_data.metrics_1h",
-    "4h": "market_data.metrics_4h",
-    "1d": "market_data.metrics_1d",
-    "1w": "market_data.metrics_1w",
+    "15m": "market_data.binance_futures_metrics_15m_last",
+    "1h": "market_data.binance_futures_metrics_1h_last",
+    "4h": "market_data.binance_futures_metrics_4h_last",
+    "1d": "market_data.binance_futures_metrics_1d_last",
+    "1w": "market_data.binance_futures_metrics_1w_last",
 }
 
 
@@ -50,25 +50,34 @@ async def get_funding_rate_history(
         return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
     def _fetch_rows():
+        time_col = "create_time" if interval == "5m" else "bucket"
         with get_pg_pool().connection() as conn:
             with conn.cursor() as cursor:
                 exchange_code = _normalize_exchange(exchange)
 
-                query = f"""
-                    SELECT symbol, create_time, sum_toptrader_long_short_ratio
-                    FROM {table}
-                    WHERE symbol = %s AND exchange = %s
-                """
-                params: list = [symbol, exchange_code]
+                if interval == "5m":
+                    query = f"""
+                        SELECT symbol, {time_col}, sum_toptrader_long_short_ratio
+                        FROM {table}
+                        WHERE symbol = %s AND exchange = %s
+                    """
+                    params: list = [symbol, exchange_code]
+                else:
+                    query = f"""
+                        SELECT symbol, {time_col}, sum_toptrader_long_short_ratio
+                        FROM {table}
+                        WHERE symbol = %s
+                    """
+                    params = [symbol]
 
                 if startTime:
-                    query += " AND create_time >= to_timestamp(%s / 1000.0)"
+                    query += f" AND {time_col} >= to_timestamp(%s / 1000.0)"
                     params.append(startTime)
                 if endTime:
-                    query += " AND create_time <= to_timestamp(%s / 1000.0)"
+                    query += f" AND {time_col} <= to_timestamp(%s / 1000.0)"
                     params.append(endTime)
 
-                query += " ORDER BY create_time DESC LIMIT %s"
+                query += f" ORDER BY {time_col} DESC LIMIT %s"
                 params.append(limit)
 
                 cursor.execute(query, params)

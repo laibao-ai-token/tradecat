@@ -11,7 +11,24 @@ from src.utils.symbol import normalize_symbol
 
 router = APIRouter(tags=["futures"])
 
-VALID_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d"]
+VALID_INTERVALS = ["5m", "15m", "1h", "4h", "1d", "1w"]
+
+TABLE_BY_INTERVAL = {
+    "5m": "market_data.binance_futures_metrics_5m",
+    "15m": "market_data.binance_futures_metrics_15m_last",
+    "1h": "market_data.binance_futures_metrics_1h_last",
+    "4h": "market_data.binance_futures_metrics_4h_last",
+    "1d": "market_data.binance_futures_metrics_1d_last",
+    "1w": "market_data.binance_futures_metrics_1w_last",
+}
+
+
+def _normalize_exchange(exchange: str) -> str:
+    """标准化交易所标识"""
+    ex = (exchange or "").strip().lower()
+    if ex in {"binance", "binance_futures", "binance_usdm", "binanceusdm", "binance_futures_um"}:
+        return "binance_futures_um"
+    return ex or "binance_futures_um"
 
 
 @router.get("/metrics")
@@ -26,19 +43,35 @@ async def get_futures_metrics(
 
     if interval not in VALID_INTERVALS:
         return error_response(ErrorCode.INVALID_INTERVAL, f"无效的 interval: {interval}")
+    table = TABLE_BY_INTERVAL.get(interval)
+    if not table:
+        return error_response(ErrorCode.TABLE_NOT_FOUND, f"未配置 interval: {interval}")
 
     def _fetch_rows():
+        time_col = "create_time" if interval == "5m" else "bucket"
         with get_pg_pool().connection() as conn:
             with conn.cursor() as cursor:
-                query = """
-                    SELECT symbol, create_time, sum_open_interest_value, 
-                           sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
-                    FROM market_data.binance_futures_metrics_5m
-                    WHERE symbol = %s
-                    ORDER BY create_time DESC
-                    LIMIT %s
-                """
-                cursor.execute(query, (symbol, limit))
+                exchange_code = _normalize_exchange(exchange)
+                if interval == "5m":
+                    query = f"""
+                        SELECT symbol, {time_col}, sum_open_interest_value,
+                               sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
+                        FROM {table}
+                        WHERE symbol = %s AND exchange = %s
+                        ORDER BY {time_col} DESC
+                        LIMIT %s
+                    """
+                    cursor.execute(query, (symbol, exchange_code, limit))
+                else:
+                    query = f"""
+                        SELECT symbol, {time_col}, sum_open_interest_value,
+                               sum_toptrader_long_short_ratio, sum_taker_long_short_vol_ratio
+                        FROM {table}
+                        WHERE symbol = %s
+                        ORDER BY {time_col} DESC
+                        LIMIT %s
+                    """
+                    cursor.execute(query, (symbol, limit))
                 return cursor.fetchall()
 
     try:
