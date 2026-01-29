@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pandas as pd
 from src.db.reader import writer, reader
-from src.indicators.base import get_batch_indicators
+from src.indicators.base import get_batch_indicators, get_all_indicators
 from src.core.async_full_engine import get_high_priority_symbols_fast
 
 # 保留条数配置（与 reader.py 一致）
@@ -42,7 +42,11 @@ def backfill_symbol_interval(symbol: str, interval: str, indicators: dict, reten
     for name, ind_cls in indicators.items():
         indicator = ind_cls()
         lookback = indicator.meta.lookback
-        min_data = getattr(indicator.meta, 'min_data', 5)
+        # 增量指标允许单条计算（如基础数据同步器）
+        if indicator.meta.is_incremental:
+            min_data = 1
+        else:
+            min_data = getattr(indicator.meta, 'min_data', 5)
 
         results = []
         # 从能计算的最早位置开始
@@ -83,9 +87,12 @@ def backfill_all(symbols: list = None, intervals: list = None, indicator_names: 
     if intervals is None:
         intervals = INTERVALS
 
-    indicators = get_batch_indicators()
     if indicator_names:
+        # 允许显式指定增量指标进行回填
+        indicators = get_all_indicators()
         indicators = {k: v for k, v in indicators.items() if k in indicator_names}
+    else:
+        indicators = get_batch_indicators()
 
     print(f"开始回填: {len(symbols)} 币种, {len(intervals)} 周期, {len(indicators)} 指标")
     print(f"保留配置: {RETENTION}")

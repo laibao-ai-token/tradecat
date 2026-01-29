@@ -1,0 +1,250 @@
+flowchart TB
+    %% ==================== 外部数据源 ====================
+    EXT_BN_WS[Binance WebSocket]
+    EXT_BN_REST[Binance REST API]
+    EXT_YFINANCE[yfinance]
+    EXT_AKSHARE[AKShare]
+    EXT_FRED[FRED API]
+    EXT_POLY[Polymarket]
+    EXT_KALSHI[Kalshi]
+    EXT_LLM[LLM APIs Gemini OpenAI Claude DeepSeek]
+    EXT_TRADE[Binance Trade API]
+
+    %% ==================== 数据采集层 ====================
+    subgraph COLLECT[数据采集层]
+        DS[data-service ws metrics backfill alpha]
+        DC[datacat-service cryptofeed http zip rest]
+        MS[markets-service crypto us cn macro orderbook]
+        PS[predict-service polymarket kalshi opinion]
+    end
+
+    %% ==================== 持久化层 ====================
+    subgraph DB[持久化层]
+        TSDB_K[(TimescaleDB candles 3.73亿)]
+        TSDB_F[(TimescaleDB futures 9457万)]
+        TSDB_MV[(物化视图)]
+        SQL_MKT[(SQLite market_data 34表)]
+        SQL_CD[(SQLite cooldown)]
+        SQL_HIST[(SQLite history)]
+    end
+
+    %% ==================== 计算层 ====================
+    subgraph COMPUTE[trading-service 指标计算]
+        TS_SCHED[scheduler]
+        TS_ENGINE[Engine IO Compute Storage]
+        TS_IND_T[趋势8 EMA MACD SuperTrend ADX Ichimoku Donchian Keltner 趋势线]
+        TS_IND_M[动量6 RSI KDJ MFI CCI WilliamsR 谐波]
+        TS_IND_V[波动4 布林带 ATR ATR波幅 支撑阻力]
+        TS_IND_VOL[成交量6 OBV CVD VWAP VPVR 流动性 量比]
+        TS_IND_P[形态2 61种K线形态 价格形态]
+        TS_IND_F[期货8 持仓 多空比 资金费率 爆仓 情绪聚合 Gap监控]
+    end
+
+    %% ==================== 信号层 ====================
+    subgraph SIGNAL[signal-service 信号检测]
+        SIG_ENG[SQLite Engine + PG Engine]
+        SIG_R1[core 核心规则]
+        SIG_R2[momentum RSI超买卖 KDJ金死叉]
+        SIG_R3[trend 均线交叉 趋势突破]
+        SIG_R4[volatility 布林突破 ATR异常]
+        SIG_R5[volume 放量突破 OBV背离]
+        SIG_R6[futures 多空比极端 OI异常]
+        SIG_R7[pattern 头肩 双顶 三角]
+        SIG_R8[misc 其他规则]
+        SIG_PUB[SignalPublisher]
+        SIG_COOL[冷却管理]
+    end
+
+    %% ==================== AI层 ====================
+    subgraph AI[ai-service AI分析]
+        AI_FETCH[数据获取]
+        AI_PROMPT[提示词管理]
+        AI_LLM[多模型客户端]
+        AI_WYCKOFF[Wyckoff方法论]
+    end
+
+    %% ==================== Telegram层 ====================
+    subgraph TG[telegram-service Bot]
+        TG_BOT[Bot主程序]
+        TG_HANDLER[命令处理 data ai query help]
+        TG_CB[basic 10张 RSI KDJ MACD 布林 OBV 支撑阻力 成交量 资金费率 成交额 谐波]
+        TG_CA[advanced 11张 EMA ATR CVD MFI VWAP K线形态 趋势线 超级趋势 流动性 VPVR 趋势云]
+        TG_CF[futures 18张 持仓 多空比 主动买卖 爆仓 情绪 深度 OI异常 资金费率 持仓价值 全市场 对比 反转 变化 大户 散户 拥挤 成交比 基础]
+        TG_ADAPTER[信号适配器]
+        TG_PROVIDER[数据提供者]
+        TG_I18N[i18n 中英文]
+        TG_SNAPSHOT[单币详情]
+    end
+
+    %% ==================== API层 ====================
+    subgraph API[api-service REST 8000]
+        API_APP[FastAPI]
+        API_R[health coins ohlc open_interest funding_rate futures_metrics base_data indicator signal]
+    end
+
+    %% ==================== 可视化层 ====================
+    subgraph VIS[vis-service 8087]
+        VIS_APP[FastAPI]
+        VIS_RENDER[K线图 指标图 VPVR mplfinance]
+    end
+
+    %% ==================== 交易层 ====================
+    subgraph TRADE[交易执行层]
+        ORD[order-service Avellaneda-Stoikov做市]
+        NOFX[nofx-dev Go AI交易]
+        AWS[aws-service SQLite同步]
+    end
+
+    %% ==================== 命理层 ====================
+    subgraph FATE[fate-service 8001]
+        FATE_BOT[命理Bot]
+        FATE_LIUYAO[六爻量化]
+        FATE_LUNAR[农历]
+        FATE_ASTRO[星象]
+    end
+
+    %% ==================== 运维层 ====================
+    subgraph OPS[运维支撑]
+        CFG[config .env .env.example logrotate]
+        SCR[scripts init start verify check export compress download sync i18n]
+        LIBS[libs i18n symbols proxy]
+    end
+
+    %% ==================== 用户 ====================
+    USER((Telegram用户))
+    API_USER((API调用方))
+    VIS_USER((可视化用户))
+
+    %% ==================== 连接 - 数据采集 ====================
+    EXT_BN_WS --> DS
+    EXT_BN_WS --> DC
+    EXT_BN_REST --> DS
+    EXT_BN_REST --> DC
+    EXT_BN_REST --> MS
+    EXT_YFINANCE --> MS
+    EXT_AKSHARE --> MS
+    EXT_FRED --> MS
+    EXT_POLY --> PS
+    EXT_KALSHI --> PS
+    EXT_LLM --> AI_LLM
+    EXT_TRADE --> ORD
+    EXT_TRADE --> NOFX
+
+    %% ==================== 连接 - 写数据库 ====================
+    DS --> TSDB_K
+    DS --> TSDB_F
+    DC --> TSDB_K
+    DC --> TSDB_F
+    MS --> TSDB_K
+    TSDB_K --> TSDB_MV
+    TSDB_F --> TSDB_MV
+
+    %% ==================== 连接 - 计算 ====================
+    TS_SCHED --> TS_ENGINE
+    TSDB_K --> TS_ENGINE
+    TSDB_F --> TS_ENGINE
+    TSDB_MV --> TS_ENGINE
+    TS_ENGINE --> TS_IND_T
+    TS_ENGINE --> TS_IND_M
+    TS_ENGINE --> TS_IND_V
+    TS_ENGINE --> TS_IND_VOL
+    TS_ENGINE --> TS_IND_P
+    TS_ENGINE --> TS_IND_F
+    TS_IND_T --> SQL_MKT
+    TS_IND_M --> SQL_MKT
+    TS_IND_V --> SQL_MKT
+    TS_IND_VOL --> SQL_MKT
+    TS_IND_P --> SQL_MKT
+    TS_IND_F --> SQL_MKT
+
+    %% ==================== 连接 - 信号 ====================
+    SQL_MKT --> SIG_ENG
+    TSDB_K --> SIG_ENG
+    TSDB_F --> SIG_ENG
+    SIG_ENG --> SIG_R1
+    SIG_ENG --> SIG_R2
+    SIG_ENG --> SIG_R3
+    SIG_ENG --> SIG_R4
+    SIG_ENG --> SIG_R5
+    SIG_ENG --> SIG_R6
+    SIG_ENG --> SIG_R7
+    SIG_ENG --> SIG_R8
+    SIG_R1 --> SIG_PUB
+    SIG_R2 --> SIG_PUB
+    SIG_R3 --> SIG_PUB
+    SIG_R4 --> SIG_PUB
+    SIG_R5 --> SIG_PUB
+    SIG_R6 --> SIG_PUB
+    SIG_R7 --> SIG_PUB
+    SIG_R8 --> SIG_PUB
+    SIG_PUB --> SIG_COOL
+    SIG_COOL --> SQL_CD
+    SIG_PUB --> SQL_HIST
+
+    %% ==================== 连接 - AI ====================
+    TSDB_K --> AI_FETCH
+    TSDB_F --> AI_FETCH
+    SQL_MKT --> AI_FETCH
+    AI_FETCH --> AI_PROMPT
+    AI_PROMPT --> AI_LLM
+    AI_LLM --> AI_WYCKOFF
+
+    %% ==================== 连接 - Telegram ====================
+    SQL_MKT --> TG_PROVIDER
+    TG_PROVIDER --> TG_CB
+    TG_PROVIDER --> TG_CA
+    TG_PROVIDER --> TG_CF
+    TG_CB --> TG_BOT
+    TG_CA --> TG_BOT
+    TG_CF --> TG_BOT
+    SIG_PUB --> TG_ADAPTER
+    TG_ADAPTER --> TG_BOT
+    AI_WYCKOFF --> TG_BOT
+    TG_HANDLER --> TG_BOT
+    TG_SNAPSHOT --> TG_BOT
+    TG_I18N --> TG_BOT
+    TG_BOT --> USER
+
+    %% ==================== 连接 - API VIS ====================
+    SQL_MKT --> API_R
+    TSDB_K --> API_R
+    TSDB_F --> API_R
+    API_R --> API_APP
+    API_APP --> API_USER
+    SQL_MKT --> VIS_RENDER
+    TSDB_K --> VIS_RENDER
+    VIS_RENDER --> VIS_APP
+    VIS_APP --> VIS_USER
+
+    %% ==================== 连接 - 交易 ====================
+    TSDB_K --> ORD
+    TSDB_F --> ORD
+    SQL_MKT --> ORD
+    SIG_PUB --> ORD
+    TSDB_K --> NOFX
+    SQL_MKT --> NOFX
+    AI_WYCKOFF --> NOFX
+    SQL_MKT --> AWS
+
+    %% ==================== 连接 - 命理 ====================
+    FATE_LIUYAO --> FATE_BOT
+    FATE_LUNAR --> FATE_BOT
+    FATE_ASTRO --> FATE_BOT
+
+    %% ==================== 连接 - 运维 ====================
+    CFG --> DS
+    CFG --> DC
+    CFG --> MS
+    CFG --> COMPUTE
+    CFG --> SIGNAL
+    CFG --> TG
+    CFG --> AI
+    CFG --> API
+    CFG --> VIS
+    CFG --> ORD
+    LIBS --> DS
+    LIBS --> DC
+    LIBS --> MS
+    LIBS --> COMPUTE
+    LIBS --> SIGNAL
+    LIBS --> TG

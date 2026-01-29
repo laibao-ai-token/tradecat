@@ -13,6 +13,7 @@ from src.routers import (
     open_interest_router,
     funding_rate_router,
     futures_metrics_router,
+    base_data_router,
     indicator_router,
     signal_router,
 )
@@ -79,5 +80,6 @@ app.include_router(ohlc_router, prefix="/api/futures")
 app.include_router(open_interest_router, prefix="/api/futures")
 app.include_router(funding_rate_router, prefix="/api/futures")
 app.include_router(futures_metrics_router, prefix="/api/futures")
+app.include_router(base_data_router, prefix="/api/futures")
 app.include_router(indicator_router, prefix="/api")
 app.include_router(signal_router, prefix="/api")

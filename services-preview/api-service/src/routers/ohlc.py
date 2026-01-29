@@ -85,18 +85,20 @@ async def get_ohlc_history(
     try:
         rows = await run_in_threadpool(_fetch_rows)
         # 转换为 CoinGlass 格式
-        data = [
-            {
-                "time": int(row[1].timestamp() * 1000),
-                "open": str(row[2]),
-                "high": str(row[3]),
-                "low": str(row[4]),
-                "close": str(row[5]),
-                "volume": str(row[6]),
-                "volume_usd": str(row[7]) if row[7] else "0",
-            }
-            for row in reversed(rows)
-        ]
+        data = []
+        for row in reversed(rows):
+            volume_usd = row[7] if row[7] is not None else None
+            data.append(
+                {
+                    "time": int(row[1].timestamp() * 1000),
+                    "open": str(row[2]) if row[2] is not None else None,
+                    "high": str(row[3]) if row[3] is not None else None,
+                    "low": str(row[4]) if row[4] is not None else None,
+                    "close": str(row[5]) if row[5] is not None else None,
+                    "volume": str(row[6]) if row[6] is not None else None,
+                    "volume_usd": str(volume_usd) if volume_usd is not None else None,
+                }
+            )
         return api_response(data)
     except psycopg.OperationalError as e:
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, f"数据库连接失败: {e}")

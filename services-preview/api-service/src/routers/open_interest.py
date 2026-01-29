@@ -88,14 +88,14 @@ async def get_open_interest_history(
         # CoinGlass OI 格式 (OHLC style)
         data = []
         for row in reversed(rows):
-            oi_value = float(row[2]) if row[2] else 0
+            oi_value = float(row[2]) if row[2] is not None else None
             data.append(
                 {
                     "time": int(row[1].timestamp() * 1000),
-                    "open": str(oi_value),
-                    "high": str(oi_value),
-                    "low": str(oi_value),
-                    "close": str(oi_value),
+                    "open": str(oi_value) if oi_value is not None else None,
+                    "high": str(oi_value) if oi_value is not None else None,
+                    "low": str(oi_value) if oi_value is not None else None,
+                    "close": str(oi_value) if oi_value is not None else None,
                 }
             )
         return api_response(data)

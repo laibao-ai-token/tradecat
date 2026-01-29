@@ -88,14 +88,14 @@ async def get_funding_rate_history(
         # CoinGlass FR 格式 (OHLC style)
         data = []
         for row in reversed(rows):
-            fr_value = float(row[2]) if row[2] else 0
+            fr_value = float(row[2]) if row[2] is not None else None
             data.append(
                 {
                     "time": int(row[1].timestamp() * 1000),
-                    "open": str(fr_value),
-                    "high": str(fr_value),
-                    "low": str(fr_value),
-                    "close": str(fr_value),
+                    "open": str(fr_value) if fr_value is not None else None,
+                    "high": str(fr_value) if fr_value is not None else None,
+                    "low": str(fr_value) if fr_value is not None else None,
+                    "close": str(fr_value) if fr_value is not None else None,
                 }
             )
         return api_response(data)

@@ -1,0 +1,197 @@
+flowchart TB
+    %% 外部数据源
+    BN_WS[Binance WebSocket]
+    BN_REST[Binance REST API]
+    YFINANCE[yfinance 美股]
+    AKSHARE[AKShare A股]
+    LLM_API[LLM APIs]
+
+    %% 数据采集服务
+    subgraph COLLECT[数据采集层]
+        DS_WS[data-service ws.py]
+        DS_MET[data-service metrics.py]
+        DS_BF[data-service backfill.py]
+        DC[datacat-service]
+        MS[markets-service]
+    end
+
+    %% 数据库
+    subgraph DB[持久化层]
+        TSDB_K[(TimescaleDB candles_1m 3.73亿)]
+        TSDB_F[(TimescaleDB futures_5m 9457万)]
+        SQLITE_MKT[(SQLite market_data.db 34表)]
+        SQLITE_CD[(SQLite cooldown.db)]
+        SQLITE_HIST[(SQLite signal_history.db)]
+    end
+
+    %% 指标计算
+    subgraph TRADING[trading-service 指标计算]
+        TS_SCHED[scheduler 定时调度]
+        TS_IO[io.py 数据读取]
+        TS_COMP[compute.py 并行计算]
+        TS_STORE[storage.py 结果写入]
+        
+        subgraph IND[34个指标模块]
+            IND_TREND[趋势8个 EMA MACD SuperTrend]
+            IND_MOM[动量6个 RSI KDJ MFI]
+            IND_VOL[波动4个 布林带 ATR]
+            IND_VOLUME[成交量6个 OBV CVD VPVR]
+            IND_PAT[形态2个 K线形态]
+            IND_FUT[期货8个 持仓 多空比]
+        end
+    end
+
+    %% 信号检测
+    subgraph SIGNAL[signal-service 信号检测]
+        SIG_SQLITE[SQLite Engine]
+        SIG_PG[PG Engine]
+        
+        subgraph RULES[129条规则]
+            R1[core 核心]
+            R2[momentum 动量]
+            R3[trend 趋势]
+            R4[volatility 波动]
+            R5[volume 成交量]
+            R6[futures 期货]
+            R7[pattern 形态]
+            R8[misc 杂项]
+        end
+        
+        SIG_PUB[SignalPublisher 事件总线]
+        SIG_COOL[冷却管理]
+    end
+
+    %% AI服务
+    subgraph AI[ai-service AI分析]
+        AI_FETCH[数据获取]
+        AI_PROMPT[提示词管理]
+        AI_LLM[多模型客户端]
+        AI_WYCKOFF[Wyckoff分析]
+    end
+
+    %% Telegram服务
+    subgraph TG[telegram-service Bot交互]
+        TG_BOT[Bot主程序]
+        TG_HANDLER[命令处理]
+        
+        subgraph CARDS[39张排行榜卡片]
+            CARDS_B[basic 10张]
+            CARDS_A[advanced 11张]
+            CARDS_F[futures 18张]
+        end
+        
+        TG_ADAPTER[信号适配器]
+        TG_PROVIDER[数据提供者]
+        TG_SNAPSHOT[单币详情]
+    end
+
+    %% API服务
+    subgraph API[api-service REST API 8000]
+        API_OHLC[ohlc K线]
+        API_OI[open-interest 持仓]
+        API_FUND[funding-rate 费率]
+        API_IND[indicator 指标]
+        API_SIG[signal 信号]
+    end
+
+    %% 可视化服务
+    subgraph VIS[vis-service 可视化 8087]
+        VIS_KLINE[K线图渲染]
+        VIS_IND[指标图渲染]
+    end
+
+    %% 交易服务
+    subgraph TRADE[交易执行层]
+        ORD[order-service 做市]
+        AWS[aws-service 同步]
+    end
+
+    %% 运维
+    subgraph OPS[运维支撑]
+        CFG[config .env 配置]
+        SCR[scripts 脚本]
+        LIBS[libs common 共享库]
+    end
+
+    %% 用户
+    USER((用户))
+
+    %% === 连接关系 ===
+    
+    %% 数据采集
+    BN_WS --> DS_WS
+    BN_WS --> DC
+    BN_REST --> DS_MET
+    BN_REST --> DS_BF
+    BN_REST --> DC
+    YFINANCE --> MS
+    AKSHARE --> MS
+    LLM_API --> AI_LLM
+
+    %% 写入数据库
+    DS_WS --> TSDB_K
+    DS_MET --> TSDB_F
+    DS_BF --> TSDB_K
+    DC --> TSDB_K
+    DC --> TSDB_F
+    MS --> TSDB_K
+
+    %% 指标计算流程
+    TS_SCHED --> TS_IO
+    TSDB_K --> TS_IO
+    TSDB_F --> TS_IO
+    TS_IO --> TS_COMP
+    TS_COMP --> IND
+    IND --> TS_STORE
+    TS_STORE --> SQLITE_MKT
+
+    %% 信号检测流程
+    SQLITE_MKT --> SIG_SQLITE
+    TSDB_K --> SIG_PG
+    TSDB_F --> SIG_PG
+    SIG_SQLITE --> RULES
+    SIG_PG --> RULES
+    RULES --> SIG_PUB
+    SIG_PUB --> SIG_COOL
+    SIG_COOL --> SQLITE_CD
+    SIG_PUB --> SQLITE_HIST
+
+    %% AI流程
+    TSDB_K --> AI_FETCH
+    SQLITE_MKT --> AI_FETCH
+    AI_FETCH --> AI_PROMPT
+    AI_PROMPT --> AI_LLM
+    AI_LLM --> AI_WYCKOFF
+
+    %% Telegram流程
+    SQLITE_MKT --> TG_PROVIDER
+    TG_PROVIDER --> CARDS
+    CARDS --> TG_BOT
+    SIG_PUB --> TG_ADAPTER
+    TG_ADAPTER --> TG_BOT
+    AI_WYCKOFF --> TG_BOT
+    TG_HANDLER --> TG_BOT
+    TG_SNAPSHOT --> TG_BOT
+    TG_BOT --> USER
+
+    %% API流程
+    SQLITE_MKT --> API
+    TSDB_K --> API
+    TSDB_F --> API
+
+    %% 可视化流程
+    SQLITE_MKT --> VIS
+    TSDB_K --> VIS
+
+    %% 交易流程
+    TSDB_K --> ORD
+    TSDB_F --> ORD
+    SQLITE_MKT --> AWS
+
+    %% 运维
+    CFG --> COLLECT
+    CFG --> TRADING
+    CFG --> SIGNAL
+    CFG --> TG
+    LIBS --> COLLECT
+    LIBS --> TRADING

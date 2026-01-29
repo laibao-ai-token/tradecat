@@ -745,3 +745,4 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 
 - 2026-01-28: 新增信号相关性分析脚本与文档，输出分析产物目录。
 - 2026-01-29: 新增宣传材料与比赛汇报材料文档。
+- 2026-01-29: Tradecat Preview API 新增 `/api/futures/base-data`（直读 SQLite 基础数据）。

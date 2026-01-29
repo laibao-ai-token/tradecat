@@ -212,3 +212,47 @@ inf；codex resume 019c064f-f591-7b80-a5aa-0488d11a4200
 aeon；codex resume 019c064f-f558-76f0-9fd1-550b4bb5831b
 
 codex resume 019c0703-e493-7d71-a638-b97e6e62454f
+
+展示，tgbot直接用，视频展示，skill使用展示，
+
+几个关键点，数据基建，可拓展的数据统计和处理方法
+
+codex resume 019c0703-e493-7d71-a638-b97e6e62454f
+主控；codex resume 019c05f3-e80b-7032-90bf-5bf061f86cc7
+运维；codex resume 019c0090-2198-7811-b0a8-b715edaf8092
+新数据服务；codex resume 019c02ac-db25-77b1-a7be-4b7d6e1e650e
+api；codex resume 019c00c3-527e-7a83-afcb-95670b37bc33
+宣发；codex resume 019c08b0-7a5f-7a52-ad0d-6c04f6a6c70b
+git；codex resume 019c088b-ada6-7870-969d-7524c23db9e0
+
+codex resume 019c099e-a425-7ce0-b42a-2be4b56e9c0f
+codex resume 019c099f-3e3d-7522-92b5-4f5023ba1069
+codex resume 019c09a9-4b7a-77b3-b017-4242c1d07984
+codex resume 019c09c8-539e-7140-be17-e09b8ad9f821
+
+https://x.com/CryptoPainter/status/2016786049897549907?s=20
+逆向这个模型
+
+实时 / 回填（Binance UM Futures）
+
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/realtime/push/ws/klines/cryptofeed.py
+WS 实时 Kline（1m）采集与写库/JSON。
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/realtime/pull/rest/metrics/http.py
+REST 实时指标（5m）采集与写库/JSON。
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/backfill/pull/rest/klines/ccxt.py
+REST Kline 回填（支持 --interval，默认 1m）。
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/backfill/pull/rest/metrics/http.py
+REST 指标回填（5m）。
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/backfill/pull/file/klines/http_zip.py
+ZIP Kline 回填（支持 --interval，默认 1m）。
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/backfill/pull/file/metrics/http_zip.py
+ZIP 指标回填（5m）。
+
+其他（有一定逻辑，但非主采集链路）
+
+- tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/sync/pull/rest/alpha/http.py
+Alpha/符号同步类逻辑。
+
+准备5分钟的演讲视频，使用gpt朗读功能实现
+
+生产mmd在网页中来展示

@@ -134,6 +134,16 @@ python scripts/benchmark_collectors.py
 - `DATACAT_VALIDATION_SYMBOLS=BTCUSDT,ETHUSDT`
 - `DATACAT_BENCH_SYMBOLS=BTCUSDT,ETHUSDT`
 
+生产准备脚本：
+
+```bash
+python scripts/health_check.py
+bash scripts/run_ws_24h.sh
+bash scripts/run_metrics_24h.sh
+bash scripts/run_backfill_once.sh
+python scripts/runtime_baseline.py
+```
+
 ---
 
 ## 8. 变更日志

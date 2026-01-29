@@ -67,3 +67,8 @@
 - 原服务未修改且可运行。
 - 新服务严格分层目录下具备等价采集能力。
 - 对照误差 ≤ 1%，日志关键字段一致。
+
+## 10. 生产可用性补齐
+
+- 计划文档：`tasks/PRODUCTION-READINESS-PLAN.md`
+- 任务清单：`tasks/PRODUCTION-READINESS-TODO.md`

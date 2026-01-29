@@ -39,3 +39,5 @@ services-preview/datacat-service/logs/smoke-*.log
 补充：
 - `tasks/validation-report.md`：完整样本校验报告（已生成）。
 - `tasks/benchmark-report.md`：采集基准测试报告（已生成）。
+- `tasks/validation-report-db.md`：待生成（需完成 24h 写库验证）。
+- DB 连接验证：通过（localhost:5433/market_data）。

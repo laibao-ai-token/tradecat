@@ -1,0 +1,14 @@
+{
+  "ts": "2026-01-29T11:42:01Z",
+  "db": {
+    "ok": true,
+    "error": null,
+    "database": "market_data"
+  },
+  "http": {
+    "ok": true,
+    "error": null,
+    "status": 200
+  },
+  "proxy": "http://127.0.0.1:7890"
+}

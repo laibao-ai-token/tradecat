@@ -76,16 +76,20 @@ async def get_futures_metrics(
 
     try:
         rows = await run_in_threadpool(_fetch_rows)
-        data = [
-            {
-                "time": int(row[1].timestamp() * 1000),
-                "symbol": row[0],
-                "openInterest": str(row[2]) if row[2] else "0",
-                "longShortRatio": str(row[3]) if row[3] else "0",
-                "takerLongShortRatio": str(row[4]) if row[4] else "0",
-            }
-            for row in reversed(rows)
-        ]
+        data = []
+        for row in reversed(rows):
+            oi = row[2] if row[2] is not None else None
+            ls = row[3] if row[3] is not None else None
+            tl = row[4] if row[4] is not None else None
+            data.append(
+                {
+                    "time": int(row[1].timestamp() * 1000),
+                    "symbol": row[0],
+                    "openInterest": str(oi) if oi is not None else None,
+                    "longShortRatio": str(ls) if ls is not None else None,
+                    "takerLongShortRatio": str(tl) if tl is not None else None,
+                }
+            )
         return api_response(data)
     except psycopg.OperationalError as e:
         return error_response(ErrorCode.SERVICE_UNAVAILABLE, f"数据库连接失败: {e}")

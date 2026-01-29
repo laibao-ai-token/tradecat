@@ -47,12 +47,26 @@ datacat-service/
 ├── requirements.lock.txt
 ├── scripts/
 │   ├── start.sh
+│   ├── health_check.py           # DB/HTTP 健康检查
+│   ├── run_ws_24h.sh             # WS 24h 写入任务
+│   ├── run_metrics_24h.sh        # Metrics 24h 写入任务
+│   ├── run_backfill_once.sh      # Backfill 一次性执行
+│   ├── test_ws_reconnect.py      # WS 断线重连测试
+│   ├── test_rate_limit.py        # 限流/ban 逻辑测试
+│   ├── runtime_baseline.py       # 运行基线报告生成
 │   ├── validate_samples.py       # 样本验证与验收报告生成
 │   └── benchmark_collectors.py   # 采集基准测试脚本
 ├── tasks/                    # 重构计划与任务清单
 │   ├── PLAN.md
 │   ├── TODO.md
 │   ├── validation-report.md
+│   ├── validation-report-db.md
+│   ├── health-check-report.json
+│   ├── runtime-baseline.md
+│   ├── LOGGING-SPEC.md
+│   ├── PRODUCTION-READINESS-PLAN.md
+│   ├── PRODUCTION-READINESS-TODO.md
+│   ├── PRODUCTION-READINESS-STATUS.md
 │   └── task-*.md
 ├── data-json/                # JSONL 测试输出目录（不写生产库）
 └── src/
@@ -110,3 +124,4 @@ datacat-service/
 - 2026-01-29: 增加 JSONL 测试输出（data-json + pipeline/json_sink）。
 - 2026-01-29: 增加 runtime 运行时支持（结构化日志与统一错误处理）。
 - 2026-01-29: 增加验证与基准脚本（validate_samples / benchmark_collectors）。
+- 2026-01-29: 增加生产可用性脚本与报告（health_check / run_* / runtime_baseline / logging spec）。

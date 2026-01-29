@@ -5,6 +5,7 @@
 set -uo pipefail
 
 SERVICE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$SERVICE_DIR/../.." && pwd)"
 RUN_DIR="$SERVICE_DIR/pids"
 LOG_DIR="$SERVICE_DIR/logs"
 PID_FILE="$RUN_DIR/service.pid"
@@ -25,7 +26,7 @@ case "${1:-status}" in
         fi
         cd "$SERVICE_DIR"
         source .venv/bin/activate 2>/dev/null || true
-        export PYTHONPATH=src
+        export PYTHONPATH="$SERVICE_DIR/src:$ROOT_DIR/libs${PYTHONPATH:+:$PYTHONPATH}"
         nohup python3 -m src >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
         echo "datacat-service 已启动 (PID: $(cat "$PID_FILE"))"

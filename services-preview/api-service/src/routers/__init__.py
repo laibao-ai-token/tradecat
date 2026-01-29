@@ -6,6 +6,7 @@ from .ohlc import router as ohlc_router
 from .open_interest import router as open_interest_router
 from .funding_rate import router as funding_rate_router
 from .futures_metrics import router as futures_metrics_router
+from .base_data import router as base_data_router
 from .indicator import router as indicator_router
 from .signal import router as signal_router
 
@@ -16,6 +17,7 @@ __all__ = [
     "open_interest_router",
     "funding_rate_router",
     "futures_metrics_router",
+    "base_data_router",
     "indicator_router",
     "signal_router",
 ]
