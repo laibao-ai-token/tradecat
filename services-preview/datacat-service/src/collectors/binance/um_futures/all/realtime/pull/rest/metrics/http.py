@@ -31,6 +31,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from config import settings
+from runtime.errors import safe_main
+from runtime.logging_utils import setup_logging
+from pipeline.json_sink import append_jsonl, json_path
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +367,12 @@ class TimescaleAdapter:
         if not rows:
             return 0
 
+        if settings.output_mode == "json":
+            return append_jsonl(
+                json_path("metrics_5m"),
+                rows,
+                dedup_keys=("exchange", "symbol", "create_time"),
+            )
         table_name = "binance_futures_metrics_5m"
         cols = list(rows[0].keys())
 
@@ -527,6 +536,37 @@ class MetricsCollector:
                     logger.debug("采集异常 %s: %s", futures[future], e)
         return rows
 
+    def _collect_full_snapshot(self, symbols: Sequence[str], max_rounds: int = 3, retry_wait: float = 1.0) -> tuple[List[dict], set, Optional[datetime]]:
+        """JSON 模式下收齐同一时间戳的全量符号快照。"""
+        expected = set(symbols)
+        remaining = set(symbols)
+        target_ts: Optional[datetime] = None
+        collected: Dict[str, dict] = {}
+
+        for _ in range(max_rounds):
+            rows = self.collect(list(remaining))
+            if not rows:
+                time.sleep(retry_wait)
+                continue
+
+            # 以本轮采集到的最新时间为目标时间
+            max_ts = max((r.get("create_time") for r in rows if r.get("create_time")), default=None)
+            if max_ts and (target_ts is None or max_ts > target_ts):
+                target_ts = max_ts
+                collected = {}
+
+            if target_ts:
+                for r in rows:
+                    if r.get("create_time") == target_ts:
+                        collected[r.get("symbol")] = r
+
+            remaining = expected - set(collected.keys())
+            if not remaining:
+                break
+            time.sleep(retry_wait)
+
+        return list(collected.values()), remaining, target_ts
+
     def save(self, rows: List[dict]) -> int:
         if not rows:
             return 0
@@ -538,7 +578,15 @@ class MetricsCollector:
         symbols = symbols or load_symbols(settings.ccxt_exchange)
         logger.info("采集 %d 个符号 (并发=%d)", len(symbols), self._workers)
         with Timer("last_collect_duration"):
-            rows = self.collect(symbols)
+            if settings.output_mode == "json":
+                rows, missing, target_ts = self._collect_full_snapshot(symbols)
+                if missing:
+                    logger.warning("JSON 模式未收齐符号：%d/%d，跳过写入", len(missing), len(symbols))
+                    return 0
+                if target_ts:
+                    logger.info("JSON 模式完成快照: %s", target_ts)
+            else:
+                rows = self.collect(symbols)
             n = self.save(rows)
         logger.info("保存 %d 条 | %s", n, metrics)
         return n
@@ -548,7 +596,7 @@ class MetricsCollector:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    setup_logging(level=settings.log_level, fmt=settings.log_format, component="realtime.rest.metrics", log_file=settings.log_file)
     c = MetricsCollector()
     try:
         c.run_once()
@@ -557,4 +605,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(safe_main(main, component="realtime.rest.metrics"))

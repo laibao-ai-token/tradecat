@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Dict, List
 
 from .config import settings
+from .runtime.errors import safe_main
+from .runtime.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="全部启动")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    setup_logging(level=settings.log_level, fmt=settings.log_format, component="datacat.main", log_file=settings.log_file)
 
     py = sys.executable
     if args.backfill and not (args.ws or args.metrics or args.alpha or args.all):
@@ -125,4 +127,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(safe_main(main, component="datacat.main"))

@@ -26,6 +26,8 @@ from typing import Dict, Optional, Tuple
 import aiohttp
 
 from config import settings
+from runtime.errors import safe_main
+from runtime.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +292,7 @@ async def refresh_alpha_tokens(force: bool = False) -> Dict[str, Dict[str, str]]
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    setup_logging(level=settings.log_level, fmt=settings.log_format, component="sync.alpha", log_file=settings.log_file)
 
     async def run() -> None:
         tokens = await refresh_alpha_tokens(force=True)
@@ -302,4 +304,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(safe_main(main, component="sync.alpha"))

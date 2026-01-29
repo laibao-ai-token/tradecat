@@ -34,6 +34,9 @@ from psycopg import sql
 from psycopg_pool import ConnectionPool
 
 from config import settings
+from runtime.errors import safe_main
+from runtime.logging_utils import setup_logging
+from pipeline.json_sink import append_jsonl, json_path
 
 logger = logging.getLogger(__name__)
 
@@ -367,6 +370,12 @@ class TimescaleAdapter:
         if not rows:
             return 0
 
+        if settings.output_mode == "json":
+            return append_jsonl(
+                json_path("metrics_5m"),
+                rows,
+                dedup_keys=("exchange", "symbol", "create_time"),
+            )
         table_name = "binance_futures_metrics_5m"
         cols = list(rows[0].keys())
 
@@ -671,7 +680,7 @@ def main() -> None:
     parser.add_argument("--scan-only", action="store_true", help="仅扫描不补齐")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    setup_logging(level=settings.log_level, fmt=settings.log_format, component="backfill.rest.metrics", log_file=settings.log_file)
 
     mode, env_days, _, start_date = get_backfill_config()
     lookback = args.lookback if args.lookback else compute_lookback(mode, env_days, start_date)
@@ -685,4 +694,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(safe_main(main, component="backfill.rest.metrics"))

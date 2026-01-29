@@ -105,6 +105,35 @@ python src/__main__.py --alpha      # Alpha 列表采集
 python src/__main__.py --all        # WS + Metrics + Backfill + Alpha
 ```
 
+测试输出（JSONL，不写生产库）：
+
+```bash
+export DATACAT_OUTPUT_MODE=json
+export DATACAT_JSON_DIR=services-preview/datacat-service/data-json
+python src/__main__.py --metrics
+```
+
+结构化日志（可选）：
+
+```bash
+export DATACAT_LOG_FORMAT=json
+export DATACAT_LOG_LEVEL=INFO
+```
+
+验证与基准：
+
+```bash
+export DATACAT_OUTPUT_MODE=json
+export SYMBOLS_GROUPS=sample
+export SYMBOLS_GROUP_SAMPLE=BTCUSDT,ETHUSDT
+python scripts/validate_samples.py
+python scripts/benchmark_collectors.py
+```
+
+可选环境变量：
+- `DATACAT_VALIDATION_SYMBOLS=BTCUSDT,ETHUSDT`
+- `DATACAT_BENCH_SYMBOLS=BTCUSDT,ETHUSDT`
+
 ---
 
 ## 8. 变更日志
@@ -115,3 +144,4 @@ python src/__main__.py --all        # WS + Metrics + Backfill + Alpha
 - 2026-01-28: 恢复 src 预留目录（adapters/orchestration/pipeline）。
 - 2026-01-28: collectors 全深度补齐占位文件（不覆盖既有实现）。
 - 2026-01-28: collectors 结构改为 type/<impl>.py（粒度内置）。
+- 2026-01-29: 新增 JSONL 测试输出（DATACAT_OUTPUT_MODE=json）。

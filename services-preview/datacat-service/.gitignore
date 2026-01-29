@@ -51,6 +51,9 @@ dmypy.json
 logs/
 *.log
 
+# JSONL test output
+data-json/*.jsonl
+
 # Environment
 .env
 .env.local

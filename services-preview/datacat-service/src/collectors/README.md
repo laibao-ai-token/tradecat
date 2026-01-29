@@ -67,6 +67,7 @@ internal/um_futures/symbol_group/sync/sync/kafka/trades/official_sdk.py
 - collectors 只负责采集/回填/拉取及必要的落库，不做业务规则与策略计算。
 - 采集实现必须位于 `type/` 下，以 `<impl>.py` 命名。
 - 粒度（interval/depth）在实现文件内部约束与处理，不作为目录层级。
+- 测试模式可将落库切换为 JSONL 输出（`DATACAT_OUTPUT_MODE=json`）。
 
 ---
 
@@ -82,3 +83,4 @@ internal/um_futures/symbol_group/sync/sync/kafka/trades/official_sdk.py
 
 - 2026-01-28: 初始化严格分层采集目录结构与固定模板。
 - 2026-01-28: 由“granularity/impl 目录”改为“impl 文件”，粒度转为文件内部参数。
+- 2026-01-29: 增加 JSONL 测试输出约定（不写生产库）。

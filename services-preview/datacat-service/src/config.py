@@ -66,10 +66,35 @@ class Settings:
         str(SERVICE_ROOT / "logs"),
         "DATA_SERVICE_LOG_DIR",
     )))
+    log_level: str = field(default_factory=lambda: (_env(
+        "DATACAT_LOG_LEVEL",
+        "INFO",
+        "DATA_SERVICE_LOG_LEVEL",
+    ) or "INFO").upper())
+    log_format: str = field(default_factory=lambda: (_env(
+        "DATACAT_LOG_FORMAT",
+        "plain",
+        "DATA_SERVICE_LOG_FORMAT",
+    ) or "plain").lower())
+    log_file: Optional[str] = field(default_factory=lambda: _env(
+        "DATACAT_LOG_FILE",
+        None,
+        "DATA_SERVICE_LOG_FILE",
+    ))
     data_dir: Path = field(default_factory=lambda: Path(_env(
         "DATACAT_DATA_DIR",
         str(PROJECT_ROOT / "libs" / "database" / "csv"),
         "DATA_SERVICE_DATA_DIR",
+    )))
+
+    output_mode: str = field(default_factory=lambda: (_env(
+        "DATACAT_OUTPUT_MODE", "db", "DATA_SERVICE_OUTPUT_MODE"
+    ) or "db").lower())
+
+    json_dir: Path = field(default_factory=lambda: Path(_env(
+        "DATACAT_JSON_DIR",
+        str(SERVICE_ROOT / "data-json"),
+        "DATA_SERVICE_JSON_DIR",
     )))
 
     ws_gap_interval: int = field(default_factory=lambda: _int_env(
@@ -115,6 +140,7 @@ class Settings:
     def __post_init__(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.json_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

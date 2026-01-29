@@ -36,3 +36,6 @@ services-preview/datacat-service/logs/smoke-*.log
 - 超时退出表示任务已启动并进入主循环，非启动失败  
 - 若需完整回填或长跑，应移除 `timeout` 并在生产环境执行  
 
+补充：
+- `tasks/validation-report.md`：完整样本校验报告（已生成）。
+- `tasks/benchmark-report.md`：采集基准测试报告（已生成）。

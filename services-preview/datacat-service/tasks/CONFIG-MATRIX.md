@@ -7,6 +7,9 @@
 | DATACAT_DATABASE_URL     | postgresql://postgres:...:5433/...   | DATABASE_URL                              |
 | DATACAT_HTTP_PROXY       | None                                 | HTTP_PROXY / DATACAT_HTTPS_PROXY/HTTPS_PROXY |
 | DATACAT_LOG_DIR          | services-preview/datacat-service/logs| DATA_SERVICE_LOG_DIR                      |
+| DATACAT_LOG_LEVEL        | INFO                                 | DATA_SERVICE_LOG_LEVEL                    |
+| DATACAT_LOG_FORMAT       | plain                                | DATA_SERVICE_LOG_FORMAT                   |
+| DATACAT_LOG_FILE         | None                                 | DATA_SERVICE_LOG_FILE                     |
 | DATACAT_DATA_DIR         | libs/database/csv                    | DATA_SERVICE_DATA_DIR                     |
 | DATACAT_WS_GAP_INTERVAL  | 600                                  | BINANCE_WS_GAP_INTERVAL                   |
 | DATACAT_WS_GAP_LOOKBACK  | 10080                                | BINANCE_WS_GAP_LOOKBACK                   |
@@ -20,10 +23,11 @@
 | DATACAT_BACKFILL_DAYS    | 30                                   | BACKFILL_DAYS                             |
 | DATACAT_BACKFILL_START_DATE | None                              | BACKFILL_START_DATE                       |
 | DATACAT_BACKFILL_ON_START | false                               | BACKFILL_ON_START                         |
+| DATACAT_OUTPUT_MODE      | db                                   | DATA_SERVICE_OUTPUT_MODE                  |
+| DATACAT_JSON_DIR         | services-preview/datacat-service/data-json | DATA_SERVICE_JSON_DIR               |
 +--------------------------+--------------------------------------+-------------------------------------------+
 ```
 
 说明：
 - 读取逻辑集中在 `src/config.py`  
 - DATACAT_* 优先级最高  
-

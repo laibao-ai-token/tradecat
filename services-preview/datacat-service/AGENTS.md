@@ -46,18 +46,22 @@ datacat-service/
 ├── requirements-dev.txt
 ├── requirements.lock.txt
 ├── scripts/
-│   └── start.sh
+│   ├── start.sh
+│   ├── validate_samples.py       # 样本验证与验收报告生成
+│   └── benchmark_collectors.py   # 采集基准测试脚本
 ├── tasks/                    # 重构计划与任务清单
 │   ├── PLAN.md
 │   ├── TODO.md
 │   ├── validation-report.md
 │   └── task-*.md
+├── data-json/                # JSONL 测试输出目录（不写生产库）
 └── src/
     ├── __main__.py
     ├── config.py
     ├── adapters/              # 结构预留：协议/存储适配（暂空）
     ├── orchestration/         # 结构预留：编排/调度（暂空）
-    ├── pipeline/              # 结构预留：处理管道（暂空）
+    ├── pipeline/              # 处理管道层（含 JSONL 输出）
+    ├── runtime/               # 运行时支持（日志/错误处理）
     └── collectors/
         ├── README.md
         └── <source>/<market>/<scope>/<mode>/<direction>/<channel>/<type>/
@@ -75,8 +79,12 @@ datacat-service/
 - adapters/README.md: 适配层结构说明与使用边界。
 - orchestration/: 结构预留，未来用于编排与调度，不直接落采集逻辑。
 - orchestration/README.md: 编排层结构说明与使用边界。
-- pipeline/: 结构预留，未来用于规范化/校验等处理步骤，不直接落采集逻辑。
+- pipeline/: 处理层，承载轻量输出与规范化工具，不直接落采集逻辑。
+- pipeline/json_sink.py: JSONL 测试输出，避免写入生产库。
 - pipeline/README.md: 处理层结构说明与使用边界。
+- runtime/: 运行时基础设施（日志与错误处理），不承载业务采集逻辑。
+- runtime/logging_utils.py: 统一日志格式（plain/json）与输出规范。
+- runtime/errors.py: 统一异常模型与入口守护。
 
 ---
 
@@ -99,3 +107,6 @@ datacat-service/
 - 2026-01-28: 恢复 src 预留目录（adapters/orchestration/pipeline）。
 - 2026-01-28: collectors 全深度补齐占位文件（不覆盖既有实现）。
 - 2026-01-28: collectors 结构改为 type/<impl>.py（粒度内置）。
+- 2026-01-29: 增加 JSONL 测试输出（data-json + pipeline/json_sink）。
+- 2026-01-29: 增加 runtime 运行时支持（结构化日志与统一错误处理）。
+- 2026-01-29: 增加验证与基准脚本（validate_samples / benchmark_collectors）。

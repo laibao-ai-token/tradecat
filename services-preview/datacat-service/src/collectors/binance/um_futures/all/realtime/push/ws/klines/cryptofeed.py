@@ -37,6 +37,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from config import INTERVAL_TO_MS, normalize_interval, settings
+from runtime.errors import safe_main
+from runtime.logging_utils import setup_logging
+from pipeline.json_sink import append_jsonl, json_path
 
 logger = logging.getLogger("ws.collector")
 
@@ -492,6 +495,12 @@ class TimescaleAdapter:
             return 0
 
         interval = normalize_interval(interval)
+        if settings.output_mode == "json":
+            return append_jsonl(
+                json_path(f"candles_{interval}"),
+                rows,
+                dedup_keys=("exchange", "symbol", "bucket_ts"),
+            )
         table_name = f"candles_{interval}"
         cols = list(rows[0].keys())
 
@@ -550,6 +559,12 @@ class TimescaleAdapter:
         if not rows:
             return 0
 
+        if settings.output_mode == "json":
+            return append_jsonl(
+                json_path("metrics_5m"),
+                rows,
+                dedup_keys=("exchange", "symbol", "create_time"),
+            )
         table_name = "binance_futures_metrics_5m"
         cols = list(rows[0].keys())
 
@@ -734,9 +749,9 @@ class WSCollector:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    setup_logging(level=settings.log_level, fmt=settings.log_format, component="realtime.ws.klines", log_file=settings.log_file)
     WSCollector().run()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(safe_main(main, component="realtime.ws.klines"))
