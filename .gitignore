@@ -253,6 +253,18 @@ ZIP 指标回填（5m）。
 - tradecat/services-preview/datacat-service/src/collectors/binance/um_futures/all/sync/pull/rest/alpha/http.py
 Alpha/符号同步类逻辑。
 
-准备5分钟的演讲视频，使用gpt朗读功能实现
+准备5分钟的演讲视频，使用gpt朗读功能实现（待办）
 
-生产mmd在网页中来展示
+生产mmd在网页中来展示（待办）
+
+制作task制作的系统提示词（待办）
+
+自动风控管理脚本（币安）
+
+新建全字段数据库方法
+
+task；codex resume 019c0c06-87e6-7f60-98f1-97b6a9618fe0
+
+工程治理
+
+龙虾bot部署；codex resume 019c0d96-9c0c-7c40-bb46-92b60ac955dc

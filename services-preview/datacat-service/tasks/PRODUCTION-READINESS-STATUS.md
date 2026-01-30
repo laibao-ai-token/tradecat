@@ -2,13 +2,14 @@
 
 更新时间：2026-01-29
 
-## 短跑验证完成（替代 24h 长跑）
+## 未运行任务（已停止）
 
-- D2：WS 短跑（约 2 分钟）
-  - PID：`3024502` (`pids/ws-quick.pid`)
-  - 日志：`logs/ws-quick.log`
-- D3：Metrics 单次写入
-  - 日志：`logs/metrics-quick.log`
+- D2：WS 24h 写入（已停止）
+  - 最后 PID：`316807` (`pids/ws-24h.pid`)
+  - 日志：`logs/ws-24h.log`
+- D3：Metrics 24h 写入（已停止）
+  - 最后 PID：`317522` (`pids/metrics-24h.pid`)
+  - 日志：`logs/metrics-24h.log`
 
 ## 已完成测试
 

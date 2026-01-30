@@ -205,6 +205,480 @@ def render_kline_basic(params: Dict, output: str) -> Tuple[object, str]:
     return _fig_to_png(fig), "image/png"
 
 
+def _ma_series(series: pd.Series, length: int, ma_type: str) -> pd.Series:
+    """计算均值序列，支持 SMA/EMA/RMA。"""
+    if length <= 1:
+        return series
+    ma_type = str(ma_type or "SMA").upper()
+    if ma_type == "EMA":
+        return series.ewm(span=length, adjust=False).mean()
+    if ma_type == "RMA":
+        alpha = 1.0 / length
+        return series.ewm(alpha=alpha, adjust=False).mean()
+    return series.rolling(length).mean()
+
+
+def _compute_asr_bands(
+    df: pd.DataFrame,
+    length: int,
+    width_coef: float,
+    ma_type: str = "SMA",
+    use_vol: bool = True,
+    atr_len: int = 16,
+    sd_len: int = 10,
+    hl_len: int = 10,
+    vol_smooth: int = 8,
+) -> Dict[str, pd.Series]:
+    """计算 ASR 通道序列（返回 mid/width 与各层轨道）。"""
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+
+    avg_high = _ma_series(high, length, ma_type)
+    avg_low = _ma_series(low, length, ma_type)
+    mid = (avg_high + avg_low) / 2.0
+    base = (avg_high - avg_low).abs() / 2.0
+
+    if use_vol:
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [
+                (high - low),
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = _ma_series(tr, atr_len, "RMA")
+        sd = close.rolling(sd_len).std()
+        hlv = _ma_series(high - low, hl_len, "EMA")
+        v_raw = (atr + sd + hlv) / 3.0
+        v_norm = v_raw / (mid.abs() + 1e-9)
+        v = _ma_series(v_norm, vol_smooth, "EMA")
+        width = base * float(width_coef) * (1.0 + v)
+    else:
+        width = base * float(width_coef)
+
+    return {
+        "mid": mid,
+        "width": width,
+        "u025": mid + width * 0.25,
+        "u05": mid + width * 0.5,
+        "u1": mid + width * 1.0,
+        "l025": mid - width * 0.25,
+        "l05": mid - width * 0.5,
+        "l1": mid - width * 1.0,
+    }
+
+
+def _draw_segments(ax, x: float, y: float, segments: List[Tuple[str, str]], fontsize: int = 9) -> None:
+    """在轴坐标中绘制多段彩色文本。"""
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    cur_x = x
+    for text, color in segments:
+        t = ax.text(
+            cur_x,
+            y,
+            text,
+            transform=ax.transAxes,
+            color=color,
+            fontsize=fontsize,
+            va="top",
+            ha="left",
+        )
+        fig.canvas.draw()
+        bbox = t.get_window_extent(renderer=renderer)
+        inv = ax.transAxes.inverted()
+        x0 = inv.transform((bbox.x0, bbox.y0))[0]
+        x1 = inv.transform((bbox.x1, bbox.y0))[0]
+        cur_x += max(0.0, x1 - x0)
+
+
+def _fetch_klines_single_interval(params: Dict) -> pd.DataFrame:
+    """按单周期读取 PG K 线，返回 DataFrame。"""
+    from core.settings import get_pg_pool
+
+    symbol = params.get("symbol")
+    if not symbol:
+        raise ValueError("缺少参数 symbol")
+    symbol = str(symbol).upper()
+
+    interval = _normalize_interval(params.get("interval") or params.get("base_interval") or "1d")
+    exchange = params.get("exchange") or os.environ.get("BINANCE_WS_DB_EXCHANGE") or os.environ.get("DB_EXCHANGE") or "binance_futures_um"
+    limit = int(params.get("limit", 500))
+    if limit <= 0:
+        raise ValueError("limit 必须 > 0")
+
+    end_ms = params.get("end_time") or params.get("endTime")
+    start_ms = params.get("start_time") or params.get("startTime")
+    range_days = _parse_range_days(params.get("range_days") or params.get("rangeDays") or params.get("range"))
+
+    table = _interval_table(interval)
+    with get_pg_pool().connection() as conn:
+        with conn.cursor() as cur:
+            if end_ms is None:
+                cur.execute(
+                    f"SELECT MAX(bucket_ts) FROM market_data.{table} WHERE symbol=%s AND exchange=%s",
+                    (symbol, exchange),
+                )
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    raise ValueError(f"无可用数据: {symbol} {exchange} ({interval})")
+                end_ms = int(row[0].timestamp() * 1000)
+
+            if start_ms is None:
+                if range_days is None:
+                    start_ms = None
+                else:
+                    start_ms = int(end_ms - range_days * 86400000)
+
+            if start_ms is None:
+                cur.execute(
+                    f"""
+                    SELECT bucket_ts, open, high, low, close, volume
+                    FROM market_data.{table}
+                    WHERE symbol=%s AND exchange=%s
+                    ORDER BY bucket_ts DESC
+                    LIMIT %s
+                    """,
+                    (symbol, exchange, limit),
+                )
+                rows = cur.fetchall()
+                rows = list(reversed(rows))
+            else:
+                if start_ms > end_ms:
+                    start_ms, end_ms = end_ms, start_ms
+                cur.execute(
+                    f"""
+                    SELECT bucket_ts, open, high, low, close, volume
+                    FROM market_data.{table}
+                    WHERE symbol=%s
+                      AND exchange=%s
+                      AND bucket_ts >= to_timestamp(%s / 1000.0)
+                      AND bucket_ts <= to_timestamp(%s / 1000.0)
+                    ORDER BY bucket_ts ASC
+                    """,
+                    (symbol, exchange, start_ms, end_ms),
+                )
+                rows = cur.fetchall()
+
+    if not rows:
+        raise ValueError(f"无可用数据: {symbol} {exchange} ({interval})")
+
+    df = pd.DataFrame(
+        rows,
+        columns=["timestamp", "Open", "High", "Low", "Close", "Volume"],
+    )
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df.set_index("timestamp", inplace=True)
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def render_asr_channel(params: Dict, output: str) -> Tuple[object, str]:
+    """
+    ASR 通道风格 K 线（暗色风格 + 彩虹分层）。
+
+    必填：
+    - symbol 或 open/high/low/close
+
+    可选：
+    - interval/base_interval: 周期（默认 1d）
+    - limit/range_days/startTime/endTime/exchange
+    - length: 平均撑压长度（默认 94）
+    - width_coef: 通道宽度系数（默认 7）
+    - ma_type: SMA/EMA/RMA（默认 SMA）
+    - use_vol: 是否启用波动率加权（默认 True）
+    - atr_len/sd_len/hl_len/vol_smooth
+    - title: 图表标题
+    """
+    if "open" in params and "high" in params and "low" in params and "close" in params:
+        df = pd.DataFrame(
+            {
+                "Open": params["open"],
+                "High": params["high"],
+                "Low": params["low"],
+                "Close": params["close"],
+            }
+        )
+        if "volume" in params:
+            df["Volume"] = params["volume"]
+        if "timestamps" in params and len(params["timestamps"]) == len(df):
+            df.index = pd.to_datetime(params["timestamps"])
+        else:
+            df.index = pd.RangeIndex(len(df))
+    else:
+        df = _fetch_klines_single_interval(params)
+
+    length = int(params.get("length", 94))
+    width_coef = float(params.get("width_coef", 7.0))
+    ma_type = params.get("ma_type", "SMA")
+    use_vol = bool(params.get("use_vol", True))
+    atr_len = int(params.get("atr_len", 16))
+    sd_len = int(params.get("sd_len", 10))
+    hl_len = int(params.get("hl_len", 10))
+    vol_smooth = int(params.get("vol_smooth", 8))
+
+    bands = _compute_asr_bands(
+        df,
+        length=length,
+        width_coef=width_coef,
+        ma_type=ma_type,
+        use_vol=use_vol,
+        atr_len=atr_len,
+        sd_len=sd_len,
+        hl_len=hl_len,
+        vol_smooth=vol_smooth,
+    )
+
+    color_u1 = "#e74c3c"
+    color_u05 = "#e67e22"
+    color_u025 = "#f1c40f"
+    color_mid = "#2ecc71"
+    color_l025 = "#1abc9c"
+    color_l05 = "#3498db"
+    color_l1 = "#2ecc71"
+
+    mc = mpf.make_marketcolors(
+        up="#22c55e",
+        down="#ef4444",
+        edge="inherit",
+        wick="inherit",
+        volume="inherit",
+    )
+    style = mpf.make_mpf_style(
+        base_mpf_style="nightclouds",
+        marketcolors=mc,
+        facecolor="#0f1422",
+        figcolor="#0f1422",
+        gridcolor="#232a3a",
+        gridstyle="-",
+        rc={
+            "axes.labelcolor": "#cbd5e1",
+            "xtick.color": "#94a3b8",
+            "ytick.color": "#94a3b8",
+            "axes.edgecolor": "#1f2937",
+            "font.size": 9,
+        },
+    )
+
+    add_plots = [
+        mpf.make_addplot(bands["u1"], color=color_u1, width=1.2),
+        mpf.make_addplot(bands["u05"], color=color_u05, width=1.0),
+        mpf.make_addplot(bands["u025"], color=color_u025, width=1.0),
+        mpf.make_addplot(bands["mid"], color=color_mid, width=1.4),
+        mpf.make_addplot(bands["l025"], color=color_l025, width=1.0),
+        mpf.make_addplot(bands["l05"], color=color_l05, width=1.0),
+        mpf.make_addplot(bands["l1"], color=color_l1, width=1.2),
+    ]
+
+    fill_between = [
+        dict(y1=bands["u1"].values, y2=bands["u05"].values, color=color_u1, alpha=0.08),
+        dict(y1=bands["u05"].values, y2=bands["u025"].values, color=color_u05, alpha=0.08),
+        dict(y1=bands["u025"].values, y2=bands["mid"].values, color=color_u025, alpha=0.08),
+        dict(y1=bands["mid"].values, y2=bands["l025"].values, color=color_l025, alpha=0.08),
+        dict(y1=bands["l025"].values, y2=bands["l05"].values, color=color_l05, alpha=0.08),
+        dict(y1=bands["l05"].values, y2=bands["l1"].values, color=color_l1, alpha=0.08),
+    ]
+
+    title = params.get("title", "")
+
+    fig, axes = mpf.plot(
+        df,
+        type="candle",
+        style=style,
+        addplot=add_plots,
+        volume="Volume" in df.columns,
+        returnfig=True,
+        figscale=1.1,
+        figratio=(16, 9),
+        title=title,
+        fill_between=fill_between,
+        panel_ratios=(6, 2),
+        ylabel="",
+        ylabel_lower="",
+        y_on_right=True,
+    )
+
+    ax = axes[0]
+    if len(df) > 0:
+        x_right = len(df) - 1 + max(6, int(len(df) * 0.02))
+        ax.set_xlim(-1, x_right + 4)
+
+        def _label(y_val: float, label_color: str) -> None:
+            if not math.isfinite(y_val):
+                return
+            ax.text(
+                x_right,
+                y_val,
+                f"{y_val:,.2f}",
+                color="#0b0f1a",
+                fontsize=8,
+                va="center",
+                ha="left",
+                bbox=dict(boxstyle="round,pad=0.25", facecolor=label_color, edgecolor="none", alpha=0.9),
+            )
+
+        _label(bands["u1"].iloc[-1], color_u1)
+        _label(bands["u05"].iloc[-1], color_u05)
+        _label(bands["u025"].iloc[-1], color_u025)
+        _label(bands["mid"].iloc[-1], color_mid)
+        _label(bands["l025"].iloc[-1], color_l025)
+        _label(bands["l05"].iloc[-1], color_l05)
+        _label(bands["l1"].iloc[-1], color_l1)
+
+    # ==================== 左上角图例与水印 ====================
+    last_ts = df.index[-1]
+    if isinstance(last_ts, pd.Timestamp):
+        ts_text = last_ts.strftime("%Y-%m-%d %H:%M")
+    else:
+        ts_text = "最新"
+
+    symbol = str(params.get("symbol", "BNBUSDT")).upper()
+    interval = _normalize_interval(params.get("interval") or params.get("base_interval") or "1d")
+    exchange = params.get("exchange") or os.environ.get("BINANCE_WS_DB_EXCHANGE") or os.environ.get("DB_EXCHANGE") or "binance_futures_um"
+
+    last_row = df.iloc[-1]
+    open_v = float(last_row["Open"])
+    high_v = float(last_row["High"])
+    low_v = float(last_row["Low"])
+    close_v = float(last_row["Close"])
+    prev_close = float(df["Close"].iloc[-2]) if len(df) > 1 else close_v
+    chg = close_v - prev_close
+    chg_pct = (chg / prev_close) * 100 if prev_close else 0.0
+
+    ohlc_segments = [
+        (f"{symbol} · {interval} · {exchange}  ", "#e5e7eb"),
+        ("开=", "#9ca3af"),
+        (f"{open_v:,.3f}  ", "#22c55e" if close_v >= open_v else "#ef4444"),
+        ("高=", "#9ca3af"),
+        (f"{high_v:,.3f}  ", "#22c55e"),
+        ("低=", "#9ca3af"),
+        (f"{low_v:,.3f}  ", "#ef4444"),
+        ("收=", "#9ca3af"),
+        (f"{close_v:,.3f}  ", "#22c55e" if chg >= 0 else "#ef4444"),
+        (f"{chg:+.3f} ({chg_pct:+.2f}%)", "#22c55e" if chg >= 0 else "#ef4444"),
+    ]
+
+    vol_text = None
+    if "Volume" in df.columns:
+        vol = float(last_row.get("Volume", 0.0))
+        vol_text = f"Vol · ticks  {vol/1e6:.2f}M"
+
+    # 第二条参数显示（仅用于展示，数值来自 length=100 的通道）
+    bands_100 = _compute_asr_bands(
+        df,
+        length=100,
+        width_coef=float(params.get("width_coef", 7.0)),
+        ma_type=params.get("ma_type", "SMA"),
+        use_vol=bool(params.get("use_vol", True)),
+        atr_len=int(params.get("atr_len", 16)),
+        sd_len=int(params.get("sd_len", 10)),
+        hl_len=int(params.get("hl_len", 10)),
+        vol_smooth=int(params.get("vol_smooth", 8)),
+    )
+
+    legend_y = 0.975
+    ax.text(
+        0.01,
+        legend_y,
+        f"Crypto_Painter 与 TradingView.com 共同, {ts_text}",
+        transform=ax.transAxes,
+        color="#e5e7eb",
+        fontsize=9,
+        va="top",
+        ha="left",
+    )
+    legend_y -= 0.035
+    _draw_segments(ax, 0.01, legend_y, ohlc_segments, fontsize=9)
+    legend_y -= 0.035
+    ax.text(
+        0.01,
+        legend_y,
+        "Watermark (X(Twitter)) : @CryptoPainter , large, top, center, 5, 30",
+        transform=ax.transAxes,
+        color="#cbd5e1",
+        fontsize=8,
+        va="top",
+        ha="left",
+    )
+    legend_y -= 0.030
+    ax.text(
+        0.01,
+        legend_y,
+        "too* (Top, Center, Normal, Top, Right, Normal)",
+        transform=ax.transAxes,
+        color="#cbd5e1",
+        fontsize=8,
+        va="top",
+        ha="left",
+    )
+    legend_y -= 0.030
+    ax.text(
+        0.01,
+        legend_y,
+        "CryptoPainter ASR-VC v1.5 (BTC(通用), 5, 2, 16, 10, 8, 震荡模式)",
+        transform=ax.transAxes,
+        color="#cbd5e1",
+        fontsize=8,
+        va="top",
+        ha="left",
+    )
+    legend_y -= 0.030
+    if vol_text:
+        ax.text(
+            0.01,
+            legend_y,
+            vol_text,
+            transform=ax.transAxes,
+            color="#7dd3fc",
+            fontsize=8,
+            va="top",
+            ha="left",
+        )
+        legend_y -= 0.030
+    ax.text(
+        0.01,
+        legend_y,
+        "CryptoPainter ASR-VC v1.5 (BTC(通用), 100, 2, 16, 10, 8, 震荡模式) ",
+        transform=ax.transAxes,
+        color="#cbd5e1",
+        fontsize=8,
+        va="top",
+        ha="left",
+    )
+    _draw_segments(
+        ax,
+        0.47,
+        legend_y,
+        [
+            (f"{bands_100['u05'].iloc[-1]:,.3f}  ", color_u05),
+            (f"{bands_100['l05'].iloc[-1]:,.3f}  ", color_l05),
+            (f"{bands_100['mid'].iloc[-1]:,.3f}  ", color_mid),
+            (f"{bands_100['l1'].iloc[-1]:,.3f}  ", color_l1),
+            (f"{bands_100['u1'].iloc[-1]:,.3f}  ", color_u1),
+            (f"{bands_100['u025'].iloc[-1]:,.3f}  ", color_u025),
+            (f"{bands_100['l025'].iloc[-1]:,.3f}", color_l025),
+        ],
+        fontsize=8,
+    )
+
+    fig.text(
+        0.62,
+        0.965,
+        "X(Twitter) : @CryptoPainter",
+        color="#e5e7eb",
+        fontsize=11,
+        ha="left",
+        va="top",
+    )
+
+    return _fig_to_png(fig), "image/png"
+
+
 # ==================== 多周期K线包络（复用外部模板） ====================
 _INTERVAL_PATTERN = re.compile(r"^(\d+)([smhdwM])$")
 _INTERVAL_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "M": 2592000}
@@ -1813,6 +2287,44 @@ def register_defaults() -> TemplateRegistry:
             },
         ),
         render_kline_envelope,
+    )
+    registry.register(
+        TemplateMeta(
+            template_id="asr-channel",
+            name="ASR 通道",
+            description="暗色彩虹通道 K 线（均值高低 + 对称分层）",
+            outputs=["png"],
+            params=[
+                "symbol(str) 或 open/high/low/close",
+                "interval?(str)",
+                "limit?(int)",
+                "range_days?(int | str)",
+                "startTime?(int)",
+                "endTime?(int)",
+                "exchange?(str)",
+                "length?(int)",
+                "width_coef?(float)",
+                "ma_type?(str)",
+                "use_vol?(bool)",
+                "atr_len?(int)",
+                "sd_len?(int)",
+                "hl_len?(int)",
+                "vol_smooth?(int)",
+                "title?(str)",
+            ],
+            sample={
+                "template_id": "asr-channel",
+                "output": "png",
+                "params": {
+                    "symbol": "BNBUSDT",
+                    "interval": "1d",
+                    "limit": 365,
+                    "length": 94,
+                    "width_coef": 7,
+                },
+            },
+        ),
+        render_asr_channel,
     )
     registry.register(
         TemplateMeta(

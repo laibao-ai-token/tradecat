@@ -27,9 +27,9 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Dict, Iterator, List, Optional, Sequence
+from typing import Dict, Iterator, List, Optional, Sequence, Set
 
 import requests
 from psycopg import sql
@@ -53,6 +53,8 @@ class Metrics:
     requests_failed: int = 0
     rows_written: int = 0
     zip_downloads: int = 0
+    gaps_found: int = 0
+    gaps_filled: int = 0
 
     last_collect_duration: float = 0
     last_collect_time: float = 0
@@ -74,6 +76,8 @@ class Metrics:
                 "requests_failed": self.requests_failed,
                 "rows_written": self.rows_written,
                 "zip_downloads": self.zip_downloads,
+                "gaps_found": self.gaps_found,
+                "gaps_filled": self.gaps_filled,
                 "last_collect_duration": self.last_collect_duration,
                 "last_collect_time": self.last_collect_time,
             }
@@ -665,6 +669,8 @@ class WSCollector:
         self._buffer_lock = asyncio.Lock()
         self._last_candle_time: float = 0
         self._flush_task: Optional[asyncio.Task] = None
+        self._gap_stop = threading.Event()
+        self._gap_thread: Optional[threading.Thread] = None
 
     def _load_symbols(self) -> Dict[str, str]:
         raw = load_symbols(settings.ccxt_exchange)
@@ -724,6 +730,14 @@ class WSCollector:
             logger.error("批量写入失败: %s", e)
 
     def run(self) -> None:
+        if settings.backfill_on_start:
+            threading.Thread(target=self._run_backfill, args=(1,), daemon=True).start()
+
+        if settings.ws_gap_interval > 0:
+            self._gap_stop.clear()
+            self._gap_thread = threading.Thread(target=self._gap_loop, daemon=True)
+            self._gap_thread.start()
+
         ws = BinanceWSAdapter(http_proxy=settings.http_proxy)
         ws.subscribe(list(self._symbols.keys()), self._on_candle_sync)
 
@@ -731,6 +745,7 @@ class WSCollector:
             ws.run()
         finally:
             asyncio.run(self._final_flush())
+            self._gap_stop.set()
             self._ts.close()
 
     def _on_candle_sync(self, e: CandleEvent) -> None:
@@ -746,6 +761,77 @@ class WSCollector:
     async def _final_flush(self) -> None:
         async with self._buffer_lock:
             await self._flush()
+
+    def _gap_loop(self) -> None:
+        """智能缺口巡检 - 增量检查 + 自适应回溯"""
+        max_days = max(1, (settings.ws_gap_lookback + 1439) // 1440)
+        lookback_days = min(2, max_days)
+        unfillable: Set[tuple] = set()
+
+        while not self._gap_stop.wait(settings.ws_gap_interval):
+            try:
+                has_gaps, lookback_days = self._smart_backfill(lookback_days, unfillable)
+                if not has_gaps:
+                    lookback_days = max(1, lookback_days - 1)
+                else:
+                    lookback_days = min(max_days, lookback_days + 1)
+            except Exception as e:
+                logger.error("周期缺口检查失败: %s", e)
+
+    def _smart_backfill(self, lookback_days: int, unfillable: Set[tuple]) -> tuple:
+        """智能补齐 - 返回 (是否有缺口, 建议回溯天数)"""
+        from collectors.binance.um_futures.all.backfill.pull.file.klines.http_zip import ZipBackfiller
+        from collectors.binance.um_futures.all.backfill.pull.rest.klines.ccxt import GapScanner, RestBackfiller
+
+        t0 = time.perf_counter()
+        symbols = list(self._symbols.values())
+        end = date.today()
+        start = end - timedelta(days=lookback_days)
+
+        scanner = GapScanner(self._ts)
+        gaps = scanner.scan_klines(symbols, start, end, "1m", 0.95)
+
+        if not gaps:
+            return False, lookback_days
+
+        filtered = {}
+        for sym, sym_gaps in gaps.items():
+            new_gaps = [g for g in sym_gaps if (sym, g.date) not in unfillable]
+            if new_gaps:
+                filtered[sym] = new_gaps
+
+        if not filtered:
+            logger.debug("所有缺口已知无法补齐，跳过")
+            return False, lookback_days
+
+        total_gaps = sum(len(g) for g in filtered.values())
+        metrics.inc("gaps_found", total_gaps)
+        logger.info("发现 %d 个符号 %d 个缺口，开始补齐 (回溯%d天)", len(filtered), total_gaps, lookback_days)
+
+        zip_bf = ZipBackfiller(self._ts, workers=2)
+        zip_bf.cleanup_old_files()
+        filled = zip_bf.fill_kline_gaps(filtered, "1m")
+
+        remaining = scanner.scan_klines(list(filtered.keys()), start, end, "1m", 0.95)
+        if remaining:
+            rest_bf = RestBackfiller(self._ts, workers=2)
+            filled += rest_bf.fill_gaps(remaining, "1m")
+
+            still_missing = scanner.scan_klines(list(remaining.keys()), start, end, "1m", 0.95)
+            if still_missing:
+                for sym, sym_gaps in still_missing.items():
+                    for g in sym_gaps:
+                        unfillable.add((sym, g.date))
+                logger.debug("记录 %d 个无法补齐的缺口", sum(len(g) for g in still_missing.values()))
+
+        metrics.inc("gaps_filled", filled)
+        logger.info("缺口补齐完成: 填充 %d 条, 耗时 %.1fs", filled, time.perf_counter() - t0)
+        return True, lookback_days
+
+    def _run_backfill(self, lookback_days: int = 1) -> None:
+        """运行缺口补齐 (启动时调用)"""
+        lookback_days = max(1, lookback_days)
+        self._smart_backfill(lookback_days, set())
 
 
 def main() -> None:
