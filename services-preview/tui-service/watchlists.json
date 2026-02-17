@@ -1,0 +1,31 @@
+{
+  "us": [
+    "NVDA",
+    "META",
+    "ORCL",
+    "AAPL"
+  ],
+  "hk": [
+    "00700",
+    "01810",
+    "03690"
+  ],
+  "cn": [
+    "SH600519",
+    "SZ000001",
+    "SH688256",
+    "SH688041",
+    "SH603019"
+  ],
+  "crypto": [
+    "BTC_USDT",
+    "ETH_USDT",
+    "DOGE_USDT",
+    "SOL_USDT",
+    "BNB_USDT"
+  ],
+  "metals": [
+    "XAUUSD",
+    "XAGUSD"
+  ]
+}
