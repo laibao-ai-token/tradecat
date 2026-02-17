@@ -14,7 +14,7 @@ cd "$ROOT"
 CORE_SERVICES=(data-service trading-service telegram-service ai-service signal-service)
 
 # 预览服务（services-preview/ 目录）
-PREVIEW_SERVICES=(markets-service vis-service order-service fate-service)
+PREVIEW_SERVICES=(markets-service vis-service order-service fate-service tui-service)
 
 # ==================== 工具函数 ====================
 success() { echo -e "\033[0;32m✓ $1\033[0m"; }

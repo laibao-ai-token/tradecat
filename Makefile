@@ -2,7 +2,7 @@
 # TradeCat Makefile
 # ==============================================================================
 
-.PHONY: help init start stop status daemon daemon-stop verify clean export-db
+.PHONY: help init install start stop status daemon daemon-stop verify clean export-db backtest
 
 # 默认目标
 help:
@@ -10,6 +10,7 @@ help:
 	@echo ""
 	@echo "Usage:"
 	@echo "    make init        - 初始化所有服务（虚拟环境 + 依赖）"
+	@echo "    make install     - 一键安装"
 	@echo "    make start       - 启动所有服务"
 	@echo "    make stop        - 停止所有服务"
 	@echo "    make status      - 查看服务状态"
@@ -18,6 +19,7 @@ help:
 	@echo "    make verify      - 运行代码验证"
 	@echo "    make clean       - 清理缓存文件"
 	@echo "    make export-db   - 导出 TimescaleDB 数据"
+	@echo "    make backtest    - 运行 signal-service 回测（M1）"
 	@echo ""
 
 # 初始化
@@ -64,3 +66,7 @@ clean:
 # 数据库导出
 export-db:
 	@./scripts/export_timescaledb.sh
+
+# 回测（M1）
+backtest:
+	@./scripts/backtest.sh
