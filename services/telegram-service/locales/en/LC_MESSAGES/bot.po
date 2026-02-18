@@ -3081,6 +3081,54 @@ msgstr "🔄 Taker flipped long! {prev} → {curr}"
 msgid "signal.pg.msg.taker_flip_short"
 msgstr "🔄 Taker flipped short! {prev} → {curr}"
 
+msgid "signal.pg.msg.breakout_up"
+msgstr "⬆️ Breakout up! +{pct}% (base {base})"
+
+msgid "signal.pg.msg.breakout_down"
+msgstr "⬇️ Breakdown! -{pct}% (base {base})"
+
+msgid "signal.pg.msg.gap_up"
+msgstr "🟢 Gap up {pct}%"
+
+msgid "signal.pg.msg.gap_down"
+msgstr "🔴 Gap down {pct}%"
+
+msgid "signal.pg.msg.bullish_engulfing"
+msgstr "🟢 Bullish engulfing"
+
+msgid "signal.pg.msg.bearish_engulfing"
+msgstr "🔴 Bearish engulfing"
+
+msgid "signal.pg.msg.doji"
+msgstr "⚖️ Doji (body ratio {ratio})"
+
+msgid "signal.pg.msg.range_expansion"
+msgstr "📈 Range expansion {ratio}x"
+
+msgid "signal.pg.msg.us_ema_cross_up"
+msgstr "🟢 EMA cross up ({fast}/{slow}), spread {spread}%"
+
+msgid "signal.pg.msg.us_ema_cross_down"
+msgstr "🔴 EMA cross down ({fast}/{slow}), spread {spread}%"
+
+msgid "signal.pg.msg.us_rsi_rebound"
+msgstr "🟢 RSI rebound to {rsi} (above {th})"
+
+msgid "signal.pg.msg.us_rsi_fade"
+msgstr "🔴 RSI fade to {rsi} (below {th})"
+
+msgid "signal.pg.msg.us_range_breakout_up"
+msgstr "🟢 Range breakout up {pct}% | volume {vol}x"
+
+msgid "signal.pg.msg.us_range_breakout_down"
+msgstr "🔴 Range breakout down {pct}% | volume {vol}x"
+
+msgid "signal.pg.msg.us_hammer_reversal"
+msgstr "🟢 Hammer reversal | volume {vol}x | range {range}%"
+
+msgid "signal.pg.msg.us_shooting_star"
+msgstr "🔴 Shooting star reversal | volume {vol}x | range {range}%"
+
 # Signal type labels
 msgid "signal.pg.type.price_surge"
 msgstr "Price surge"
@@ -3114,6 +3162,57 @@ msgstr "Taker ratio flip long"
 
 msgid "signal.pg.type.taker_ratio_flip_short"
 msgstr "Taker ratio flip short"
+
+msgid "signal.pg.type.breakout_up"
+msgstr "Breakout up"
+
+msgid "signal.pg.type.breakout_down"
+msgstr "Breakout down"
+
+msgid "signal.pg.type.gap_up"
+msgstr "Gap up"
+
+msgid "signal.pg.type.gap_down"
+msgstr "Gap down"
+
+msgid "signal.pg.type.bullish_engulfing"
+msgstr "Bullish engulfing"
+
+msgid "signal.pg.type.bearish_engulfing"
+msgstr "Bearish engulfing"
+
+msgid "signal.pg.type.doji"
+msgstr "Doji"
+
+msgid "signal.pg.type.range_expansion_up"
+msgstr "Range expansion up"
+
+msgid "signal.pg.type.range_expansion_down"
+msgstr "Range expansion down"
+
+msgid "signal.pg.type.us_ema_cross_up"
+msgstr "US EMA cross up"
+
+msgid "signal.pg.type.us_ema_cross_down"
+msgstr "US EMA cross down"
+
+msgid "signal.pg.type.us_rsi_rebound"
+msgstr "US RSI rebound"
+
+msgid "signal.pg.type.us_rsi_fade"
+msgstr "US RSI fade"
+
+msgid "signal.pg.type.us_range_breakout_up"
+msgstr "US range breakout up"
+
+msgid "signal.pg.type.us_range_breakout_down"
+msgstr "US range breakout down"
+
+msgid "signal.pg.type.us_hammer_reversal"
+msgstr "US hammer reversal"
+
+msgid "signal.pg.type.us_shooting_star"
+msgstr "US shooting star reversal"
 
 # Format labels
 msgid "signal.pg.label.direction"

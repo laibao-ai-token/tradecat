@@ -3081,6 +3081,54 @@ msgstr "🔄 主动成交翻多! {prev} → {curr}"
 msgid "signal.pg.msg.taker_flip_short"
 msgstr "🔄 主动成交翻空! {prev} → {curr}"
 
+msgid "signal.pg.msg.breakout_up"
+msgstr "⬆️ 向上突破! +{pct}% (基准 {base})"
+
+msgid "signal.pg.msg.breakout_down"
+msgstr "⬇️ 向下跌破! -{pct}% (基准 {base})"
+
+msgid "signal.pg.msg.gap_up"
+msgstr "🟢 跳空高开 {pct}%"
+
+msgid "signal.pg.msg.gap_down"
+msgstr "🔴 跳空低开 {pct}%"
+
+msgid "signal.pg.msg.bullish_engulfing"
+msgstr "🟢 看涨吞没形态"
+
+msgid "signal.pg.msg.bearish_engulfing"
+msgstr "🔴 看跌吞没形态"
+
+msgid "signal.pg.msg.doji"
+msgstr "⚖️ 十字星 (实体占比 {ratio})"
+
+msgid "signal.pg.msg.range_expansion"
+msgstr "📈 波动放大 {ratio}x"
+
+msgid "signal.pg.msg.us_ema_cross_up"
+msgstr "🟢 EMA金叉 ({fast}/{slow}), 扩散 {spread}%"
+
+msgid "signal.pg.msg.us_ema_cross_down"
+msgstr "🔴 EMA死叉 ({fast}/{slow}), 扩散 {spread}%"
+
+msgid "signal.pg.msg.us_rsi_rebound"
+msgstr "🟢 RSI反弹到 {rsi} (上穿 {th})"
+
+msgid "signal.pg.msg.us_rsi_fade"
+msgstr "🔴 RSI回落到 {rsi} (下破 {th})"
+
+msgid "signal.pg.msg.us_range_breakout_up"
+msgstr "🟢 区间上破 {pct}% | 量能 {vol}x"
+
+msgid "signal.pg.msg.us_range_breakout_down"
+msgstr "🔴 区间下破 {pct}% | 量能 {vol}x"
+
+msgid "signal.pg.msg.us_hammer_reversal"
+msgstr "🟢 锤子线反转 | 量能 {vol}x | 波幅 {range}%"
+
+msgid "signal.pg.msg.us_shooting_star"
+msgstr "🔴 流星线反转 | 量能 {vol}x | 波幅 {range}%"
+
 # 信号类型标签
 msgid "signal.pg.type.price_surge"
 msgstr "价格拉升"
@@ -3114,6 +3162,57 @@ msgstr "主动成交翻多"
 
 msgid "signal.pg.type.taker_ratio_flip_short"
 msgstr "主动成交翻空"
+
+msgid "signal.pg.type.breakout_up"
+msgstr "上破前高"
+
+msgid "signal.pg.type.breakout_down"
+msgstr "下破前低"
+
+msgid "signal.pg.type.gap_up"
+msgstr "跳空高开"
+
+msgid "signal.pg.type.gap_down"
+msgstr "跳空低开"
+
+msgid "signal.pg.type.bullish_engulfing"
+msgstr "看涨吞没"
+
+msgid "signal.pg.type.bearish_engulfing"
+msgstr "看跌吞没"
+
+msgid "signal.pg.type.doji"
+msgstr "十字星"
+
+msgid "signal.pg.type.range_expansion_up"
+msgstr "波动放大上行"
+
+msgid "signal.pg.type.range_expansion_down"
+msgstr "波动放大下行"
+
+msgid "signal.pg.type.us_ema_cross_up"
+msgstr "美股EMA金叉"
+
+msgid "signal.pg.type.us_ema_cross_down"
+msgstr "美股EMA死叉"
+
+msgid "signal.pg.type.us_rsi_rebound"
+msgstr "美股RSI反弹"
+
+msgid "signal.pg.type.us_rsi_fade"
+msgstr "美股RSI回落"
+
+msgid "signal.pg.type.us_range_breakout_up"
+msgstr "美股区间上破"
+
+msgid "signal.pg.type.us_range_breakout_down"
+msgstr "美股区间下破"
+
+msgid "signal.pg.type.us_hammer_reversal"
+msgstr "美股锤子线反转"
+
+msgid "signal.pg.type.us_shooting_star"
+msgstr "美股流星线反转"
 
 # 格式化标签
 msgid "signal.pg.label.direction"
