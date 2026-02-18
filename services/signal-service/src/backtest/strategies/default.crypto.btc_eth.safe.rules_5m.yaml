@@ -1,0 +1,33 @@
+{
+  "market": "crypto",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "timeframe": "5m",
+  "date_range": {
+    "start": "",
+    "end": ""
+  },
+  "execution": {
+    "entry": "next_open",
+    "slippage_bps": 3,
+    "fee_bps": 4
+  },
+  "risk": {
+    "leverage": 1.5,
+    "initial_equity": 10000,
+    "position_size_pct": 0.15
+  },
+  "aggregation": {
+    "long_open_threshold": 160,
+    "short_open_threshold": 160,
+    "close_threshold": 20
+  },
+  "walk_forward": {
+    "train_days": 7,
+    "test_days": 3,
+    "step_days": 3
+  },
+  "retention": {
+    "keep_runs": 30
+  }
+}
+

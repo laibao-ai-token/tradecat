@@ -1,0 +1,33 @@
+{
+  "market": "crypto",
+  "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
+  "timeframe": "1m",
+  "date_range": {
+    "start": "",
+    "end": ""
+  },
+  "execution": {
+    "entry": "next_open",
+    "slippage_bps": 3,
+    "fee_bps": 4
+  },
+  "risk": {
+    "leverage": 2,
+    "initial_equity": 10000,
+    "position_size_pct": 0.25
+  },
+  "aggregation": {
+    "long_open_threshold": 130,
+    "short_open_threshold": 130,
+    "close_threshold": 20
+  },
+  "walk_forward": {
+    "train_days": 45,
+    "test_days": 15,
+    "step_days": 15
+  },
+  "retention": {
+    "keep_runs": 30
+  }
+}
+
