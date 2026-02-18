@@ -196,7 +196,24 @@ vim config/.env
 ```
 
 > Note: top-level `./scripts/start.sh` manages `ai-service`, `data-service`, `signal-service`, `telegram-service`, `trading-service` (ai-service is a sub-module; readiness check only, no standalone process).  
-> Preview services are manual: `cd services-preview/markets-service && ./scripts/start.sh start` (multi-market); `cd services-preview/order-service && python -m src.market-maker.main` (market making, API key required); `cd services-preview/vis-service && ./scripts/start.sh start` (visualization, port 8087).
+> Preview services are manual: `cd services-preview/markets-service && ./scripts/start.sh start` (multi-market); `cd services-preview/order-service && python -m src.market-maker.main` (market making, API key required); `cd services-preview/vis-service && ./scripts/start.sh start` (visualization, port 8087); `cd services-preview/tui-service && ./scripts/start.sh start` (terminal TUI for signals; it auto-starts data-service and signal-service by default, then stops TUI-started data/signal services after 1 hour on exit; tune with `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS`). You can also launch it from repo root via `./scripts/start.sh run`.
+> Backtest (M1 minimal loop): `cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml` (outputs to `artifacts/backtest/latest`).
+> Artifact layout: each run creates a timestamp session directory `artifacts/backtest/YYYYMMDD-HHMMSS/`; single-mode outputs are written directly there, `compare_history_rule` writes `<base>-history` / `<base>-rules` / `<base>-compare` subdirectories, and `--walk-forward` writes summary files plus per-fold `*-wfXX` subdirectories under the same session.
+> Script shortcut: `./scripts/backtest.sh` (forwards to signal-service).
+> Tuning example: `./scripts/backtest.sh --run-id tune-b-strict --long-threshold 90 --short-threshold 90 --close-threshold 15 --fee-bps 4 --slippage-bps 3`.
+> Default thresholds are now more conservative: `long_open_threshold=130`, `short_open_threshold=130`, `close_threshold=20`.
+> BTC/ETH safe profile: `--config src/backtest/strategies/default.crypto.btc_eth.safe.yaml` (threshold 200/200, lower frequency).
+> Precheck coverage only: `./scripts/backtest.sh --check-only --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`.
+> If history signals are sparse, switch to offline replay: `./scripts/backtest.sh --mode offline_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`.
+> Full 129-rule offline replay (from SQLite indicator tables): `./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`.
+> When backtest `timeframe=1m`, legacy default rule timeframes (1h/4h/1d) are auto-aligned to 1m for fairer history-vs-rule comparison.
+> History vs 129-rule comparison: `./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` (writes `comparison.json/.md`; signal day/count guards are skipped for compare mode).
+> Rule replay also writes `rule_replay_diagnostics.json` (including `rule_timeframe_profiles`); comparison report includes root-cause diagnostics for missing rule hits (e.g. `timeframe_no_data`).
+> Precheck guards (default): `--min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95`; use `--force` only when needed.
+> Risk capital overrides: `--initial-equity`, `--leverage`, `--position-size-pct` (example: `./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2`).
+> Metrics now include baseline comparison: `buy_hold_return_pct` (equal-weight buy-and-hold) and `excess_return_pct` (strategy excess return).
+> Optional walk-forward: `./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`.
+> Walk-forward uses auto fallback by default for thin history-signal folds (`--walk-forward-auto-fallback`, disable via `--no-walk-forward-auto-fallback`).
 
 ### ⚙️ Configuration (required)
 
@@ -919,7 +936,7 @@ tradecat/
 │       ├── pyproject.toml
 │       └── requirements.txt
 │
-├── 📂 services-preview/            # Preview Microservices (6, in development)
+├── 📂 services-preview/            # Preview Microservices (9, in development)
 │   │
 │   ├── 📂 api-service/             # REST API service
 │   │   ├── 📂 src/
@@ -941,6 +958,13 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
+│   ├── 📂 datacat-service/         # Data collection infra (layered preview)
+│   │   ├── 📂 src/                 # Entry & layered directories (preview)
+│   │   ├── 📂 scripts/
+│   │   ├── Makefile
+│   │   ├── pyproject.toml
+│   │   └── requirements.txt
+│   │
 │   ├── 📂 predict-service/         # Prediction market signals
 │   │   ├── 📂 services/            # Sub-services (polymarket/kalshi/opinion)
 │   │   ├── 📂 docs/                # Requirements/design/ADR/Prompt docs
@@ -961,13 +985,21 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   └── 📂 fate-service/            # Fortune telling service
+│   ├── 📂 tui-service/             # Terminal TUI for signals (preview)
+│   │   ├── 📂 src/                 # curses TUI (read-only)
+│   │   ├── 📂 scripts/             # Start scripts
+│   │   ├── Makefile
+│   │   └── requirements.txt
+│   │
+│   ├── 📂 fate-service/            # Fortune telling service
 │       ├── 📂 services/            # Sub-services
 │       │   └── 📂 telegram-service/ # Fortune Bot
 │       │       └── 📂 src/liuyao_factors/ # Liuyao quantitative factors
 │       ├── 📂 libs/                # Shared libraries
 │       ├── Makefile
 │       ├── pyproject.toml
+│
+│   └── 📂 nofx-dev/                # NOFX AI trading system (Go, preview, gitlink)
 │       └── requirements-dev.txt
 │
 ├── 📂 libs/                        # Shared libraries

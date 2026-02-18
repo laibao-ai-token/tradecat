@@ -181,7 +181,24 @@ vim config/.env
 ```
 
 > 说明：顶层 `./scripts/start.sh` 管理 `ai-service`、`data-service`、`signal-service`、`telegram-service`、`trading-service`（ai-service 为子模块，仅做就绪检查，无独立进程）。  
-> 预览版服务需手动启动：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）；`cd services-preview/order-service && python -m src.market-maker.main`（做市，需 API Key）；`cd services-preview/vis-service && ./scripts/start.sh start`（可视化，端口 8087）。
+> 预览版服务需手动启动：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）；`cd services-preview/order-service && python -m src.market-maker.main`（做市，需 API Key）；`cd services-preview/vis-service && ./scripts/start.sh start`（可视化，端口 8087）；`cd services-preview/tui-service && ./scripts/start.sh start`（终端 TUI 信号看板，默认会自动尝试拉起 data-service 与 signal-service，并在退出后 1 小时自动停止由 TUI 启动的 data/signal 服务；可用 `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS` 调整）。也可在根目录直接执行 `./scripts/start.sh run`。
+> 回测（M1 最小闭环）：`cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml`（产物输出到 `artifacts/backtest/latest`）。
+> 产物目录结构：每次回测会创建一个时间戳目录 `artifacts/backtest/YYYYMMDD-HHMMSS/`；单模式结果直接落在该目录，`compare_history_rule` 会在该目录下生成 `<base>-history` / `<base>-rules` / `<base>-compare` 三个子目录，`--walk-forward` 会在该目录写汇总文件并生成 `*-wfXX` 折子目录。
+> 也可使用脚本：`./scripts/backtest.sh`（转发到 signal-service）。
+> 参数调优示例：`./scripts/backtest.sh --run-id tune-b-strict --long-threshold 90 --short-threshold 90 --close-threshold 15 --fee-bps 4 --slippage-bps 3`。
+> 默认阈值已调整为更保守：`long_open_threshold=130`、`short_open_threshold=130`、`close_threshold=20`。
+> BTC/ETH 保守配置模板：`--config src/backtest/strategies/default.crypto.btc_eth.safe.yaml`（阈值 200/200，低频）。
+> 回测前覆盖率检查：`./scripts/backtest.sh --check-only --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
+> 覆盖不足时可切到离线信号回放：`./scripts/backtest.sh --mode offline_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
+> 129规则离线重放（SQLite 全规则）：`./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
+> 若回测 `timeframe=1m`，默认规则周期（1h/4h/1d）会自动按 1m 对齐，便于和历史信号口径比较。
+> 历史信号 vs 129规则对比：`./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`（输出 `comparison.json/.md`，默认不受 signal days/count 门槛限制）。
+> 规则重放会写 `rule_replay_diagnostics.json`（含 `rule_timeframe_profiles`），对比报告会附带 missing 规则的未命中原因诊断（例如 `timeframe_no_data`）。
+> 预检查门槛（默认）：`--min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95`，必要时可用 `--force` 继续。
+> 资金口径可覆盖：`--initial-equity`、`--leverage`、`--position-size-pct`（例如 `./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2`）。
+> 回测指标新增基准对比：`buy_hold_return_pct`（等权买入持有）与 `excess_return_pct`（策略超额收益）。
+> 可选 Walk-Forward：`./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
+> Walk-Forward 默认开启“历史信号不足自动回放” (`--walk-forward-auto-fallback`，可用 `--no-walk-forward-auto-fallback` 关闭)。
 
 ### ⚙️ 配置（必须）
 
@@ -911,7 +928,7 @@ tradecat/
 │       ├── pyproject.toml
 │       └── requirements.txt
 │
-├── 📂 services-preview/            # 预览版微服务 (6个，开发中)
+├── 📂 services-preview/            # 预览版微服务 (9个，开发中)
 │   │
 │   ├── 📂 api-service/             # REST API 服务
 │   │   ├── 📂 src/
@@ -933,6 +950,13 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
+│   ├── 📂 datacat-service/         # 数据采集基建（分层预览）
+│   │   ├── 📂 src/                 # 入口与分层目录（预览）
+│   │   ├── 📂 scripts/
+│   │   ├── Makefile
+│   │   ├── pyproject.toml
+│   │   └── requirements.txt
+│   │
 │   ├── 📂 predict-service/         # 预测市场信号微服务
 │   │   ├── 📂 services/            # 子服务 (polymarket/kalshi/opinion)
 │   │   ├── 📂 docs/                # 需求/设计/ADR/Prompt 文档
@@ -953,11 +977,19 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   └── 📂 fate-service/            # 命理服务
+│   ├── 📂 tui-service/             # 终端 TUI 信号看板（预览）
+│   │   ├── 📂 src/                 # curses TUI（只读 signal_history.db）
+│   │   ├── 📂 scripts/             # 启动脚本
+│   │   ├── Makefile
+│   │   └── requirements.txt
+│   │
+│   ├── 📂 fate-service/            # 命理服务
 │       ├── 📂 services/            # 子服务
 │       │   └── 📂 telegram-service/ # 命理 Bot
 │       │       └── 📂 src/liuyao_factors/ # 六爻量化因子
 │       ├── 📂 libs/                # 共享库
+│
+│   └── 📂 nofx-dev/                # NOFX AI 交易系统（Go，预览，gitlink）
 │       ├── Makefile
 │       ├── pyproject.toml
 │       └── requirements-dev.txt

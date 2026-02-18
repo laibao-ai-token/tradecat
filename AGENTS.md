@@ -74,6 +74,16 @@ cd services-preview/markets-service && ./scripts/start.sh start
 # vis-service（可视化，端口 8087）
 cd services-preview/vis-service && ./scripts/start.sh start
 
+# tui-service（终端信号看板，默认自动拉起 data-service + signal-service）
+cd services-preview/tui-service && ./scripts/start.sh run
+# 或在仓库根目录直接启动：
+./scripts/start.sh run
+# 默认退出 TUI 后 1 小时自动停止由 TUI 启动的 data/signal 服务。
+# 若只看行情且不自动启动 data/signal：
+TUI_AUTO_START_DATA=0 TUI_AUTO_START_SIGNAL=0 ./scripts/start.sh run
+# 若退出 TUI 立即停止 data/signal：
+TUI_DATA_STOP_DELAY_SECONDS=0 TUI_SIGNAL_STOP_DELAY_SECONDS=0 ./scripts/start.sh run
+
 # order-service（做市，需 API Key）
 cd services-preview/order-service && python -m src
 
@@ -122,6 +132,18 @@ cd /path/to/tradecat
 | `python scripts/download_hf_data.py` | 从 HuggingFace 下载历史数据并导入 |
 | `python scripts/check_i18n_keys.py` | 检查 i18n 翻译键对齐 |
 | `python scripts/sync_market_data_to_rds.py` | 增量同步 SQLite `market_data.db` 到 PostgreSQL（RDS/Aurora） |
+| `cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml` | 回测 M1 最小闭环（输出到 artifacts/backtest/latest；每次运行会创建 `artifacts/backtest/YYYYMMDD-HHMMSS/` 时间戳目录） |
+| `./scripts/backtest.sh` | 回测 M1 最小闭环（脚本转发） |
+| `./scripts/backtest.sh --run-id tune-b-strict --long-threshold 90 --short-threshold 90 --close-threshold 15` | 回测参数调优示例（阈值覆盖） |
+| `./scripts/backtest.sh --mode offline_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 覆盖不足时使用离线信号回放（基于 K 线生成信号） |
+| `./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 使用 SQLite 129 规则离线重放（不依赖 signal_history；当 timeframe=1m 时默认规则周期自动按 1m 对齐） |
+| `./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 输出历史信号 vs 129规则离线重放对比报告（comparison.json/.md，含 missing 规则未命中原因诊断；会输出 `rule_timeframe_profiles` 并标记 `timeframe_no_data`，默认不受 signal days/count 门槛限制） |
+| `./scripts/backtest.sh --check-only --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 回测前覆盖率检查（仅检查不执行） |
+| `./scripts/backtest.sh --check-only --min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95` | 覆盖率门槛防呆（不足时失败，可加 `--force` 继续） |
+| `./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2` | 回测资金口径覆盖示例（本金/杠杆/仓位） |
+| `./scripts/backtest.sh --config src/backtest/strategies/default.crypto.btc_eth.safe.yaml` | BTC/ETH 保守模板（阈值 200/200，低频） |
+| `./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | Walk-Forward（滚动窗口）回测摘要输出 |
+| `./scripts/backtest.sh --walk-forward --walk-forward-auto-fallback --min-signal-days 7 --min-signal-count 200` | Walk-Forward 分折自动回放兜底（历史信号不足时切 offline_replay） |
 | `./scripts/export_timescaledb.sh` | 导出 TimescaleDB 数据（默认端口 5433） |
 | `./scripts/export_timescaledb_main4.sh` | 导出 Main4 精简数据集（默认端口 5433） |
 | `./scripts/timescaledb_compression.sh` | 压缩管理（默认端口 5433） |
@@ -139,6 +161,7 @@ cd /path/to/tradecat
 | `make daemon-stop` | 停止守护进程 |
 | `make verify` | 代码验证 |
 | `make clean` | 清理缓存 |
+| `make backtest` | 运行 signal-service 回测（M1） |
 | `make export-db` | 导出 TimescaleDB 数据 |
 
 ### 3.3 服务级 Makefile（统一接口）
@@ -199,7 +222,7 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 - **配置统一**：所有配置集中在 `config/.env`，各服务共用
 - **数据流向**：`data-service → TimescaleDB → trading-service → SQLite → telegram/ai/signal/vis`
 
-### 4.2 服务清单（14 个）
+### 4.2 服务清单（15 个）
 
 | 服务 | 位置 | 职责 | 入口 |
 |:---|:---|:---|:---|
@@ -216,6 +239,7 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 | predict-service | services-preview/ | 预测市场（Node.js） | `services/*/` |
 | fate-service | services-preview/ | 命理服务（端口 8001） | `services/telegram-service/` |
 | nofx-dev | services-preview/ | NOFX AI 交易系统（预览） | `main.go` |
+| tui-service | services-preview/ | 终端 TUI 信号看板（预览） | `src/__main__.py` |
 | datacat-service | services-preview/ | 数据采集基建（分层预览） | `src/__main__.py` |
 
 ### 4.3 模块边界
@@ -233,6 +257,7 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 | vis-service | 可视化渲染 | 禁止写入数据库 |
 | order-service | 交易执行、做市 | 禁止修改数据采集逻辑 |
 | nofx-dev | NOFX AI 交易系统（预览） | 暂未定义 |
+| tui-service | 终端 TUI 信号看板（预览） | 只读数据库，禁止写入/推送 |
 
 > **注意**：telegram-service/signals 模块已解耦，仅保留适配层 (`adapter.py`) 和 UI (`ui.py`)，信号检测逻辑全部在 signal-service 中。
 > 冷却持久化：`signal-service/src/storage/cooldown.py` 负责将冷却键写入 `libs/database/services/signal-service/cooldown.db`，SQLite 引擎启动时加载，`_set_cooldown()` 同步落盘；公共接口 `get_cooldown_storage()` 供其他模块复用。
@@ -350,14 +375,16 @@ tradecat/
 │   ├── ai-service/                 # AI 分析
 │   └── signal-service/             # 信号检测（129条规则）
 │
-├── services-preview/               # 预览版微服务 (7个)
+├── services-preview/               # 预览版微服务 (9个)
 │   ├── api-service/                # REST API 服务（端口 8000）
 │   ├── datacat-service/            # 数据采集基建（分层预览）
+│   ├── tui-service/                # 终端 TUI 信号看板（预览）
 │   ├── markets-service/            # 全市场数据采集
 │   ├── vis-service/                # 可视化渲染（端口 8087）
 │   ├── order-service/              # 交易执行
 │   ├── predict-service/            # 预测市场（Node.js）
-│   └── fate-service/               # 命理服务（端口 8001）
+│   ├── fate-service/               # 命理服务（端口 8001）
+│   └── nofx-dev                    # NOFX AI 交易系统（Go，预览）
 │
 ├── libs/
 │   ├── database/                   # 数据库文件
@@ -730,6 +757,27 @@ cd services/<name> && make lint format test
 
 # 验证
 ./scripts/verify.sh
+
+# 回测（M1 最小闭环）
+./scripts/backtest.sh
+# 或
+cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml
+# 覆盖率检查（仅检查，不执行）
+./scripts/backtest.sh --check-only --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# 覆盖不足时可切离线回放（不依赖 signal_history 覆盖）
+./scripts/backtest.sh --mode offline_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# SQLite 129规则离线重放（基于指标表历史行；timeframe=1m 时默认规则周期自动按 1m 对齐）
+./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# 历史信号 vs 129规则重放对比（生成 comparison.json/.md + missing规则未命中原因诊断；默认不受 signal days/count 门槛限制）
+./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# 覆盖率门槛（默认可不写；需要强行跑可加 --force）
+./scripts/backtest.sh --check-only --min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95
+# 资金口径覆盖（本金/杠杆/仓位）
+./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2
+# BTC/ETH 保守模板（阈值 200/200）
+./scripts/backtest.sh --config src/backtest/strategies/default.crypto.btc_eth.safe.yaml
+# Walk-Forward（滚动窗口）
+./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
 
 # 数据库（根据实际端口选择 5433 或 5434）
 PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -d market_data
