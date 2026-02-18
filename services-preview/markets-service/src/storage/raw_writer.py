@@ -3,6 +3,7 @@
 将 1m K 线与 5m 指标写入:
 - raw.crypto_kline_1m
 - raw.crypto_metrics_5m
+- raw.{us,cn,hk}_equity_1m
 """
 from __future__ import annotations
 
@@ -131,6 +132,84 @@ class TimescaleRawWriter:
             table=sql.Identifier(settings.raw_schema, "crypto_metrics_5m"),
             cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
             placeholders=sql.SQL(", ").join(sql.Placeholder() * len(cols))
+        )
+
+        with self.pool.connection() as conn, conn.cursor() as cur:
+            cur.executemany(insert_sql.as_string(cur), values)
+            conn.commit()
+        return len(values)
+
+    def upsert_equity_1m(self, market: str, rows: Sequence[dict], ingest_batch_id: int, source: str) -> int:
+        """批量写入/更新 1m 分钟线到 raw.{market}_equity_1m.
+
+        market:
+          - us_stock -> raw.us_equity_1m
+          - cn_stock -> raw.cn_equity_1m
+          - hk_stock -> raw.hk_equity_1m
+        """
+        if not rows:
+            return 0
+
+        market_to_table = {
+            "us_stock": "us_equity_1m",
+            "cn_stock": "cn_equity_1m",
+            "hk_stock": "hk_equity_1m",
+        }
+        table_name = market_to_table.get(market)
+        if not table_name:
+            raise ValueError(f"不支持的 market: {market}")
+
+        cols = [
+            "exchange", "symbol", "open_time", "close_time",
+            "open", "high", "low", "close", "volume", "amount",
+            "source", "ingest_batch_id", "source_event_time",
+        ]
+
+        values = []
+        for r in rows:
+            open_time = r["open_time"]
+            if not isinstance(open_time, datetime):
+                open_time = datetime.fromtimestamp(open_time, tz=r.get("tz"))
+            close_time = r.get("close_time")
+            if close_time and not isinstance(close_time, datetime):
+                close_time = datetime.fromtimestamp(close_time, tz=r.get("tz"))
+            if close_time is None:
+                close_time = open_time + timedelta(minutes=1)
+
+            values.append((
+                r["exchange"],
+                r["symbol"],
+                open_time,
+                close_time,
+                r["open"],
+                r["high"],
+                r["low"],
+                r["close"],
+                r.get("volume", 0),
+                r.get("amount"),
+                r.get("source", source),
+                ingest_batch_id,
+                r.get("source_event_time"),
+            ))
+
+        insert_sql = sql.SQL("""
+            INSERT INTO {table} ({cols})
+            VALUES ({placeholders})
+            ON CONFLICT (exchange, symbol, open_time) DO UPDATE SET
+                close_time = EXCLUDED.close_time,
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                source = EXCLUDED.source,
+                source_event_time = EXCLUDED.source_event_time,
+                updated_at = NOW();
+        """).format(
+            table=sql.Identifier(settings.raw_schema, table_name),
+            cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
+            placeholders=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
         )
 
         with self.pool.connection() as conn, conn.cursor() as cur:

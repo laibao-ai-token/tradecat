@@ -11,12 +11,36 @@ PID_DIR="$SERVICE_DIR/pids"
 
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
+# 安全加载 .env（兼容含空格/括号/行尾注释的模板）
+safe_load_env() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*export ]] && continue
+        [[ "$line" =~ \$\( ]] && continue
+        [[ "$line" =~ \` ]] && continue
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local val="${BASH_REMATCH[2]}"
+
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
+
+            export "$key=$val"
+        fi
+    done < "$file"
+}
+
 # 加载统一配置 (含代理)
-if [ -f "$PROJECT_ROOT/config/.env" ]; then
-    set -a
-    source "$PROJECT_ROOT/config/.env"
-    set +a
-fi
+safe_load_env "$PROJECT_ROOT/config/.env"
 
 # 默认 legacy 模式，可通过环境变量覆盖
 export CRYPTO_WRITE_MODE="${CRYPTO_WRITE_MODE:-legacy}"

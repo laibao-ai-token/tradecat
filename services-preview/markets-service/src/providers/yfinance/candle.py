@@ -48,7 +48,12 @@ class YFinanceCandleFetcher(BaseFetcher[CandleQuery, Candle]):
             return []
 
         df = df.reset_index()
-        return df.to_dict("records")
+        rows = df.to_dict("records")
+        for r in rows:
+            r["_market"] = query.market
+            r["_symbol"] = query.symbol
+            r["_interval"] = query.interval
+        return rows
 
     def transform_data(self, raw: list[dict[str, Any]]) -> list[Candle]:
         results = []
@@ -58,13 +63,22 @@ class YFinanceCandleFetcher(BaseFetcher[CandleQuery, Candle]):
                 ts = ts.to_pydatetime()
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+
+            market = r.get("_market") or "us_stock"
+            symbol = r.get("_symbol") or ""
+            interval = r.get("_interval") or "1d"
+
+            # 轻量映射：仅用于分库/标识；真实交易所可后续通过 instruments/symbol_mapping 精化
+            exchange = "hkex" if market == "hk_stock" else "us"
 
             results.append(Candle(
-                market="us_stock",
+                market=market,
                 asset_type="spot",
-                exchange="nasdaq",
-                symbol="",  # 需要从外部传入
-                interval="1d",
+                exchange=exchange,
+                symbol=symbol,
+                interval=interval,
                 timestamp=ts,
                 open=Decimal(str(r.get("Open", 0))),
                 high=Decimal(str(r.get("High", 0))),

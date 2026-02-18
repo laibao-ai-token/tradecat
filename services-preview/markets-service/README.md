@@ -41,6 +41,9 @@ market_data (数据库)
 ├── raw (原始时序数据层 - Hypertable)
 │   ├── crypto_kline_1m        # 加密货币K线 1分钟
 │   ├── crypto_metrics_5m      # 加密期货指标 5分钟
+│   ├── us_equity_1m           # 美股分钟线 (1m)
+│   ├── cn_equity_1m           # A股分钟线 (1m)
+│   ├── hk_equity_1m           # 港股分钟线 (1m)
 │   ├── us_equity_1d           # 美股日线
 │   ├── cn_equity_1d           # A股日线
 │   └── macro_series           # 宏观经济数据
@@ -108,6 +111,9 @@ market_data (数据库)
 |:---|:---|
 | `crypto_kline_1m` | 加密货币 K线 1分钟 |
 | `crypto_metrics_5m` | 加密货币 期货指标 5分钟 |
+| `us_equity_1m` | 美股 分钟线 1分钟 |
+| `cn_equity_1m` | A股 分钟线 1分钟 |
+| `hk_equity_1m` | 港股 分钟线 1分钟 |
 | `us_equity_1d` | 美股 日线 |
 | `cn_equity_1d` | A股 日线 |
 
@@ -236,6 +242,7 @@ WHERE proc_name = 'policy_refresh_continuous_aggregate';
 | **yfinance** | 美股 | AAPL | ✅ | 21 | 免费 |
 | **akshare** | A股 | 000001 | ✅ | 1455 | 免费 |
 | **baostock** | A股 | 000001 | ✅ | 2674 | 历史数据长 |
+| **alltick** | 美股/港股/A股 | AAPL.US | ✅ | - | 生产建议（需 Token） |
 | **fredapi** | 宏观 | DGS10 | ✅ | 15984 | 需 API Key |
 | **quantlib** | 定价 | 期权 | ✅ | - | 本地计算 |
 | **openbb** | 聚合 | AAPL | ✅ | 249 | 100+ 数据源 |
@@ -356,7 +363,7 @@ km.report_success(key)  # 或 report_error(key)
 ### 初始化环境
 
 ```bash
-cd services/markets-service
+cd services-preview/markets-service
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -367,10 +374,23 @@ pip install -r requirements.txt
 ```bash
 # 美股
 python -m src test --provider yfinance --symbol AAPL
+python -m src equity-test --provider sina --market us_stock --symbol AAPL --interval 1m
+python -m src equity-test --provider nasdaq --market us_stock --symbol AAPL --interval 1m --limit 5
+python -m src equity-test --provider tencent --market us_stock --symbol AAPL --interval 1m
+python -m src equity-test --provider alltick --market us_stock --symbol AAPL.US --interval 1m
 
 # A股
 python -m src test --provider akshare --symbol 000001
 python -m src test --provider baostock --symbol 000001
+python -m src equity-test --provider akshare --market cn_stock --symbol 000001.SZ --interval 1m --limit 5
+python -m src equity-test --provider tencent --market cn_stock --symbol 000001.SZ --interval 1m
+python -m src equity-test --provider alltick --market cn_stock --symbol 000001.SZ --interval 1m
+
+# 港股
+python -m src equity-test --provider sina --market hk_stock --symbol 700.HK --interval 1m
+python -m src equity-test --provider tencent --market hk_stock --symbol 1810.HK --interval 1m
+python -m src equity-test --provider eastmoney --market hk_stock --symbol 1810.HK --interval 1m
+python -m src equity-test --provider alltick --market hk_stock --symbol 700.HK --interval 1m
 
 # 加密货币
 python -m src test --provider ccxt --symbol BTCUSDT
@@ -378,6 +398,33 @@ python -m src test --provider ccxt --symbol BTCUSDT
 # 期权定价
 python -m src pricing
 ```
+
+### 分钟线调度（US/CN/HK）
+
+`equity-poll` 以“每 N 秒轮询 + upsert”方式写入 `raw.{us,cn,hk}_equity_1m`，适合分钟级接入。
+
+```bash
+# 单市场单进程（示例：美股）
+python -m src equity-poll \
+  --provider nasdaq \
+  --market us_stock \
+  --interval 1m \
+  --symbols AAPL,MSFT \
+  --sleep 60 \
+  --limit 5
+
+# 或使用启动脚本（按 env 启动 US/CN/HK 三个进程）
+./scripts/start.sh start-equity
+./scripts/start.sh status
+```
+
+说明：
+- AllTick 需要配置 `ALLTICK_TOKEN`（见 `config/.env.example`）。
+- 免费源（sina/tencent/nasdaq/akshare/yfinance）可用于快速验证，但分钟线通常有“历史深度/稳定性/延迟”限制。
+  - sina: 免费/无 key，基于“最新报价”轮询生成 1m（不提供分钟历史，适合近实时接入）。
+  - tencent: 免费/无 key，基于 `qt.gtimg.cn` 最新报价轮询生成 1m（港股通常约 15min 延迟，以返回时间为准）。
+  - eastmoney: 免费/无 key，基于 `push2.eastmoney.com` 最新报价轮询生成 1m（港股延迟通常为秒级，以返回时间戳为准）。
+  - nasdaq: 免费/无 key，分钟线通常约 15min 延迟；且为“分钟价格点”，会生成伪 OHLC。
 
 ### 数据库初始化
 

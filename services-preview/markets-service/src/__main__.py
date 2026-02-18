@@ -15,10 +15,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _ensure_provider_loaded(provider: str) -> bool:
+    """按需导入 provider，避免因未安装的依赖导致整个 CLI 启动失败。"""
+    import importlib
+
+    try:
+        importlib.import_module(f"providers.{provider}")
+        return True
+    except Exception as e:
+        logger.error("加载 provider 失败: %s (%s)", provider, e, exc_info=True)
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Markets Data Service")
     parser.add_argument("command", choices=[
         "test", "collect", "pricing",
+        # 股票/港股/A股 分钟线调度
+        "equity-test", "equity-poll",
         # 加密货币采集命令 (移植自 data-service)
         "crypto-backfill", "crypto-metrics", "crypto-ws", "crypto-scan", "crypto-test",
         "crypto-book-depth", "crypto-order-book"
@@ -27,7 +41,10 @@ def main():
     parser.add_argument("--symbol", default="AAPL", help="标的代码")
     parser.add_argument("--symbols", default="", help="多个标的 (逗号分隔)")
     parser.add_argument("--market", default="us_stock", help="市场类型")
+    parser.add_argument("--interval", default="1d", help="K线周期: 1m/5m/15m/30m/60m/1d...")
     parser.add_argument("--days", type=int, default=30, help="回溯天数")
+    parser.add_argument("--sleep", type=int, default=60, help="轮询间隔秒数（分钟线默认 60）")
+    parser.add_argument("--limit", type=int, default=5, help="单次拉取条数（AllTick 单次最多 500）")
     parser.add_argument("--klines", action="store_true", help="补齐K线")
     parser.add_argument("--metrics", action="store_true", help="补齐期货指标")
     parser.add_argument("--all", action="store_true", help="补齐全部")
@@ -36,17 +53,111 @@ def main():
     if args.command == "test":
         from core.registry import ProviderRegistry
 
+        _ensure_provider_loaded(args.provider)
         logger.info("已注册的 Providers: %s", ProviderRegistry.list_providers())
-
         fetcher_cls = ProviderRegistry.get(args.provider, "candle")
         if fetcher_cls:
             fetcher = fetcher_cls()
-            data = fetcher.fetch_sync(market=args.market, symbol=args.symbol, limit=5)
+            data = fetcher.fetch_sync(market=args.market, symbol=args.symbol, interval=args.interval, limit=args.limit)
             logger.info("获取到 %d 条数据", len(data))
             for d in data[:3]:
                 logger.info("  %s", d)
         else:
             logger.error("未找到 Provider: %s", args.provider)
+
+    elif args.command == "equity-test":
+        from core.registry import ProviderRegistry
+
+        if not _ensure_provider_loaded(args.provider):
+            return
+        fetcher_cls = ProviderRegistry.get(args.provider, "candle")
+        if not fetcher_cls:
+            logger.error("未找到 Provider: %s", args.provider)
+            return
+
+        fetcher = fetcher_cls()
+        data = fetcher.fetch_sync(market=args.market, symbol=args.symbol, interval=args.interval, limit=args.limit)
+        logger.info("equity-test: provider=%s market=%s symbol=%s interval=%s -> %d 条", args.provider, args.market, args.symbol, args.interval, len(data))
+        for d in data[:5]:
+            logger.info("  %s", d)
+
+    elif args.command == "equity-poll":
+        import asyncio
+        from datetime import datetime, timezone, timedelta
+
+        from core.registry import ProviderRegistry
+        from storage import batch as batch_mgr
+        from storage.raw_writer import TimescaleRawWriter
+
+        if not _ensure_provider_loaded(args.provider):
+            return
+
+        symbols = [s.strip() for s in (args.symbols.split(",") if args.symbols else [args.symbol]) if s.strip()]
+        if not symbols:
+            logger.error("未提供 symbols")
+            return
+
+        fetcher_cls = ProviderRegistry.get(args.provider, "candle")
+        if not fetcher_cls:
+            logger.error("未找到 Provider: %s", args.provider)
+            return
+
+        fetcher = fetcher_cls()
+        writer = TimescaleRawWriter()
+
+        batch_id = batch_mgr.start_batch(source=f"{args.provider}_equity_poll", data_type="equity_1m", market=args.market)
+        logger.info(
+            "启动 equity-poll: provider=%s market=%s interval=%s symbols=%d sleep=%ss batch_id=%s",
+            args.provider, args.market, args.interval, len(symbols), args.sleep, batch_id,
+        )
+
+        async def _fetch_one(sym: str):
+            try:
+                return await fetcher.fetch(market=args.market, symbol=sym, interval=args.interval, limit=args.limit)
+            except Exception as e:
+                logger.error("拉取失败: %s (%s)", sym, e, exc_info=True)
+                return []
+
+        async def _loop():
+            while True:
+                t0 = datetime.now(tz=timezone.utc)
+                results = await asyncio.gather(*[_fetch_one(s) for s in symbols])
+                candles = [c for sub in results for c in sub]
+
+                rows = []
+                for c in candles:
+                    # 仅支持 1m 调度；其他周期也可以写入同一表，但 close_time 需要与 interval 对齐。
+                    close_time = c.timestamp + timedelta(minutes=1) if args.interval == "1m" else None
+                    rows.append(
+                        {
+                            "exchange": c.exchange,
+                            "symbol": c.symbol,
+                            "open_time": c.timestamp,
+                            "close_time": close_time,
+                            "open": c.open,
+                            "high": c.high,
+                            "low": c.low,
+                            "close": c.close,
+                            "volume": c.volume,
+                            "amount": c.quote_volume,
+                            "source": c.source or args.provider,
+                            "source_event_time": t0,
+                        }
+                    )
+
+                if rows:
+                    try:
+                        n = writer.upsert_equity_1m(args.market, rows, ingest_batch_id=batch_id, source=args.provider)
+                        logger.info("写入 %d 条 1m K线 (rows=%d, candles=%d)", n, len(rows), len(candles))
+                    except Exception as e:
+                        logger.error("写入失败: %s", e, exc_info=True)
+                else:
+                    logger.info("无数据 (symbols=%d)", len(symbols))
+
+                # 固定间隔轮询（简单稳）
+                await asyncio.sleep(max(1, int(args.sleep)))
+
+        asyncio.run(_loop())
 
     elif args.command == "pricing":
         from datetime import date, timedelta

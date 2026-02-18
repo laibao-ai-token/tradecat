@@ -1,18 +1,17 @@
 """Providers 模块 - 数据源适配器"""
-# 导入时自动注册到 ProviderRegistry
-
-# 加密货币
-# A股/国内
-# 美股/全球
-# 宏观经济
-# 衍生品定价
-# 综合聚合 (降级备份)
-from . import akshare, baostock, ccxt, cryptofeed, fredapi, openbb, quantlib, yfinance
+# 说明：
+# - ProviderRegistry 的注册由装饰器在“对应 provider 模块被 import”时触发。
+# - 不要在这里无条件 import 所有 providers，否则会因为未安装的可选依赖而导致 CLI 启动失败。
 
 __all__ = [
     "ccxt", "cryptofeed",
     "akshare", "baostock",
     "yfinance",
+    "sina",
+    "tencent",
+    "eastmoney",
+    "nasdaq",
+    "alltick",
     "fredapi",
     "quantlib",
     "openbb",
