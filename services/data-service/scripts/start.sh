@@ -42,8 +42,15 @@ safe_load_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val="${val#\"}" && val="${val%\"}"
-            val="${val#\'}" && val="${val%\'}"
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                # Strip trailing inline comments for unquoted values.
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
             export "$key=$val"
         fi
     done < "$file"
@@ -152,7 +159,11 @@ while True:
 
 # ==================== 工具函数 ====================
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$DAEMON_LOG"
+    # Important: don't write to stdout by default.
+    # This script is often invoked under a pipeline by the top-level launcher
+    # (./scripts/start.sh ... | sed ...). If the daemon loop inherits stdout,
+    # it can keep the pipe open and block the launcher from starting later services.
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$DAEMON_LOG"
 }
 
 init_dirs() {
@@ -185,7 +196,12 @@ start_component() {
     cd "$SERVICE_DIR"
     source .venv/bin/activate
     export PYTHONPATH=src
-    nohup bash -c "${START_CMDS[$name]}" >> "$log_file" 2>&1 &
+    # Detach components from the launching shell/pipeline so they survive TUI/launcher lifecycle.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid bash -c "${START_CMDS[$name]}" >> "$log_file" 2>&1 < /dev/null &
+    else
+        nohup bash -c "${START_CMDS[$name]}" >> "$log_file" 2>&1 < /dev/null &
+    fi
     local new_pid=$!
     echo "$new_pid" > "$pid_file"
     
@@ -277,11 +293,17 @@ cmd_daemon() {
         start_component "$name"
     done
     
-    # 后台启动守护循环
-    daemon_loop &
-    echo $! > "$DAEMON_PID"
-    log "守护进程已启动 (PID: $!)"
-    echo "守护进程已启动 (PID: $!)"
+    # 后台启动守护循环（必须与 stdout/stderr 脱钩，避免在管道里卡住顶层启动脚本）
+    # Also detach from the launching session (setsid/nohup) so it survives TUI/launcher lifecycle.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$SCRIPT_DIR/start.sh" daemon-loop >>"$DAEMON_LOG" 2>&1 < /dev/null &
+    else
+        nohup "$SCRIPT_DIR/start.sh" daemon-loop >>"$DAEMON_LOG" 2>&1 < /dev/null &
+    fi
+    local dpid=$!
+    echo "$dpid" > "$DAEMON_PID"
+    log "守护进程已启动 (PID: $dpid)"
+    echo "守护进程已启动 (PID: $dpid)"
 }
 
 cmd_stop() {
@@ -344,6 +366,7 @@ cmd_restart() {
 
 # ==================== 入口 ====================
 case "${1:-status}" in
+    daemon-loop) init_dirs; daemon_loop ;;
     start)   check_proxy; cmd_start ;;
     stop)    cmd_stop ;;
     status)  cmd_status ;;

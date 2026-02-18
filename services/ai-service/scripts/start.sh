@@ -14,19 +14,50 @@ READY_LOG="$LOG_DIR/ai-service.log"
 
 cd "$SERVICE_DIR"
 
-# 加载全局配置
-if [ -f "$PROJECT_ROOT/config/.env" ]; then
-    set -a
-    source "$PROJECT_ROOT/config/.env"
-    set +a
-fi
+# 安全加载 .env（兼容含空格/括号/行尾注释的模板）
+safe_load_env() {
+    local file="$1"
+    [ -f "$file" ] || return 0
 
-# 激活虚拟环境（优先用 telegram-service 的）
-TELEGRAM_VENV="$PROJECT_ROOT/services/telegram-service/.venv"
-if [ -d "$TELEGRAM_VENV" ]; then
-    source "$TELEGRAM_VENV/bin/activate"
-elif [ -d ".venv" ]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*export ]] && continue
+        [[ "$line" =~ \$\( ]] && continue
+        [[ "$line" =~ \` ]] && continue
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local val="${BASH_REMATCH[2]}"
+
+            # Unquote a single outer quote pair if present.
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                # Strip trailing inline comments for unquoted values.
+                val="${val%%#*}"
+                # Trim trailing spaces.
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
+
+            export "$key=$val"
+        fi
+    done < "$file"
+}
+
+# 加载全局配置
+safe_load_env "$PROJECT_ROOT/config/.env"
+
+# 激活虚拟环境
+# - 优先使用本服务 .venv，保证依赖（psycopg/python-dotenv）齐全
+# - 若不存在再回退到 telegram-service 的 .venv（作为子模块运行时的常见环境）
+if [ -d ".venv" ]; then
     source .venv/bin/activate
+else
+    TELEGRAM_VENV="$PROJECT_ROOT/services/telegram-service/.venv"
+    if [ -d "$TELEGRAM_VENV" ]; then
+        source "$TELEGRAM_VENV/bin/activate"
+    fi
 fi
 
 # 添加项目路径

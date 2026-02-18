@@ -36,6 +36,11 @@ class Settings:
     ))
     http_proxy: Optional[str] = field(default_factory=lambda: os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"))
 
+    # K线采集数据源：
+    # - binance_futures_ws: 使用 cryptofeed 订阅 Binance Futures WS（默认，原实现）
+    # - gate_spot_poll: 使用 Gate spot REST 轮询 1m K 线（无需 API key，适合 Binance 不可达场景）
+    candle_provider: str = field(default_factory=lambda: os.getenv("DATA_CANDLE_PROVIDER", "binance_futures_ws"))
+
     # 日志和数据目录改为项目内
     log_dir: Path = field(default_factory=lambda: Path(os.getenv(
         "DATA_SERVICE_LOG_DIR", str(PROJECT_ROOT / "services" / "data-service" / "logs")

@@ -42,8 +42,14 @@ safe_load_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val="${val#\"}" && val="${val%\"}"
-            val="${val#\'}" && val="${val%\'}"
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
             export "$key=$val"
         fi
     done < "$file"

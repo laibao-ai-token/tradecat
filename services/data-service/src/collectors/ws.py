@@ -4,14 +4,21 @@
 - cryptofeed 每分钟闭合时，~300 个币种在 1-2 秒内推送
 - 使用时间窗口批量写入：收集 3 秒内的数据后一次性写入
 - 避免 300 次单独 DB 操作 → 1 次批量操作
+
+Note:
+This module historically used Binance Futures WebSocket via cryptofeed.
+In some environments Binance endpoints are unreachable; we support a minimal
+fallback provider that polls Gate spot 1m candles without API keys.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -20,11 +27,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from adapters.ccxt import load_symbols, normalize_symbol
 from adapters.cryptofeed import BinanceWSAdapter, CandleEvent, preload_symbols
+from adapters.gate_spot import fetch_spot_candles, to_candle_row
 from adapters.metrics import metrics
 from adapters.timescale import TimescaleAdapter
 from config import settings
 
 logger = logging.getLogger("ws.collector")
+
+# Optional: configured symbol groups live in libs/common.
+_libs_path = str(Path(__file__).resolve().parents[5] / "libs")
+if _libs_path not in sys.path:
+    sys.path.insert(0, _libs_path)
+try:
+    from common.symbols import get_configured_symbols
+except Exception:  # pragma: no cover
+    get_configured_symbols = None
 
 
 class WSCollector:
@@ -39,6 +56,8 @@ class WSCollector:
 
     def __init__(self):
         self._ts = TimescaleAdapter()
+        # For polling providers (gate_spot_poll), we intentionally keep the symbol list small
+        # (configured symbols only) to avoid per-symbol HTTP fanout.
         self._symbols = self._load_symbols()
         self._gap_stop = threading.Event()
         self._gap_thread: Optional[threading.Thread] = None
@@ -50,6 +69,17 @@ class WSCollector:
         self._flush_task: Optional[asyncio.Task] = None
 
     def _load_symbols(self) -> Dict[str, str]:
+        # Gate spot polling: only configured symbols (or fallback main4) are supported.
+        if settings.candle_provider == "gate_spot_poll":
+            raw = (get_configured_symbols() if get_configured_symbols else None) or ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+            mapping: Dict[str, str] = {}
+            for s in raw:
+                n = normalize_symbol(s)
+                if n:
+                    mapping[n] = n
+            logger.info("gate spot polling symbols=%d", len(mapping))
+            return mapping
+
         raw = load_symbols(settings.ccxt_exchange)
         if not raw:
             raise RuntimeError("未加载到交易对")
@@ -115,6 +145,10 @@ class WSCollector:
 
     def run(self) -> None:
         """运行采集器"""
+        if settings.candle_provider == "gate_spot_poll":
+            self._run_gate_spot_poll()
+            return
+
         # 启动时补齐 - 后台线程，不阻塞 WebSocket
         if self._symbols:
             threading.Thread(target=self._run_backfill, args=(1,), daemon=True).start()
@@ -136,6 +170,46 @@ class WSCollector:
             asyncio.run(self._final_flush())
             self._gap_stop.set()
             self._ts.close()
+
+    def _run_gate_spot_poll(self) -> None:
+        """Gate spot 1m candle poller (no API key)."""
+        poll_interval = float(os.getenv("GATE_SPOT_POLL_INTERVAL", "10"))
+        timeout_s = float(os.getenv("GATE_SPOT_TIMEOUT", "10"))
+        workers = int(os.getenv("GATE_SPOT_WORKERS", "4"))
+
+        # Store under a separate exchange label to avoid mixing with futures data.
+        db_exchange = os.getenv("GATE_SPOT_DB_EXCHANGE", "gate_spot")
+
+        logger.info("启动 Gate spot polling: symbols=%d interval=%.1fs", len(self._symbols), poll_interval)
+
+        while True:
+            rows: List[dict] = []
+
+            def _fetch_one(sym: str) -> List[dict]:
+                base = sym[:-4]  # BTCUSDT -> BTC
+                pair = f"{base}_USDT"
+                candles = fetch_spot_candles(pair, interval="1m", limit=2, timeout_s=timeout_s)
+                out: List[dict] = []
+                for c in candles:
+                    if c.is_closed:
+                        out.append(to_candle_row(exchange=db_exchange, symbol=sym, candle=c, source="gate_spot"))
+                return out
+
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                futs = {pool.submit(_fetch_one, sym): sym for sym in list(self._symbols.values())}
+                for fut in as_completed(futs):
+                    try:
+                        rows.extend(fut.result())
+                    except Exception as e:
+                        logger.debug("gate spot fetch failed %s: %s", futs[fut], e)
+            if rows:
+                try:
+                    n = self._ts.upsert_candles("1m", rows)
+                    metrics.inc("rows_written", n)
+                    logger.debug("gate spot upsert %d rows", n)
+                except Exception as e:
+                    logger.error("gate spot upsert failed: %s", e)
+            time.sleep(max(1.0, poll_interval))
 
     def _on_candle_sync(self, e: CandleEvent) -> None:
         """同步回调包装器（cryptofeed 可能用同步回调）"""
