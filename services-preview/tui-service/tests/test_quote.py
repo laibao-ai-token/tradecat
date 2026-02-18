@@ -53,6 +53,14 @@ class TestTencentQuoteParse(unittest.TestCase):
         expected_local = ny_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
         self.assertEqual(_normalize_market_ts(raw, "us"), expected_local)
 
+    def test_parse_ts_offset_keeps_naive_datetime(self) -> None:
+        from src.db import parse_ts
+
+        dt = parse_ts("2026-02-17T10:06:41-05:00")
+        self.assertNotEqual(dt, datetime.min)
+        self.assertIsNone(dt.tzinfo)
+        _ = datetime.now() - dt
+
     def test_decode_gbk(self) -> None:
         # Ensure our decode fallback can handle common GBK bytes.
         # Don't hit network here; just validate decode path behavior by mimicking bytes.

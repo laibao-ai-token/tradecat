@@ -1706,16 +1706,20 @@ def _load_backtest_snapshot(base_dir: Path = _BACKTEST_LATEST_DIR) -> BacktestSn
     if start or end:
         snap.date_range = f"{_compact_backtest_date(start)} -> {_compact_backtest_date(end)}"
 
-    # TradeCat backtest artifacts store percentages already (e.g. -0.51 means -0.51%).
-    # Do not auto-scale values in [-1, 1] to avoid showing -51% when the true return is -0.51%.
-    snap.total_return_pct = _coerce_float(
-        _extract_metric(payload, ("total_return_pct", "return_pct", "total_return", "pnl_pct", "roi"))
-    )
-    snap.max_drawdown_pct = _coerce_float(
-        _extract_metric(payload, ("max_drawdown_pct", "max_drawdown", "mdd", "mdd_pct"))
-    )
+    # New artifacts use *_pct fields directly. Legacy fields such as "total_return"
+    # and "max_drawdown" may be fractional ratios (0.123 -> 12.3%).
+    snap.total_return_pct = _coerce_float(_extract_metric(payload, ("total_return_pct", "return_pct")))
+    if snap.total_return_pct is None:
+        snap.total_return_pct = _coerce_pct(_extract_metric(payload, ("total_return", "pnl_pct", "roi")))
+
+    snap.max_drawdown_pct = _coerce_float(_extract_metric(payload, ("max_drawdown_pct", "mdd_pct")))
+    if snap.max_drawdown_pct is None:
+        snap.max_drawdown_pct = _coerce_pct(_extract_metric(payload, ("max_drawdown", "mdd")))
+
     snap.sharpe = _coerce_float(_extract_metric(payload, ("sharpe", "sharpe_ratio")))
-    snap.win_rate_pct = _coerce_float(_extract_metric(payload, ("win_rate_pct", "win_rate", "hit_rate")))
+    snap.win_rate_pct = _coerce_float(_extract_metric(payload, ("win_rate_pct",)))
+    if snap.win_rate_pct is None:
+        snap.win_rate_pct = _coerce_pct(_extract_metric(payload, ("win_rate", "hit_rate")))
     snap.trade_count = _coerce_int(_extract_metric(payload, ("trade_count", "total_trades", "trades", "n_trades")))
     snap.avg_holding_minutes = _coerce_float(
         _extract_metric(payload, ("avg_holding_minutes", "avg_hold_minutes", "avg_holding_mins"))

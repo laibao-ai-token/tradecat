@@ -30,7 +30,11 @@ safe_load_env() {
             elif [[ "$val" =~ ^\'.*\'$ ]]; then
                 val="${val#\'}" && val="${val%\'}"
             else
-                val="${val%%#*}"
+                # 仅处理“空白后 #”的行尾注释，避免截断真实值中的 '#'
+                # 例如: PASSWORD=abc#123 不应被截断；PASSWORD=abc # note 应去掉注释
+                if [[ "$val" =~ ^(.*[^[:space:]])[[:space:]]+#.*$ ]]; then
+                    val="${BASH_REMATCH[1]}"
+                fi
                 val="${val%"${val##*[![:space:]]}"}"
             fi
 

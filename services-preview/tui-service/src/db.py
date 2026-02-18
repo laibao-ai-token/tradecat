@@ -31,13 +31,16 @@ def parse_ts(ts: str) -> datetime:
     if not ts:
         return datetime.min
     s = ts.strip()
-    # normalize common variants
+    # Normalize common variants.
     if s.endswith("Z"):
-        s = s[:-1]
-    if "+" in s:
-        s = s.split("+", 1)[0]
+        s = s[:-1] + "+00:00"
+
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
+        # Keep downstream code simple: always return naive datetime.
+        if dt.tzinfo is not None:
+            return dt.astimezone().replace(tzinfo=None)
+        return dt
     except ValueError:
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
             try:
@@ -115,4 +118,3 @@ def probe(db_path: str) -> tuple[bool, str]:
         return True, "ok"
     except Exception as e:
         return False, str(e)
-
