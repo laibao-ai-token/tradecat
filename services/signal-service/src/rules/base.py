@@ -3,11 +3,98 @@
 """
 
 import logging
+import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+_ROW_NUMERIC_CACHE_KEY = "__tc_numeric_cache__"
+_RULE_ERROR_LOG_FIRST_N = max(0, int(os.environ.get("SIGNAL_RULE_ERROR_LOG_FIRST_N", "3")))
+_RULE_ERROR_LOG_EVERY_N = max(0, int(os.environ.get("SIGNAL_RULE_ERROR_LOG_EVERY_N", "0")))
+_RULE_ERROR_COUNTS: dict[tuple[str, str], int] = {}
+
+
+def _parse_numeric_text(raw: str) -> float | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    text = text.replace(",", "")
+    if not text or not _NUMERIC_RE.match(text):
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_numeric_if_possible(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        parsed = _parse_numeric_text(value)
+        if parsed is not None:
+            return parsed
+    return value
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        parsed = _parse_numeric_text(value)
+        if parsed is not None:
+            return parsed
+    return default
+
+
+def _normalize_row_for_numeric(row: dict | None) -> dict | None:
+    if row is None or not isinstance(row, dict):
+        return row
+    cached = row.get(_ROW_NUMERIC_CACHE_KEY)
+    if isinstance(cached, dict):
+        return cached
+
+    normalized: dict[str, Any] = {}
+    for key, value in row.items():
+        if key == _ROW_NUMERIC_CACHE_KEY:
+            continue
+        normalized[key] = _to_numeric_if_possible(value)
+
+    # Cache per-row to avoid repeated conversion across many rules.
+    row[_ROW_NUMERIC_CACHE_KEY] = normalized
+    return normalized
+
+
+def _log_rule_error_limited(rule_name: str, error: Exception) -> None:
+    msg = str(error)
+    key = (rule_name, msg)
+    count = _RULE_ERROR_COUNTS.get(key, 0) + 1
+    _RULE_ERROR_COUNTS[key] = count
+
+    should_log = count <= _RULE_ERROR_LOG_FIRST_N
+    if not should_log and _RULE_ERROR_LOG_EVERY_N > 0:
+        should_log = count % _RULE_ERROR_LOG_EVERY_N == 0
+    if not should_log:
+        return
+
+    if count == 1:
+        logger.warning("规则检查异常 %s: %s", rule_name, msg)
+    else:
+        logger.warning("规则检查异常 %s: %s (same_error_count=%d)", rule_name, msg, count)
 
 
 class ConditionType(Enum):
@@ -67,18 +154,18 @@ class SignalRule:
                 if not prev:
                     return False
                 fld = cfg.get("field", "")
-                threshold = cfg.get("threshold", 0)
-                prev_val = prev.get(fld, 0) or 0
-                curr_val = curr.get(fld, 0) or 0
+                threshold = _to_float(cfg.get("threshold", 0), 0.0)
+                prev_val = _to_float(prev.get(fld, 0), 0.0)
+                curr_val = _to_float(curr.get(fld, 0), 0.0)
                 return prev_val <= threshold < curr_val
 
             elif ct == ConditionType.THRESHOLD_CROSS_DOWN:
                 if not prev:
                     return False
                 fld = cfg.get("field", "")
-                threshold = cfg.get("threshold", 0)
-                prev_val = prev.get(fld, 0) or 0
-                curr_val = curr.get(fld, 0) or 0
+                threshold = _to_float(cfg.get("threshold", 0), 0.0)
+                prev_val = _to_float(prev.get(fld, 0), 0.0)
+                curr_val = _to_float(curr.get(fld, 0), 0.0)
                 return prev_val >= threshold > curr_val
 
             elif ct == ConditionType.CROSS_UP:
@@ -86,10 +173,10 @@ class SignalRule:
                     return False
                 fa = cfg.get("field_a", "")
                 fb = cfg.get("field_b", "")
-                prev_a = prev.get(fa, 0) or 0
-                prev_b = prev.get(fb, 0) or 0
-                curr_a = curr.get(fa, 0) or 0
-                curr_b = curr.get(fb, 0) or 0
+                prev_a = _to_float(prev.get(fa, 0), 0.0)
+                prev_b = _to_float(prev.get(fb, 0), 0.0)
+                curr_a = _to_float(curr.get(fa, 0), 0.0)
+                curr_b = _to_float(curr.get(fb, 0), 0.0)
                 return prev_a <= prev_b and curr_a > curr_b
 
             elif ct == ConditionType.CROSS_DOWN:
@@ -97,10 +184,10 @@ class SignalRule:
                     return False
                 fa = cfg.get("field_a", "")
                 fb = cfg.get("field_b", "")
-                prev_a = prev.get(fa, 0) or 0
-                prev_b = prev.get(fb, 0) or 0
-                curr_a = curr.get(fa, 0) or 0
-                curr_b = curr.get(fb, 0) or 0
+                prev_a = _to_float(prev.get(fa, 0), 0.0)
+                prev_b = _to_float(prev.get(fb, 0), 0.0)
+                curr_a = _to_float(curr.get(fa, 0), 0.0)
+                curr_b = _to_float(curr.get(fb, 0), 0.0)
                 return prev_a >= prev_b and curr_a < curr_b
 
             elif ct == ConditionType.CONTAINS:
@@ -116,10 +203,10 @@ class SignalRule:
                 if not prev:
                     return False
                 fld = cfg.get("field", "")
-                min_v = cfg.get("min_value", float("-inf"))
-                max_v = cfg.get("max_value", float("inf"))
-                prev_val = prev.get(fld, 0) or 0
-                curr_val = curr.get(fld, 0) or 0
+                min_v = _to_float(cfg.get("min_value", float("-inf")), float("-inf"))
+                max_v = _to_float(cfg.get("max_value", float("inf")), float("inf"))
+                prev_val = _to_float(prev.get(fld, 0), 0.0)
+                curr_val = _to_float(curr.get(fld, 0), 0.0)
                 prev_in = min_v <= prev_val <= max_v
                 curr_in = min_v <= curr_val <= max_v
                 return not prev_in and curr_in
@@ -128,10 +215,10 @@ class SignalRule:
                 if not prev:
                     return False
                 fld = cfg.get("field", "")
-                min_v = cfg.get("min_value", float("-inf"))
-                max_v = cfg.get("max_value", float("inf"))
-                prev_val = prev.get(fld, 0) or 0
-                curr_val = curr.get(fld, 0) or 0
+                min_v = _to_float(cfg.get("min_value", float("-inf")), float("-inf"))
+                max_v = _to_float(cfg.get("max_value", float("inf")), float("inf"))
+                prev_val = _to_float(prev.get(fld, 0), 0.0)
+                curr_val = _to_float(curr.get(fld, 0), 0.0)
                 prev_in = min_v <= prev_val <= max_v
                 curr_in = min_v <= curr_val <= max_v
                 return prev_in and not curr_in
@@ -139,12 +226,14 @@ class SignalRule:
             elif ct == ConditionType.CUSTOM:
                 func = cfg.get("func")
                 if callable(func):
-                    return func(prev, curr)
+                    prev_norm = _normalize_row_for_numeric(prev) if prev else None
+                    curr_norm = _normalize_row_for_numeric(curr)
+                    return func(prev_norm, curr_norm)
                 return False
 
             return False
         except Exception as e:
-            logger.warning(f"规则检查异常 {self.name}: {e}")
+            _log_rule_error_limited(self.name, e)
             return False
 
     def format_message(self, prev: dict | None, curr: dict) -> str:

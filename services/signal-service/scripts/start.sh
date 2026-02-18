@@ -9,13 +9,36 @@ REPO_ROOT="$(dirname "$(dirname "$PROJECT_DIR")")"
 PID_FILE="$PROJECT_DIR/logs/signal-service.pid"
 LOG_FILE="$PROJECT_DIR/logs/signal-service.log"
 
+# 安全加载 .env（兼容含空格/括号/行尾注释的模板）
+safe_load_env() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*export ]] && continue
+        [[ "$line" =~ \$\( ]] && continue
+        [[ "$line" =~ \` ]] && continue
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local val="${BASH_REMATCH[2]}"
+
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
+
+            export "$key=$val"
+        fi
+    done < "$file"
+}
+
 # 加载配置
-ENV_FILE="$REPO_ROOT/config/.env"
-if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    source "$ENV_FILE"
-    set +a
-fi
+safe_load_env "$REPO_ROOT/config/.env"
 
 # 确保虚拟环境存在
 VENV_DIR="$PROJECT_DIR/.venv"
@@ -31,6 +54,20 @@ fi
 PYTHON="$VENV_DIR/bin/python"
 mkdir -p "$PROJECT_DIR/logs"
 
+run_detached() {
+    # Some environments kill background jobs tied to the launching shell/pipeline.
+    # setsid detaches the process into its own session to survive that.
+    # NOTE: log redirection must happen inside this function, otherwise command substitution would swallow the PID.
+    local log_file="$1"
+    shift
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" >> "$log_file" 2>&1 < /dev/null &
+    else
+        nohup "$@" >> "$log_file" 2>&1 < /dev/null &
+    fi
+    echo $!
+}
+
 start() {
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
         echo "signal-service 已在运行 (PID: $(cat "$PID_FILE"))"
@@ -39,9 +76,9 @@ start() {
     
     echo "启动 signal-service..."
     cd "$PROJECT_DIR"
-    nohup "$PYTHON" -m src --all >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    echo "signal-service 已启动 (PID: $!)"
+    PID=$(run_detached "$LOG_FILE" "$PYTHON" -m src --all)
+    echo "$PID" > "$PID_FILE"
+    echo "signal-service 已启动 (PID: $PID)"
 }
 
 stop() {
@@ -64,8 +101,10 @@ stop() {
 status() {
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
         echo "signal-service 运行中 (PID: $(cat "$PID_FILE"))"
+        return 0
     else
         echo "signal-service 未运行"
+        return 1
     fi
 }
 

@@ -53,6 +53,7 @@ class SQLiteSignalEngine(BaseEngine):
         super().__init__()
         self.db_path = db_path or str(get_sqlite_path())
         self.formatter = formatter  # 可选的格式化器
+        self._missing_tables: set[str] = set()  # log "no such table" only once per table
 
         # 状态
         self.baseline: dict[str, dict] = {}  # {table_symbol_tf: row_data}
@@ -231,7 +232,13 @@ class SQLiteSignalEngine(BaseEngine):
                     result[symbol] = row_dict
             return result
         except Exception as e:
-            logger.warning(f"读取表 {table} 失败: {e}")
+            msg = str(e)
+            if "no such table" in msg.lower():
+                if table not in self._missing_tables:
+                    self._missing_tables.add(table)
+                    logger.warning("读取表 %s 失败: %s", table, e)
+            else:
+                logger.warning("读取表 %s 失败: %s", table, e)
             return {}
 
     def _get_table_data_cached(
@@ -367,11 +374,6 @@ class SQLiteSignalEngine(BaseEngine):
                                 if self._set_cooldown(rule, symbol, timeframe):
                                     signals.append(signal)
                                     self.stats["signals"] += 1
-                                    try:
-                                        if self._history.save(signal, source="sqlite") < 0:
-                                            logger.warning("信号历史写入失败: %s", rule.name)
-                                    except Exception as e:
-                                        logger.warning("信号历史写入异常: %s", e)
 
                                     logger.info(
                                         f"信号触发: {symbol} {rule.direction} - {rule.name} ({timeframe})"

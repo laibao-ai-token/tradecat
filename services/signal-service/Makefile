@@ -7,7 +7,7 @@ PIP := .venv/bin/pip
 RUFF := .venv/bin/ruff
 PYTEST := .venv/bin/pytest
 
-.PHONY: help venv install install-dev clean lint format test check run start stop status
+.PHONY: help venv install install-dev clean reset lock lint format test test-cov typecheck check syntax run run-once run-test start stop status restart backtest
 
 # 默认目标
 help:
@@ -31,6 +31,7 @@ help:
 	@echo "    make start       - 后台启动"
 	@echo "    make stop        - 停止服务"
 	@echo "    make status      - 查看状态"
+	@echo "    make backtest    - 运行回测（M1）"
 
 # ==================== 环境管理 ====================
 
@@ -162,3 +163,7 @@ status:
 # 重启
 restart:
 	./scripts/start.sh restart
+
+# 运行回测（M1）
+backtest: install
+	$(PYTHON) -m src.backtest --config src/backtest/strategies/default.crypto.yaml
