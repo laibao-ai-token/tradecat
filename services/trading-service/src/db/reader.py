@@ -8,6 +8,7 @@
 4. SQLite 连接复用 + WAL 模式
 5. 批量写入
 """
+import os
 import sqlite3
 import threading
 import logging
@@ -31,6 +32,76 @@ _sqlite_commit_total = metrics.counter("sqlite_commit_total", "SQLite 提交次�
 # 共享 PG 连接池（默认行工厂）
 _shared_pg_pool: ConnectionPool | None = None
 _shared_pg_pool_lock = threading.Lock()
+
+_DEFAULT_RETENTION = {
+    "1m": 120,   # 2小时
+    "5m": 120,   # 10小时
+    "15m": 96,   # 24小时
+    "1h": 144,   # 6天
+    "4h": 120,   # 20天
+    "1d": 180,   # 6个月
+    "1w": 104,   # 2年
+}
+_RETENTION_ENV_KEYS = {
+    "1m": "INDICATOR_RETENTION_1M",
+    "5m": "INDICATOR_RETENTION_5M",
+    "15m": "INDICATOR_RETENTION_15M",
+    "1h": "INDICATOR_RETENTION_1H",
+    "4h": "INDICATOR_RETENTION_4H",
+    "1d": "INDICATOR_RETENTION_1D",
+    "1w": "INDICATOR_RETENTION_1W",
+}
+
+
+def _parse_positive_int(raw: str) -> int | None:
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+def get_indicator_retention_map() -> dict[str, int]:
+    """Return per-interval retention map with env overrides."""
+
+    out = dict(_DEFAULT_RETENTION)
+
+    raw_overrides = (os.environ.get("INDICATOR_RETENTION_OVERRIDES") or "").strip()
+    if raw_overrides:
+        for item in raw_overrides.replace(";", ",").split(","):
+            part = item.strip()
+            if not part or "=" not in part:
+                continue
+            interval, raw_value = [x.strip() for x in part.split("=", 1)]
+            if interval not in out:
+                continue
+            parsed = _parse_positive_int(raw_value)
+            if parsed is not None:
+                out[interval] = parsed
+
+    for interval, env_key in _RETENTION_ENV_KEYS.items():
+        raw_value = (os.environ.get(env_key) or "").strip()
+        if not raw_value:
+            continue
+        parsed = _parse_positive_int(raw_value)
+        if parsed is not None:
+            out[interval] = parsed
+
+    return out
+
+
+def apply_indicator_retention_overrides(overrides: dict[str, int] | None) -> None:
+    """Apply retention overrides into environment for current process."""
+
+    if not overrides:
+        return
+    for interval, value in overrides.items():
+        if interval not in _RETENTION_ENV_KEYS:
+            continue
+        parsed = _parse_positive_int(str(value))
+        if parsed is None:
+            continue
+        os.environ[_RETENTION_ENV_KEYS[interval]] = str(parsed)
 
 
 def get_db_counters() -> Dict[str, float]:
@@ -82,6 +153,7 @@ class DataReader:
         self._pool = None
         self._pool_size = pool_size
         self._pool_lock = threading.Lock()
+        self._table_exists_cache: dict[str, bool] = {}
 
     @property
     def pool(self):
@@ -109,6 +181,90 @@ class DataReader:
         inc_pg_query()
         return conn.execute(sql, params) if params is not None else conn.execute(sql)
 
+    def _table_exists(self, table: str) -> bool:
+        """Check whether a table exists in market_data schema (cached)."""
+        if table in self._table_exists_cache:
+            return self._table_exists_cache[table]
+        try:
+            with self._conn() as conn:
+                # to_regclass returns NULL if not found.
+                sql = "SELECT to_regclass(%s) AS reg"
+                row = self._execute_pg(conn, sql, (f"market_data.{table}",)).fetchone()
+                ok = bool(row and row.get("reg"))
+        except Exception:
+            ok = False
+        self._table_exists_cache[table] = ok
+        return ok
+
+    @staticmethod
+    def _resample_1m_to_interval(df_1m: pd.DataFrame, interval: str) -> pd.DataFrame:
+        """Resample a 1m OHLCV DataFrame to the requested interval."""
+        rule_map = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"}
+        rule = rule_map.get(interval)
+        if not rule or df_1m is None or df_1m.empty:
+            return pd.DataFrame()
+
+        df = df_1m.copy()
+        # Ensure index is datetime-like for resample.
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return pd.DataFrame()
+
+        agg = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+            "quote_volume": "sum",
+            "trade_count": "sum",
+            "taker_buy_volume": "sum",
+            "taker_buy_quote_volume": "sum",
+        }
+        # Keep only columns we know how to aggregate.
+        cols = [c for c in agg.keys() if c in df.columns]
+        if not cols:
+            return pd.DataFrame()
+        agg2 = {c: agg[c] for c in cols}
+
+        out = df[cols].resample(rule).agg(agg2)
+        out = out.dropna(subset=[c for c in ("open", "high", "low", "close") if c in out.columns], how="any")
+        return out
+
+    def _get_klines_1m_direct(
+        self, symbols: Sequence[str], limit: int, exchange: str
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch 1m candles directly (no table existence logic)."""
+        if not symbols:
+            return {}
+        table = "candles_1m"
+        symbols_list = list(symbols)
+
+        minutes = 1 * limit * 2
+        sql = f"""
+            WITH ranked AS (
+                SELECT symbol, bucket_ts, open, high, low, close, volume,
+                       quote_volume, trade_count, taker_buy_volume, taker_buy_quote_volume,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY bucket_ts DESC) as rn
+                FROM market_data.{table}
+                WHERE symbol = ANY(%s) AND exchange = %s AND bucket_ts > NOW() - INTERVAL '{minutes} minutes'
+            )
+            SELECT symbol, bucket_ts, open, high, low, close, volume,
+                   quote_volume, trade_count, taker_buy_volume, taker_buy_quote_volume
+            FROM ranked WHERE rn <= %s
+            ORDER BY symbol, bucket_ts ASC
+        """
+        result: Dict[str, pd.DataFrame] = {}
+        with self._conn() as conn:
+            rows = self._execute_pg(conn, sql, (symbols_list, exchange, limit)).fetchall()
+            if rows:
+                from itertools import groupby
+
+                for symbol, group in groupby(rows, key=lambda x: x["symbol"]):
+                    row_list = list(group)
+                    if row_list:
+                        result[symbol] = self._rows_to_df(row_list)
+        return result
+
     def get_klines(self, symbols: Sequence[str], interval: str, limit: int = 300, exchange: str = None) -> Dict[str, pd.DataFrame]:
         """批量获取 K 线数据 - 并行查询"""
         exchange = exchange or config.exchange
@@ -117,6 +273,24 @@ class DataReader:
 
         table = f"candles_{interval}"
         symbols_list = list(symbols)
+
+        # If the requested candles table doesn't exist, resample from candles_1m to keep the service usable
+        # without requiring DB schema changes (continuous aggregates).
+        if interval != "1m" and not self._table_exists(table):
+            if not self._table_exists("candles_1m"):
+                return {}
+            interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080}
+            mult = interval_minutes.get(interval)
+            if not mult:
+                return {}
+            base_limit = limit * mult + mult * 5  # small padding to avoid partial buckets
+            raw_1m = self._get_klines_1m_direct(symbols_list, base_limit, exchange)
+            out: Dict[str, pd.DataFrame] = {}
+            for sym, df1m in raw_1m.items():
+                rs = self._resample_1m_to_interval(df1m, interval)
+                if rs is not None and not rs.empty:
+                    out[sym] = rs.tail(limit)
+            return out
 
         # 根据周期计算时间范围，避免扫描全部分区
         interval_minutes = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080}
@@ -251,7 +425,8 @@ class DataReader:
         df = pd.DataFrame([dict(r) for r in rows])
         if "symbol" in df.columns:
             df.drop(columns=["symbol"], inplace=True)
-        df.set_index(pd.DatetimeIndex(df["bucket_ts"], tz="UTC"), inplace=True)
+        ts_index = pd.to_datetime(df["bucket_ts"], errors="coerce", utc=True)
+        df.set_index(pd.DatetimeIndex(ts_index), inplace=True)
         df.drop(columns=["bucket_ts"], inplace=True)
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -261,15 +436,21 @@ class DataReader:
         """获取交易所所有交易对"""
         exchange = exchange or config.exchange
         with self._conn() as conn:
-            sql = f"SELECT DISTINCT symbol FROM market_data.candles_{interval} WHERE exchange = %s"
+            table = f"candles_{interval}"
+            if not self._table_exists(table):
+                table = "candles_1m"
+            sql = f"SELECT DISTINCT symbol FROM market_data.{table} WHERE exchange = %s"
             return [r["symbol"] for r in self._execute_pg(conn, sql, (exchange,)).fetchall()]
 
     def get_latest_ts(self, interval: str, exchange: str = None):
         """获取某周期最新 K 线时间戳"""
         exchange = exchange or config.exchange
+        table = f"candles_{interval}"
+        if not self._table_exists(table):
+            table = "candles_1m"
         try:
             with self._conn() as conn:
-                sql = f"SELECT MAX(bucket_ts) FROM market_data.candles_{interval} WHERE exchange = %s"
+                sql = f"SELECT MAX(bucket_ts) FROM market_data.{table} WHERE exchange = %s"
                 row = self._execute_pg(conn, sql, (exchange,)).fetchone()
                 if row and row["max"]:
                     return row["max"]
@@ -323,6 +504,7 @@ class DataWriter:
             existing_cols = []
 
         df_cols = list(df.columns)
+        is_new_table = not existing_cols
 
         if existing_cols:
             # 对齐列：缺失的补 None，多余的丢弃，避免因列不匹配重建表
@@ -337,12 +519,44 @@ class DataWriter:
             existing_cols = df_cols
 
         # 先删除同一 (交易对, 周期, 数据时间) 的旧数据
-        if "交易对" in df_cols and "周期" in df_cols and "数据时间" in df_cols:
-            dup_rows = df[["交易对", "周期", "数据时间"]].drop_duplicates()
-            if not dup_rows.empty:
-                delete_sql = f"DELETE FROM [{table}] WHERE [交易对]=? AND [周期]=? AND [数据时间]=?"
-                delete_params = list(dup_rows.itertuples(index=False, name=None))
-                conn.executemany(delete_sql, delete_params)
+        # 新建表一定是空表，跳过逐行 DELETE（对历史回填/首写入可显著提速）。
+        if "交易对" in df_cols and "周期" in df_cols and "数据时间" in df_cols and not is_new_table:
+            # Skip expensive per-row deletes when this (symbol, interval) doesn't exist yet.
+            # This is common for backfill jobs that append a new symbol into existing tables.
+            keys = df[["交易对", "周期"]].drop_duplicates()
+            existing_pairs: set[tuple[str, str]] = set()
+            if not keys.empty:
+                try:
+                    check_sql = (
+                        f"SELECT 1 FROM [{table}] "
+                        'WHERE upper("交易对")=? AND COALESCE("周期","")=? '
+                        "LIMIT 1"
+                    )
+                    for sym, interval in keys.itertuples(index=False, name=None):
+                        sym_u = str(sym or "").strip().upper()
+                        iv = str(interval or "").strip()
+                        if not sym_u:
+                            continue
+                        if conn.execute(check_sql, (sym_u, iv)).fetchone():
+                            existing_pairs.add((sym_u, iv))
+                except Exception:
+                    # Be conservative: if we cannot check existence, keep original behavior.
+                    existing_pairs = {(str(sym or "").strip().upper(), str(iv or "").strip()) for sym, iv in keys.itertuples(index=False, name=None)}
+
+            if existing_pairs:
+                dup_rows = df[["交易对", "周期", "数据时间"]].drop_duplicates()
+                if not dup_rows.empty:
+                    delete_sql = f"DELETE FROM [{table}] WHERE [交易对]=? AND [周期]=? AND [数据时间]=?"
+                    if len(existing_pairs) < len(keys):
+                        delete_params = [
+                            (sym, iv, ts)
+                            for sym, iv, ts in dup_rows.itertuples(index=False, name=None)
+                            if (str(sym or "").strip().upper(), str(iv or "").strip()) in existing_pairs
+                        ]
+                    else:
+                        delete_params = list(dup_rows.itertuples(index=False, name=None))
+                    if delete_params:
+                        conn.executemany(delete_sql, delete_params)
 
         # 批量 INSERT - 列名用方括号包裹以支持特殊字符
         placeholders = ",".join(["?"] * len(df_cols))
@@ -356,16 +570,7 @@ class DataWriter:
 
     def _cleanup_old_data(self, conn, table: str, df: pd.DataFrame):
         """清理旧数据，保留每个币种每个周期最新N条"""
-        # 保留条数配置（约4GB总量）
-        RETENTION = {
-            '1m': 120,   # 2小时
-            '5m': 120,   # 10小时
-            '15m': 96,   # 24小时
-            '1h': 144,   # 6天
-            '4h': 120,   # 20天，满足长窗口计算
-            '1d': 180,   # 6个月
-            '1w': 104,   # 2年
-        }
+        retention_map = get_indicator_retention_map()
 
         if "周期" not in df.columns or "交易对" not in df.columns or "数据时间" not in df.columns:
             return
@@ -376,7 +581,7 @@ class DataWriter:
 
         params = []
         for symbol, interval in keys.itertuples(index=False, name=None):
-            limit = RETENTION.get(interval, 60)
+            limit = retention_map.get(interval, 60)
             params.append((symbol, interval, symbol, interval, limit))
 
         try:

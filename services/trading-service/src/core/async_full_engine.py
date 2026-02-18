@@ -62,14 +62,24 @@ def get_high_priority_symbols_fast(top_n: int = 30) -> Set[str]:
         symbols = set()
         try:
             with shared_pg_conn() as conn:
+                # Prefer 5m table if present; otherwise fall back to 1m (no DB schema changes required).
+                # Also always filter by configured exchange to avoid mixing multiple sources.
+                table = "market_data.candles_5m"
+                try:
+                    row = conn.execute("SELECT to_regclass(%s) AS reg", ("market_data.candles_5m",)).fetchone()
+                    if not row or not row.get("reg"):
+                        table = "market_data.candles_1m"
+                except Exception:
+                    table = "market_data.candles_1m"
+
                 # 合并3个维度到单个SQL
                 sql = """
                     WITH base AS (
                         SELECT symbol, 
                                SUM(quote_volume) as total_qv,
                                AVG((high-low)/NULLIF(close,0)) as volatility
-                        FROM market_data.candles_5m
-                        WHERE bucket_ts > NOW() - INTERVAL '24 hours'
+                        FROM {table}
+                        WHERE exchange = %s AND bucket_ts > NOW() - INTERVAL '24 hours'
                         GROUP BY symbol
                     ),
                     volume_rank AS (
@@ -81,14 +91,14 @@ def get_high_priority_symbols_fast(top_n: int = 30) -> Set[str]:
                     change_rank AS (
                         WITH latest AS (
                             SELECT DISTINCT ON (symbol) symbol, close
-                            FROM market_data.candles_5m
-                            WHERE bucket_ts > NOW() - INTERVAL '1 hour'
+                            FROM {table}
+                            WHERE exchange = %s AND bucket_ts > NOW() - INTERVAL '1 hour'
                             ORDER BY symbol, bucket_ts DESC
                         ),
                         prev AS (
                             SELECT DISTINCT ON (symbol) symbol, close as prev_close
-                            FROM market_data.candles_5m
-                            WHERE bucket_ts BETWEEN NOW() - INTERVAL '25 hours' AND NOW() - INTERVAL '23 hours'
+                            FROM {table}
+                            WHERE exchange = %s AND bucket_ts BETWEEN NOW() - INTERVAL '25 hours' AND NOW() - INTERVAL '23 hours'
                             ORDER BY symbol, bucket_ts DESC
                         )
                         SELECT l.symbol
@@ -101,8 +111,8 @@ def get_high_priority_symbols_fast(top_n: int = 30) -> Set[str]:
                         UNION SELECT symbol FROM volatility_rank
                         UNION SELECT symbol FROM change_rank
                     ) combined
-                """
-                cur = conn.execute(sql, (top_n, top_n, top_n))
+                """.format(table=table)
+                cur = conn.execute(sql, (config.exchange, top_n, top_n, config.exchange, config.exchange, top_n))
                 symbols.update(r[0] for r in cur.fetchall())
         except Exception as e:
             LOG.warning(f"K线优先级查询失败: {e}")

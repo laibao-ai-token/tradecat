@@ -1,4 +1,5 @@
 """K线形态指标 - 蜡烛形态 + 价格图形形态"""
+import os
 import logging
 import pandas as pd
 from ..base import Indicator, IndicatorMeta, register
@@ -218,9 +219,12 @@ class KPattern(Indicator):
         # 检测所有形态
         all_patterns = {}
         all_patterns.update(_detect_talib(df))
-        all_patterns.update(_detect_tradingpatterns(ohlcv))
-        all_patterns.update(_detect_patternpy(df))
-        all_patterns.update(_detect_trendln(df))
+        # Backfill fast mode: keep talib CDL only, skip heavy third-party geometry detectors.
+        fast_mode = (os.environ.get("K_PATTERN_BACKFILL_FAST", "") or "").strip().lower() in {"1", "true", "yes"}
+        if not fast_mode:
+            all_patterns.update(_detect_tradingpatterns(ohlcv))
+            all_patterns.update(_detect_patternpy(df))
+            all_patterns.update(_detect_trendln(df))
 
         # 转中文
         cn_patterns = [_to_chinese(k) for k in all_patterns.keys()]

@@ -5,6 +5,7 @@
     DATABASE_URL: TimescaleDB 连接串
     INDICATOR_SQLITE_PATH: SQLite 输出路径
     MAX_WORKERS: 并行计算线程数
+    KLINE_DB_EXCHANGE: candles_* 表的 exchange 字段过滤（默认 binance_futures_um）
     KLINE_INTERVALS: K线指标计算周期
     FUTURES_INTERVALS: 期货情绪计算周期
 """
@@ -14,20 +15,34 @@ from dataclasses import dataclass, field
 from typing import List
 
 SERVICE_ROOT = Path(__file__).parents[1]  # src/config.py -> src -> trading-service
-PROJECT_ROOT = SERVICE_ROOT.parents[1]    # trading-service -> services -> tradecat
+# Repo root: .../tradecat-origin
+REPO_ROOT = SERVICE_ROOT.parents[1]
 
 # 加载 config/.env
-_env_file = PROJECT_ROOT / "config" / ".env"
+_env_file = REPO_ROOT / "config" / ".env"
 if _env_file.exists():
+    parsed_env: dict[str, str] = {}
     for line in _env_file.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+            # Keep the last value when duplicated keys exist in .env.
+            parsed_env[k.strip()] = v.strip()
+    for k, v in parsed_env.items():
+        os.environ.setdefault(k, v)
 
 
 def _parse_intervals(env_key: str, default: str) -> List[str]:
     return [x.strip() for x in os.getenv(env_key, default).split(",") if x.strip()]
+
+def _resolve_repo_path(env_key: str, default: Path) -> Path:
+    raw = (os.getenv(env_key) or "").strip()
+    if not raw:
+        return default
+    p = Path(raw)
+    if not p.is_absolute():
+        p = REPO_ROOT / p
+    return p
 
 
 @dataclass
@@ -38,16 +53,17 @@ class Config:
         "postgresql://postgres:postgres@localhost:5433/market_data"
     ))
 
-    # SQLite（写入指标结果）- 必须使用绝对路径
-    sqlite_path: Path = field(default_factory=lambda: (
-        Path(os.getenv("INDICATOR_SQLITE_PATH")) if os.getenv("INDICATOR_SQLITE_PATH")
-        else PROJECT_ROOT / "libs/database/services/telegram-service/market_data.db"
+    # SQLite（写入指标结果）
+    # 支持相对路径（相对 REPO_ROOT），避免在不同 cwd 下写到意外位置。
+    sqlite_path: Path = field(default_factory=lambda: _resolve_repo_path(
+        "INDICATOR_SQLITE_PATH",
+        REPO_ROOT / "libs/database/services/telegram-service/market_data.db",
     ))
 
     # 计算参数
     default_lookback: int = 300
     max_workers: int = field(default_factory=lambda: int(os.getenv("MAX_WORKERS", "6")))
-    exchange: str = "binance_futures_um"
+    exchange: str = field(default_factory=lambda: os.getenv("KLINE_DB_EXCHANGE", "binance_futures_um"))
     # 计算后端: thread | process | hybrid（IO用线程，CPU用进程）
     compute_backend: str = field(default_factory=lambda: os.getenv("COMPUTE_BACKEND", "thread").lower())
 

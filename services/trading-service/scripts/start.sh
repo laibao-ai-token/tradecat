@@ -44,8 +44,14 @@ safe_load_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val="${val#\"}" && val="${val%\"}"
-            val="${val#\'}" && val="${val%\'}"
+            if [[ "$val" =~ ^\".*\"$ ]]; then
+                val="${val#\"}" && val="${val%\"}"
+            elif [[ "$val" =~ ^\'.*\'$ ]]; then
+                val="${val#\'}" && val="${val%\'}"
+            else
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
             export "$key=$val"
         fi
     done < "$file"
@@ -106,10 +112,11 @@ check_proxy() {
     unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 }
 
-# 启动命令
-MODE="${MODE:-simple}"
-START_CMD="python3 -u -m src.simple_scheduler"
-[ "$MODE" = "listener" ] && START_CMD="python3 -u -m src.kline_listener"
+# 启动模式：
+# - simple: 旧版调度器（依赖 candles_5m 等表；在只有 candles_1m 的环境下会报错）
+# - listener: K线监听器（实验）
+# - engine: 指标计算引擎（推荐，兼容仅有 candles_1m 的环境；缺失周期会从 1m 重采样）
+MODE="${MODE:-engine}"
 
 # ==================== 工具函数 ====================
 log() {
@@ -129,6 +136,20 @@ get_service_pid() {
     [ -f "$SERVICE_PID" ] && cat "$SERVICE_PID"
 }
 
+run_detached() {
+    # Detach from the launching shell/pipeline so the service survives session cleanup.
+    # Prefer setsid when available; fall back to nohup.
+    # NOTE: log redirection must happen inside this function, otherwise command substitution would swallow the PID.
+    local log_file="$1"
+    shift
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" >> "$log_file" 2>&1 < /dev/null &
+    else
+        nohup "$@" >> "$log_file" 2>&1 < /dev/null &
+    fi
+    echo $!
+}
+
 # ==================== 服务管理 ====================
 start_service() {
     init_dirs
@@ -139,10 +160,29 @@ start_service() {
     fi
     
     cd "$SERVICE_DIR"
-    source .venv/bin/activate
+    # Use venv python explicitly (avoid PATH/hash issues in non-interactive shells).
+    local vpy="$SERVICE_DIR/.venv/bin/python"
+    if [[ ! -x "$vpy" ]]; then
+        echo "❌ 未找到虚拟环境: $vpy"
+        echo "   先执行: ./scripts/init.sh trading-service"
+        return 1
+    fi
     export PYTHONPATH="$SERVICE_DIR"
-    nohup $START_CMD >> "$SERVICE_LOG" 2>&1 &
-    local new_pid=$!
+
+    if [[ "${MODE:-engine}" == "listener" ]]; then
+        new_pid=$(run_detached "$SERVICE_LOG" "$vpy" -u -m src.kline_listener)
+    elif [[ "${MODE:-engine}" == "simple" ]]; then
+        new_pid=$(run_detached "$SERVICE_LOG" "$vpy" -u -m src.simple_scheduler)
+    else
+        # engine loop: run --once periodically; avoids relying on candles_5m table.
+        local interval_s="${ENGINE_LOOP_INTERVAL_SECONDS:-60}"
+        new_pid=$(run_detached "$SERVICE_LOG" bash -c "
+while true; do
+  \"$vpy\" -u -m src --once --mode \"${ENGINE_MODE:-all}\" || true
+  sleep \"$interval_s\" || true
+done
+")
+    fi
     echo "$new_pid" > "$SERVICE_PID"
     
     sleep 1
