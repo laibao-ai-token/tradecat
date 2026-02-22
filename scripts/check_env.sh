@@ -74,7 +74,7 @@ check_system_deps() {
     
     # PostgreSQL client
     if command -v psql &>/dev/null; then
-        success "psql: $(psql --version 2>&1 | head -1 | grep -oP '\d+\.\d+')"
+        success "psql: $(psql --version 2>&1 | awk '{print $3}')"
     else
         warn "psql 未安装 (数据库操作受限)"
         echo "      安装: sudo apt install postgresql-client"
@@ -100,7 +100,7 @@ check_venvs() {
     echo ""
     echo "=== 虚拟环境 ==="
     
-    local services=(data-service trading-service telegram-service ai-service signal-service)
+    local services=(data-service trading-service signal-service)
     
     for svc in "${services[@]}"; do
         local svc_dir="$ROOT/services/$svc"
@@ -133,7 +133,7 @@ check_config() {
         fi
         
         # 必填字段检查
-        local required_keys=(BOT_TOKEN DATABASE_URL)
+        local required_keys=(DATABASE_URL)
         for key in "${required_keys[@]}"; do
             local value=$(grep "^${key}=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
             if [ -n "$value" ] && [ "$value" != "your_token_here" ]; then
@@ -251,13 +251,6 @@ check_network() {
     local curl_opts="-s --connect-timeout 5"
     [ -n "$proxy" ] && curl_opts="$curl_opts -x $proxy"
     
-    # Telegram API
-    if eval "curl $curl_opts https://api.telegram.org -o /dev/null" 2>/dev/null; then
-        success "Telegram API: 可达"
-    else
-        fail "Telegram API: 无法连接 (检查代理配置)"
-    fi
-    
     # Binance API
     if eval "curl $curl_opts https://api.binance.com/api/v3/ping -o /dev/null" 2>/dev/null; then
         success "Binance API: 可达"
@@ -273,15 +266,17 @@ check_data_dirs() {
     
     local dirs=(
         "$ROOT/libs/database/services/telegram-service"
-        "$ROOT/services/telegram-service/data/cache"
         "$ROOT/services/data-service/logs"
         "$ROOT/services/trading-service/logs"
-        "$ROOT/services/telegram-service/logs"
+        "$ROOT/services/signal-service/logs"
+        "$ROOT/services-preview/markets-service/logs"
+        "$ROOT/services-preview/tui-service/logs"
     )
     
     for dir in "${dirs[@]}"; do
+        local rel="${dir#$ROOT/}"
         if [ -d "$dir" ]; then
-            success "$(basename $(dirname $dir))/$(basename $dir): 存在"
+            success "$rel: 存在"
         else
             warn "$dir: 不存在"
         fi

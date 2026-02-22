@@ -170,18 +170,18 @@ networkingMode=mirrored
 # 1) 初始化（创建各服务 .venv + 依赖 + 复制配置模板）
 ./scripts/init.sh
 
-# 2) 填写全局配置（含 BOT_TOKEN / DB / 代理 等）
+# 2) 填写全局配置（含 DB / 代理 等）
 cp config/.env.example config/.env && chmod 600 config/.env
 # 端口选择：保持 5434（新库）或改为 5433（旧库），见下方端口说明
 vim config/.env
 
-# 3) 启动核心服务（ai + data + signal + telegram + trading）
+# 3) 启动核心服务（data + signal + trading）
 ./scripts/start.sh start
 ./scripts/start.sh status
 ```
 
-> 说明：顶层 `./scripts/start.sh` 管理 `ai-service`、`data-service`、`signal-service`、`telegram-service`、`trading-service`（ai-service 为子模块，仅做就绪检查，无独立进程）。  
-> 预览版服务需手动启动：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）；`cd services-preview/order-service && python -m src.market-maker.main`（做市，需 API Key）；`cd services-preview/vis-service && ./scripts/start.sh start`（可视化，端口 8087）；`cd services-preview/tui-service && ./scripts/start.sh start`（终端 TUI 信号看板，默认会自动尝试拉起 data-service 与 signal-service，并在退出后 1 小时自动停止由 TUI 启动的 data/signal 服务；可用 `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS` 调整）。也可在根目录直接执行 `./scripts/start.sh run`。
+> 说明：顶层 `./scripts/start.sh` 管理 `data-service`、`signal-service`、`trading-service`。  
+> 预览版服务保留：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）、`cd services-preview/tui-service && ./scripts/start.sh run`（终端 TUI 看板，默认会自动尝试拉起 data-service 与 signal-service，并在退出后 1 小时自动停止由 TUI 启动的 data/signal 服务；可用 `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS` 调整）。也可在根目录直接执行 `./scripts/start.sh run`。
 > 回测（M1 最小闭环）：`cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml`（产物输出到 `artifacts/backtest/latest`）。
 > 产物目录结构：每次回测会创建一个时间戳目录 `artifacts/backtest/YYYYMMDD-HHMMSS/`；单模式结果直接落在该目录，`compare_history_rule` 会在该目录下生成 `<base>-history` / `<base>-rules` / `<base>-compare` 三个子目录，`--walk-forward` 会在该目录写汇总文件并生成 `*-wfXX` 折子目录。
 > 也可使用脚本：`./scripts/backtest.sh`（转发到 signal-service）。
@@ -212,8 +212,6 @@ vim config/.env
   - **混用风险**：脚本与服务若指向不同端口会造成数据分叉；变更前先备份
 - 核心字段：  
   - `DATABASE_URL`（TimescaleDB，见下方端口说明）  
-  - `BOT_TOKEN`（Telegram Bot Token）  
-  - `TELEGRAM_GROUP_WHITELIST`（群聊白名单，逗号分隔；为空仅私聊；群聊仅响应 `/` 或 `!` 开头且需 @bot）  
   - `HTTP_PROXY` / `HTTPS_PROXY`（需要代理时填写）  
   - 币种/周期：`SYMBOLS_GROUPS`、`SYMBOLS_EXTRA`、`SYMBOLS_EXCLUDE`、`INTERVALS`、`KLINE_INTERVALS`、`FUTURES_INTERVALS`  
   - 采集/计算开关：`BACKFILL_MODE`/`BACKFILL_DAYS`/`BACKFILL_ON_START`、`MAX_CONCURRENT`、`RATE_LIMIT_PER_MINUTE`  
@@ -347,8 +345,9 @@ vim config/.env
 - `SIGNAL_DATA_MAX_AGE`：信号数据最大允许时长（秒），超过则跳过不产生信号；默认 600，可按部署环境调整。
 - `COOLDOWN_SECONDS`（signal-service）：PG 信号冷却时间（秒），可与规则级冷却配合，避免重复推送。
 
-关键配置补充（nofx-dev，预览服务）：
-- `NOFX_AI_PAYLOAD_ALL`：是否将 ai-service 全量 `raw_payload.json` 并入 nofx AI 输入（1/0），默认 1。
+关键配置补充（预览服务）：
+- `TUI_AUTO_START_DATA` / `TUI_AUTO_START_SIGNAL`：TUI 启动时是否自动拉起 data/signal（默认 1）。
+- `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_SIGNAL_STOP_DELAY_SECONDS`：退出 TUI 后延迟停止秒数（默认 3600）。
 
 #### 5. 启动服务
 
@@ -451,6 +450,7 @@ vim config/.env
 <summary><strong>点击展开👉 🏗️ 架构设计</strong></summary>
 
 ### 系统架构图
+> 注：下图为历史全量架构示意；当前核心分支仅保留 `data-service`、`trading-service`、`signal-service`、`markets-service`、`tui-service`。
 
 ```mermaid
 graph TD
@@ -546,12 +546,7 @@ graph TD
 | **markets-service** | - | 全市场数据采集（美股/A股/宏观/衍生品定价） | yfinance, akshare, fredapi, QuantLib |
 | **trading-service** | - | 34个技术指标模块计算、高优先级币种筛选、定时调度 | Python, pandas, numpy, TA-Lib |
 | **signal-service** | - | 独立信号检测服务（129条规则、8分类、事件发布） | Python, SQLite, psycopg2 |
-| **telegram-service** | - | Bot 交互、排行榜展示、信号推送 UI（通过 adapter 调用 signal-service） | python-telegram-bot, aiohttp |
-| **ai-service** | - | AI 分析、Wyckoff 方法论（作为 telegram-service 子模块） | Gemini/OpenAI/Claude/DeepSeek |
-| **api-service** | 8000 | REST API 服务（指标/K线/信号数据查询） | FastAPI, Pydantic |
-| **predict-service** | - | 预测市场信号（Polymarket/Kalshi/Opinion） | Node.js, Telegram Bot |
-| **vis-service** | 8087 | 可视化渲染（K线图/指标图/VPVR） | FastAPI, matplotlib, mplfinance |
-| **order-service** | - | 交易执行、Avellaneda-Stoikov 做市 | Python, ccxt, cryptofeed |
+| **tui-service** | - | 终端看板（多市场行情 + 实时信号 + 回测看板） | Python（stdlib） |
 | **TimescaleDB** | 5434 | K线存储、期货数据存储、时序查询优化 | PostgreSQL 16 + TimescaleDB |
 
 ### 数据流向
@@ -866,14 +861,15 @@ tradecat/
 │   ├── export_timescaledb.sh       # 数据导出
 │   └── timescaledb_compression.sh  # 压缩管理
 │
-├── 📂 services/                    # 稳定版微服务 (6个)
+├── 📂 services/                    # 核心微服务 (3个)
 │   │
-│   ├── 📂 aws-service/             # 本地 -> 远端 SQLite 同步服务
-│   ├── 📂 data-service/            # 加密货币数据采集服务
+│   ├── 📂 data-service/            # 数据采集服务
 │   │   ├── 📂 src/
-│   │   │   ├── 📂 collectors/      # 采集器
-│   │   │   ├── 📂 adapters/        # 适配器
-│   │   │   └── config.py
+│   │   │   ├── 📂 collectors/      # WebSocket + REST 采集器
+│   │   │   ├── 📂 writers/         # 数据写入器
+│   │   │   ├── 📂 models/          # 数据模型
+│   │   │   ├── 📂 backfill/        # 历史回填
+│   │   │   └── __main__.py         # 入口
 │   │   ├── 📂 scripts/
 │   │   ├── Makefile
 │   │   ├── pyproject.toml
@@ -891,30 +887,6 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   ├── 📂 telegram-service/        # Telegram Bot
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 cards/           # 排行榜卡片
-│   │   │   ├── 📂 signals/         # 信号检测引擎
-│   │   │   ├── 📂 bot/             # Bot 主程序
-│   │   │   └── main.py
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   ├── requirements.txt
-│   │   └── requirements.lock.txt
-│   │
-│   ├── 📂 ai-service/              # AI 分析服务
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 data/            # 数据获取
-│   │   │   ├── 📂 llm/             # LLM 客户端
-│   │   │   ├── 📂 prompt/          # Prompt 管理
-│   │   │   └── 📂 bot/             # Bot 集成
-│   │   ├── 📂 prompts/             # Prompt 模板
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
 │   └── 📂 signal-service/          # 信号检测服务（129条规则）
 │       ├── 📂 src/
 │       │   ├── 📂 engines/         # 检测引擎（SQLite + PG）
@@ -928,21 +900,11 @@ tradecat/
 │       ├── pyproject.toml
 │       └── requirements.txt
 │
-├── 📂 services-preview/            # 预览版微服务 (9个，开发中)
-│   │
-│   ├── 📂 api-service/             # REST API 服务
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 routers/         # API 路由
-│   │   │   ├── 📂 schemas/         # Pydantic 模型
-│   │   │   └── app.py              # FastAPI 入口
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
+├── 📂 services-preview/            # 预览版微服务 (2个)
 │   │
 │   ├── 📂 markets-service/         # 全市场数据采集（美股/A股/宏观）
 │   │   ├── 📂 src/
-│   │   │   ├── 📂 providers/       # 数据源适配器 (8个)
+│   │   │   ├── 📂 providers/       # 数据源适配器
 │   │   │   ├── 📂 collectors/      # 采集任务调度
 │   │   │   ├── 📂 models/          # 标准化数据模型
 │   │   │   └── 📂 core/            # 核心框架
@@ -950,49 +912,11 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   ├── 📂 datacat-service/         # 数据采集基建（分层预览）
-│   │   ├── 📂 src/                 # 入口与分层目录（预览）
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 predict-service/         # 预测市场信号微服务
-│   │   ├── 📂 services/            # 子服务 (polymarket/kalshi/opinion)
-│   │   ├── 📂 docs/                # 需求/设计/ADR/Prompt 文档
-│   │   └── 📂 libs/                # 共享库
-│   │
-│   ├── 📂 vis-service/             # 可视化渲染服务
-│   │   ├── 📂 src/                 # FastAPI 入口与模板渲染
-│   │   ├── 📂 scripts/             # 启动脚本
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 order-service/           # 交易执行服务
-│   │   ├── 📂 src/
-│   │   │   └── 📂 market-maker/    # A-S 做市系统
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   ├── requirements.txt
-│   │   └── requirements.lock.txt
-│   │
-│   ├── 📂 tui-service/             # 终端 TUI 信号看板（预览）
-│   │   ├── 📂 src/                 # curses TUI（只读 signal_history.db）
-│   │   ├── 📂 scripts/             # 启动脚本
-│   │   ├── Makefile
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 fate-service/            # 命理服务
-│       ├── 📂 services/            # 子服务
-│       │   └── 📂 telegram-service/ # 命理 Bot
-│       │       └── 📂 src/liuyao_factors/ # 六爻量化因子
-│       ├── 📂 libs/                # 共享库
-│
-│   └── 📂 nofx-dev/                # NOFX AI 交易系统（Go，预览，gitlink）
+│   └── 📂 tui-service/             # 终端 TUI 看板（预览）
+│       ├── 📂 src/                 # 终端 UI（行情/信号/回测）
+│       ├── 📂 scripts/             # 启动脚本
 │       ├── Makefile
-│       ├── pyproject.toml
-│       └── requirements-dev.txt
+│       └── requirements.txt
 │
 ├── 📂 libs/                        # 共享库
 │   ├── 📂 database/                # 数据库文件
@@ -1082,8 +1006,8 @@ cd services/data-service
 ./scripts/start.sh stop     # 停止
 ./scripts/start.sh status   # 状态
 
-# trading-service / telegram-service
-cd services/trading-service  # 或 telegram-service
+# trading-service / signal-service
+cd services/trading-service  # 或 signal-service
 ./scripts/start.sh start    # 启动
 ./scripts/start.sh stop     # 停止
 ./scripts/start.sh status   # 状态
@@ -1125,8 +1049,8 @@ tail -f services/data-service/logs/metrics.log
 # trading-service 日志
 tail -f services/trading-service/logs/simple_scheduler.log
 
-# telegram-service 日志
-tail -f services/telegram-service/logs/bot.log
+# signal-service 日志
+tail -f services/signal-service/logs/service.log
 
 # 守护进程日志
 tail -f logs/daemon.log
@@ -1139,7 +1063,7 @@ tail -f logs/daemon.log
 
 ```bash
 # 查看所有相关进程
-ps aux | grep -E "data-service|trading-service|telegram|simple_scheduler"
+ps aux | grep -E "data-service|signal-service|trading-service|simple_scheduler"
 
 # 查看资源占用
 htop -p $(pgrep -d',' -f "simple_scheduler|crypto_trading")

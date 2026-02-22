@@ -7,8 +7,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # 核心服务（与 init.sh 保持一致）
-# ai-service 提供就绪检查（非独立进程）
-SERVICES=(ai-service data-service signal-service telegram-service trading-service)
+SERVICES=(data-service signal-service trading-service)
 
 # 守护进程配置
 DAEMON_PID="$ROOT/run/daemon.pid"
@@ -18,7 +17,6 @@ RESTART_WINDOW=300              # 重启计数重置窗口（秒）
 BASE_BACKOFF=10                 # 基础退避时间（秒）
 MAX_BACKOFF=300                 # 最大退避时间（秒）
 CHECK_INTERVAL=30               # 检查间隔（秒）
-TELEGRAM_RESTART_INTERVAL=3600  # telegram-service 定时重启间隔（秒）
 
 # ==================== 工具函数 ====================
 mkdir -p "$ROOT/run" "$ROOT/logs"
@@ -126,14 +124,12 @@ daemon_all() {
         declare -A last_restart_time
         declare -A backoff_time
         declare -A limit_logged  # 防止日志风暴：是否已记录达到上限
-        declare -A last_forced_restart
         
         for svc in "${SERVICES[@]}"; do
             restart_counts[$svc]=0
             last_restart_time[$svc]=0
             backoff_time[$svc]=$BASE_BACKOFF
             limit_logged[$svc]=0
-            last_forced_restart[$svc]=0
         done
         
         log "守护进程启动 (检查间隔: ${CHECK_INTERVAL}s, 最大重试: $MAX_RESTART_ATTEMPTS)"
@@ -148,22 +144,6 @@ daemon_all() {
                 
                 cd "$svc_dir"
 
-                # telegram-service 定时重启（临时止血）
-                if [ "$svc" = "telegram-service" ] && [ "$TELEGRAM_RESTART_INTERVAL" -gt 0 ]; then
-                    local last_forced=${last_forced_restart[$svc]}
-                    if [ "$last_forced" -eq 0 ]; then
-                        last_forced_restart[$svc]=$current_time
-                    else
-                        local since_forced=$((current_time - last_forced))
-                        if [ $since_forced -ge $TELEGRAM_RESTART_INTERVAL ]; then
-                            log "$svc: 到达定时重启间隔，执行重启"
-                            ./scripts/start.sh restart >> "$DAEMON_LOG" 2>&1
-                            last_forced_restart[$svc]=$current_time
-                            continue
-                        fi
-                    fi
-                fi
-                
                 # 检查服务状态（使用退出码）
                 if ./scripts/start.sh status >/dev/null 2>&1; then
                     # 服务运行中，重置计数

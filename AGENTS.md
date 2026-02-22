@@ -12,7 +12,7 @@
 - 修改 `services-preview/*/src/` 下的业务代码
 - 修改 `config/.env.example` 全局配置模板
 - 添加/修改技术指标 (`services/trading-service/src/indicators/`)
-- 添加/修改排行榜卡片 (`services/telegram-service/src/cards/`)
+- 添加/修改 TUI 页面与数据适配 (`services-preview/tui-service/src/`)
 - 修改启动脚本 (`services/*/scripts/`, `scripts/`)
 - 更新文档 (`README.md`, `README_EN.md`, `AGENTS.md`)
 - 修改 `Makefile`、`pyproject.toml`
@@ -51,16 +51,16 @@ cd /path/to/tradecat
 # 1) 初始化：创建各服务 .venv、安装依赖、复制配置模板
 ./scripts/init.sh
 
-# 2) 填写全局配置（含 BOT_TOKEN / DB / 代理 等）
+# 2) 填写全局配置（含 DB / 代理 等）
 cp config/.env.example config/.env && chmod 600 config/.env
 vim config/.env
 
-# 3) 启动核心服务（ai + data + signal + telegram + trading）
+# 3) 启动核心服务（data + signal + trading）
 ./scripts/start.sh start
 ./scripts/start.sh status
 ```
 
-> 顶层 `./scripts/start.sh` 管理 ai-service / data-service / signal-service / telegram-service / trading-service（ai-service 仅做就绪检查，无独立进程）。
+> 顶层 `./scripts/start.sh` 管理 data-service / signal-service / trading-service。
 
 ### 2.2 预览版服务启动
 
@@ -71,9 +71,6 @@ cd services/signal-service && ./scripts/start.sh start
 # markets-service（多市场采集）
 cd services-preview/markets-service && ./scripts/start.sh start
 
-# vis-service（可视化，端口 8087）
-cd services-preview/vis-service && ./scripts/start.sh start
-
 # tui-service（终端信号看板，默认自动拉起 data-service + signal-service）
 cd services-preview/tui-service && ./scripts/start.sh run
 # 或在仓库根目录直接启动：
@@ -83,15 +80,6 @@ cd services-preview/tui-service && ./scripts/start.sh run
 TUI_AUTO_START_DATA=0 TUI_AUTO_START_SIGNAL=0 ./scripts/start.sh run
 # 若退出 TUI 立即停止 data/signal：
 TUI_DATA_STOP_DELAY_SECONDS=0 TUI_SIGNAL_STOP_DELAY_SECONDS=0 ./scripts/start.sh run
-
-# order-service（做市，需 API Key）
-cd services-preview/order-service && python -m src
-
-# fate-service（命理服务）
-cd services-preview/fate-service && make run
-
-# predict-service（预测市场，Node.js）
-cd services-preview/predict-service/services/polymarket && npm start
 ```
 
 ### 2.3 开发/修改流程
@@ -220,46 +208,29 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 
 - **微服务独立**：每个服务有独立的 `.venv`、`requirements.txt`、`pyproject.toml`、`Makefile`
 - **配置统一**：所有配置集中在 `config/.env`，各服务共用
-- **数据流向**：`data-service → TimescaleDB → trading-service → SQLite → telegram/ai/signal/vis`
+- **数据流向**：`data-service/markets-service → TimescaleDB → trading-service/signal-service → SQLite/PG → tui-service`
 
-### 4.2 服务清单（15 个）
+### 4.2 服务清单（5 个）
 
 | 服务 | 位置 | 职责 | 入口 |
 |:---|:---|:---|:---|
-| aws-service | services/ | 本地 -> 远端 SQLite 同步 | `src/db_sync_service.py` |
 | data-service | services/ | 加密货币数据采集 | `src/__main__.py` |
 | trading-service | services/ | 指标计算 | `src/__main__.py` |
-| telegram-service | services/ | Bot 交互 | `src/main.py` |
-| ai-service | services/ | AI 分析（telegram 子模块） | `src/__main__.py` |
 | signal-service | services/ | 信号检测（129条规则） | `src/__main__.py` |
-| api-service | services-preview/ | REST API 服务（端口 8000） | `src/__main__.py` |
 | markets-service | services-preview/ | 全市场采集 | `src/__main__.py` |
-| vis-service | services-preview/ | 可视化渲染（端口 8087） | `src/__main__.py` |
-| order-service | services-preview/ | 交易执行 | `src/__main__.py` |
-| predict-service | services-preview/ | 预测市场（Node.js） | `services/*/` |
-| fate-service | services-preview/ | 命理服务（端口 8001） | `services/telegram-service/` |
-| nofx-dev | services-preview/ | NOFX AI 交易系统（预览） | `main.go` |
 | tui-service | services-preview/ | 终端 TUI 信号看板（预览） | `src/__main__.py` |
-| datacat-service | services-preview/ | 数据采集基建（分层预览） | `src/__main__.py` |
 
 ### 4.3 模块边界
 
 | 服务 | 职责 | 禁止 |
 |:---|:---|:---|
-| aws-service | 本地 -> 远端 SQLite 同步 | 禁止参与指标计算与推送 |
 | data-service | 加密货币数据采集、存储到 TimescaleDB | 禁止计算指标 |
 | markets-service | 全市场数据采集（美股/A股/宏观） | 禁止计算指标 |
 | trading-service | 指标计算、写入 SQLite | 禁止直接推送消息 |
-| telegram-service | Bot 交互、信号推送 UI | 禁止包含信号检测逻辑 |
-| ai-service | AI 分析、Wyckoff 方法论 | 作为 telegram-service 子模块 |
-| signal-service | 信号检测、规则引擎（独立服务） | 只读数据库，禁止 Telegram 依赖 |
-| api-service | REST API 数据查询 | 只读数据库，禁止写入 |
-| vis-service | 可视化渲染 | 禁止写入数据库 |
-| order-service | 交易执行、做市 | 禁止修改数据采集逻辑 |
-| nofx-dev | NOFX AI 交易系统（预览） | 暂未定义 |
+| signal-service | 信号检测、规则引擎（独立服务） | 只读数据库，禁止 UI 依赖 |
 | tui-service | 终端 TUI 信号看板（预览） | 只读数据库，禁止写入/推送 |
 
-> **注意**：telegram-service/signals 模块已解耦，仅保留适配层 (`adapter.py`) 和 UI (`ui.py`)，信号检测逻辑全部在 signal-service 中。
+> **注意**：信号检测逻辑全部在 signal-service 中；tui-service 仅负责展示与交互。
 > 冷却持久化：`signal-service/src/storage/cooldown.py` 负责将冷却键写入 `libs/database/services/signal-service/cooldown.db`，SQLite 引擎启动时加载，`_set_cooldown()` 同步落盘；公共接口 `get_cooldown_storage()` 供其他模块复用。
 > 冷却持久化：`signal-service/src/storage/cooldown.py` 负责将冷却键写入 `libs/database/services/signal-service/cooldown.db`，SQLite 引擎启动时加载，`_set_cooldown()` 同步落盘；公共接口 `get_cooldown_storage()` 供其他模块复用。
 
@@ -276,7 +247,6 @@ sqlite3 libs/database/services/telegram-service/market_data.db
 - Python >= 3.10（CI 使用 3.12，pyproject.toml 声明 >=3.9）
 - 保持与现有数据库 schema 兼容
 - 新增指标需注册到 `indicators/__init__.py`
-- 新增卡片需注册到 `cards/registry.py`
 
 ---
 
@@ -367,24 +337,14 @@ tradecat/
 │   ├── export_timescaledb_main4.sh # 导出 Main4 精简数据集（默认端口 5433）
 │   └── timescaledb_compression.sh  # 压缩管理（默认端口 5433）
 │
-├── services/                       # 稳定版微服务 (6个)
-│   ├── aws-service/                # 本地 -> 远端 SQLite 同步
+├── services/                       # 核心微服务 (3个)
 │   ├── data-service/               # 加密货币数据采集
 │   ├── trading-service/            # 指标计算（34个指标模块）
-│   ├── telegram-service/           # Telegram Bot（39张卡片）
-│   ├── ai-service/                 # AI 分析
 │   └── signal-service/             # 信号检测（129条规则）
 │
-├── services-preview/               # 预览版微服务 (9个)
-│   ├── api-service/                # REST API 服务（端口 8000）
-│   ├── datacat-service/            # 数据采集基建（分层预览）
+├── services-preview/               # 预览版微服务 (2个)
 │   ├── tui-service/                # 终端 TUI 信号看板（预览）
-│   ├── markets-service/            # 全市场数据采集
-│   ├── vis-service/                # 可视化渲染（端口 8087）
-│   ├── order-service/              # 交易执行
-│   ├── predict-service/            # 预测市场（Node.js）
-│   ├── fate-service/               # 命理服务（端口 8001）
-│   └── nofx-dev                    # NOFX AI 交易系统（Go，预览）
+│   └── markets-service/            # 全市场数据采集
 │
 ├── libs/
 │   ├── database/                   # 数据库文件
@@ -579,7 +539,6 @@ sudo cp /tmp/tradecat-logrotate.conf /etc/logrotate.d/tradecat
 # - 检查间隔：30 秒
 # - 最大重试：5 次/5分钟窗口
 # - 指数退避：10s → 20s → 40s → ... → 300s (最大)
-# - telegram-service 定时重启：每 1 小时一次（临时止血）
 # - 超过上限后暂停重启，告警写入 alerts.log
 ```
 
@@ -728,9 +687,6 @@ CI（`.github/workflows/ci.yml`）仅执行：
 | `MAX_WORKERS` | trading-service | 计算线程数 |
 | `COMPUTE_BACKEND` | trading-service | 计算后端（thread/process/hybrid） |
 | `HIGH_PRIORITY_TOP_N` | trading-service | auto 模式高优先级币种数量 |
-| `VIS_SERVICE_PORT` | vis-service | 监听端口（默认 8087） |
-| `FATE_BOT_TOKEN` | fate-service | 命理 Bot Token |
-| `FATE_SERVICE_PORT` | fate-service | API 端口（默认 8001） |
 | `MARKETS_SERVICE_DATABASE_URL` | markets-service | 独立数据库连接 |
 | `CRYPTO_WRITE_MODE` | markets-service | 写入模式（raw/legacy） |
 | `ORDER_BOOK_TICK_INTERVAL` | markets-service | L1 tick 采样间隔（秒，默认 1） |

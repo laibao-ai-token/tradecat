@@ -185,18 +185,18 @@ Restart WSL: `wsl --shutdown`, then use the AI installation prompt above.
 # 1) Init (create per-service .venv, install deps, copy config)
 ./scripts/init.sh
 
-# 2) Fill global config (DB / BOT_TOKEN / proxy)
+# 2) Fill global config (DB / proxy)
 cp config/.env.example config/.env && chmod 600 config/.env
 # Change DATABASE_URL port to 5433 to match repo scripts (scripts default 5433, template defaults 5434)
 vim config/.env
 
-# 3) Start core services (ai + data + signal + telegram + trading)
+# 3) Start core services (data + signal + trading)
 ./scripts/start.sh start
 ./scripts/start.sh status
 ```
 
-> Note: top-level `./scripts/start.sh` manages `ai-service`, `data-service`, `signal-service`, `telegram-service`, `trading-service` (ai-service is a sub-module; readiness check only, no standalone process).  
-> Preview services are manual: `cd services-preview/markets-service && ./scripts/start.sh start` (multi-market); `cd services-preview/order-service && python -m src.market-maker.main` (market making, API key required); `cd services-preview/vis-service && ./scripts/start.sh start` (visualization, port 8087); `cd services-preview/tui-service && ./scripts/start.sh start` (terminal TUI for signals; it auto-starts data-service and signal-service by default, then stops TUI-started data/signal services after 1 hour on exit; tune with `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS`). You can also launch it from repo root via `./scripts/start.sh run`.
+> Note: top-level `./scripts/start.sh` manages `data-service`, `signal-service`, `trading-service`.  
+> Retained preview services: `cd services-preview/markets-service && ./scripts/start.sh start` (multi-market), `cd services-preview/tui-service && ./scripts/start.sh run` (terminal TUI; it auto-starts data-service and signal-service by default, then stops TUI-started data/signal services after 1 hour on exit; tune with `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS`). You can also launch it from repo root via `./scripts/start.sh run`.
 > Backtest (M1 minimal loop): `cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml` (outputs to `artifacts/backtest/latest`).
 > Artifact layout: each run creates a timestamp session directory `artifacts/backtest/YYYYMMDD-HHMMSS/`; single-mode outputs are written directly there, `compare_history_rule` writes `<base>-history` / `<base>-rules` / `<base>-compare` subdirectories, and `--walk-forward` writes summary files plus per-fold `*-wfXX` subdirectories under the same session.
 > Script shortcut: `./scripts/backtest.sh` (forwards to signal-service).
@@ -221,8 +221,6 @@ vim config/.env
 - TimescaleDB port must match scripts: repo scripts default to 5433, template defaults to 5434. After copying, change `DATABASE_URL` to 5433; or if keeping 5434, update `scripts/export_timescaledb.sh`, `scripts/timescaledb_compression.sh` and all example ports below.
 - Key fields:  
   - `DATABASE_URL` (TimescaleDB, see port note below)  
-  - `BOT_TOKEN` (Telegram Bot Token)  
-  - `TELEGRAM_GROUP_WHITELIST` (comma-separated group IDs; empty = private chats only; group messages require `/` or `!` prefix + @bot mention)  
   - `HTTP_PROXY` / `HTTPS_PROXY` (if proxy needed)  
   - Symbols/intervals: `SYMBOLS_GROUPS`, `SYMBOLS_EXTRA`, `SYMBOLS_EXCLUDE`, `INTERVALS`, `KLINE_INTERVALS`, `FUTURES_INTERVALS`  
   - Collection/compute: `BACKFILL_MODE`/`BACKFILL_DAYS`/`BACKFILL_ON_START`, `MAX_CONCURRENT`, `RATE_LIMIT_PER_MINUTE`  
@@ -356,8 +354,9 @@ Signal service tips:
 - `SIGNAL_DATA_MAX_AGE`: maximum data age (seconds) used for signals; stale rows are skipped. Default 600.
 - `COOLDOWN_SECONDS` (signal-service PG): global cooldown window (seconds) before repeating the same PG signal.
 
-nofx-dev (preview) tip:
-- `NOFX_AI_PAYLOAD_ALL`: include all ai-service `raw_payload.json` in nofx AI input (1/0), default 1.
+Preview service tips:
+- `TUI_AUTO_START_DATA` / `TUI_AUTO_START_SIGNAL`: auto-start data/signal when TUI launches (default 1).
+- `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_SIGNAL_STOP_DELAY_SECONDS`: delayed stop seconds after TUI exits (default 3600).
 
 #### 5. Start Services
 
@@ -459,6 +458,7 @@ nofx-dev (preview) tip:
 <summary><strong>Expand👉 🏗️ Architecture</strong></summary>
 
 ### System Architecture
+> Note: this diagram reflects the historical full architecture; the current core branch keeps only `data-service`, `trading-service`, `signal-service`, `markets-service`, and `tui-service`.
 
 ```mermaid
 graph TD
@@ -551,15 +551,10 @@ graph TD
 | Service | Port | Responsibility | Tech Stack |
 |:---|:---:|:---|:---|
 | **data-service** | - | Crypto candlestick collection, futures metrics, historical backfill | Python, asyncio, ccxt, cryptofeed |
+| **markets-service** | - | Multi-market data collection (US/CN stocks, macro) [preview] | yfinance, akshare, fredapi, QuantLib |
 | **trading-service** | - | 34 technical indicator modules calculation, high-priority token filtering | Python, pandas, numpy, TA-Lib |
-| **telegram-service** | - | Bot interaction, rankings display, signal push | python-telegram-bot, aiohttp |
-| **ai-service** | - | AI analysis, Wyckoff methodology (as telegram-service submodule) | Gemini/OpenAI/Claude/DeepSeek |
 | **signal-service** | - | Standalone signal detection (129 rules, 8 categories, event publishing) | Python, SQLite, psycopg2 |
-| **api-service** | 8000 | REST API service (indicators/candlesticks/signals query) [preview] | FastAPI, Pydantic |
-| **markets-service** | - | Multi-market data collection (US/China stocks, macro) [preview] | yfinance, akshare, fredapi, QuantLib |
-| **predict-service** | - | Prediction market signals (Polymarket/Kalshi/Opinion) [preview] | Node.js, Telegram Bot |
-| **vis-service** | 8087 | Visualization rendering (K-line/indicators/VPVR) [preview] | FastAPI, matplotlib, mplfinance |
-| **order-service** | - | Trade execution, Avellaneda-Stoikov market making [preview] | Python, ccxt, cryptofeed |
+| **tui-service** | - | Terminal dashboard (quotes/signals/backtest views) [preview] | Python (stdlib) |
 | **TimescaleDB** | 5434 | Candlestick storage, futures data, time-series query optimization | PostgreSQL 16 + TimescaleDB |
 
 ### Data Flow
@@ -874,14 +869,15 @@ tradecat/
 │   ├── export_timescaledb.sh       # Data export
 │   └── timescaledb_compression.sh  # Compression management
 │
-├── 📂 services/                    # Stable Microservices (6)
+├── 📂 services/                    # Core Microservices (3)
 │   │
-│   ├── 📂 aws-service/             # Local -> remote SQLite sync service
-│   ├── 📂 data-service/            # Crypto data collection service
+│   ├── 📂 data-service/            # Data collection service
 │   │   ├── 📂 src/
-│   │   │   ├── 📂 collectors/      # Collectors
-│   │   │   ├── 📂 adapters/        # Adapters
-│   │   │   └── config.py
+│   │   │   ├── 📂 collectors/      # WebSocket + REST collectors
+│   │   │   ├── 📂 writers/         # Data writers
+│   │   │   ├── 📂 models/          # Data models
+│   │   │   ├── 📂 backfill/        # Historical backfill
+│   │   │   └── __main__.py         # Entry point
 │   │   ├── 📂 scripts/
 │   │   ├── Makefile
 │   │   ├── pyproject.toml
@@ -899,108 +895,36 @@ tradecat/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   ├── 📂 telegram-service/        # Telegram Bot
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 cards/           # Ranking cards
-│   │   │   ├── 📂 signals/         # Signal detection engine
-│   │   │   ├── 📂 bot/             # Bot main program
-│   │   │   └── main.py
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   ├── requirements.txt
-│   │   └── requirements.lock.txt
-│   │
-│   ├── 📂 ai-service/              # AI analysis service
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 data/            # Data fetching
-│   │   │   ├── 📂 llm/             # LLM client
-│   │   │   ├── 📂 prompt/          # Prompt management
-│   │   │   └── 📂 bot/             # Bot integration
-│   │   ├── 📂 prompts/             # Prompt templates
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
 │   └── 📂 signal-service/          # Signal detection service (129 rules)
 │       ├── 📂 src/
 │       │   ├── 📂 engines/         # Detection engines (SQLite + PG)
 │       │   ├── 📂 rules/           # Signal rules (8 categories)
 │       │   ├── 📂 events/          # Event publishing
 │       │   ├── 📂 storage/         # Cooldown persistence
-│       │   └── 📂 formatters/      # Output formatters
+│       │   └── 📂 formatters/      # Output formatting
 │       ├── 📂 scripts/
 │       ├── 📂 tests/
 │       ├── Makefile
 │       ├── pyproject.toml
 │       └── requirements.txt
 │
-├── 📂 services-preview/            # Preview Microservices (9, in development)
+├── 📂 services-preview/            # Preview Microservices (2)
 │   │
-│   ├── 📂 api-service/             # REST API service
+│   ├── 📂 markets-service/         # Multi-market collection (US/CN/macros)
 │   │   ├── 📂 src/
-│   │   │   ├── 📂 routers/         # API routes
-│   │   │   ├── 📂 schemas/         # Pydantic models
-│   │   │   └── app.py              # FastAPI entry
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 markets-service/         # Multi-market data collection (US/China stocks, macro)
-│   │   ├── 📂 src/
-│   │   │   ├── 📂 providers/       # Data source adapters (8)
-│   │   │   ├── 📂 collectors/      # Collection task scheduling
-│   │   │   ├── 📂 models/          # Standardized data models
+│   │   │   ├── 📂 providers/       # Data provider adapters
+│   │   │   ├── 📂 collectors/      # Collection scheduler
+│   │   │   ├── 📂 models/          # Normalized models
 │   │   │   └── 📂 core/            # Core framework
 │   │   ├── 📂 scripts/
 │   │   ├── requirements.txt
 │   │   └── requirements.lock.txt
 │   │
-│   ├── 📂 datacat-service/         # Data collection infra (layered preview)
-│   │   ├── 📂 src/                 # Entry & layered directories (preview)
-│   │   ├── 📂 scripts/
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 predict-service/         # Prediction market signals
-│   │   ├── 📂 services/            # Sub-services (polymarket/kalshi/opinion)
-│   │   ├── 📂 docs/                # Requirements/design/ADR/Prompt docs
-│   │   └── 📂 libs/                # Shared libraries
-│   │
-│   ├── 📂 vis-service/             # Visualization rendering service
-│   │   ├── 📂 src/                 # FastAPI entry & template rendering
-│   │   ├── 📂 scripts/             # Start scripts
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 order-service/           # Trade execution service
-│   │   ├── 📂 src/
-│   │   │   └── 📂 market-maker/    # A-S market making system
-│   │   ├── Makefile
-│   │   ├── pyproject.toml
-│   │   ├── requirements.txt
-│   │   └── requirements.lock.txt
-│   │
-│   ├── 📂 tui-service/             # Terminal TUI for signals (preview)
-│   │   ├── 📂 src/                 # curses TUI (read-only)
-│   │   ├── 📂 scripts/             # Start scripts
-│   │   ├── Makefile
-│   │   └── requirements.txt
-│   │
-│   ├── 📂 fate-service/            # Fortune telling service
-│       ├── 📂 services/            # Sub-services
-│       │   └── 📂 telegram-service/ # Fortune Bot
-│       │       └── 📂 src/liuyao_factors/ # Liuyao quantitative factors
-│       ├── 📂 libs/                # Shared libraries
+│   └── 📂 tui-service/             # Terminal TUI dashboard (preview)
+│       ├── 📂 src/                 # UI (quotes/signals/backtest)
+│       ├── 📂 scripts/             # Start scripts
 │       ├── Makefile
-│       ├── pyproject.toml
-│
-│   └── 📂 nofx-dev/                # NOFX AI trading system (Go, preview, gitlink)
-│       └── requirements-dev.txt
+│       └── requirements.txt
 │
 ├── 📂 libs/                        # Shared libraries
 │   ├── 📂 database/                # Database files
@@ -1091,8 +1015,8 @@ cd services/data-service
 ./scripts/start.sh stop     # Stop
 ./scripts/start.sh status   # Status
 
-# trading-service / telegram-service
-cd services/trading-service  # or telegram-service
+# trading-service / signal-service
+cd services/trading-service  # or signal-service
 ./scripts/start.sh start    # Start
 ./scripts/start.sh stop     # Stop
 ./scripts/start.sh status   # Status
@@ -1134,8 +1058,8 @@ tail -f services/data-service/logs/metrics.log
 # trading-service logs
 tail -f services/trading-service/logs/simple_scheduler.log
 
-# telegram-service logs
-tail -f services/telegram-service/logs/bot.log
+# signal-service logs
+tail -f services/signal-service/logs/service.log
 
 # Daemon logs
 tail -f logs/daemon.log
@@ -1148,7 +1072,7 @@ tail -f logs/daemon.log
 
 ```bash
 # View all related processes
-ps aux | grep -E "data-service|trading-service|telegram|simple_scheduler"
+ps aux | grep -E "data-service|signal-service|trading-service|simple_scheduler"
 
 # View resource usage
 htop -p $(pgrep -d',' -f "simple_scheduler|crypto_trading")

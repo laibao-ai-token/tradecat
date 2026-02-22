@@ -19,6 +19,7 @@ NC='\033[0m'
 success() { echo -e "${GREEN}✓ $1${NC}"; }
 fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
+info() { echo -e "→ $1"; }
 
 # 1. 检查 Python 环境
 echo ""
@@ -34,7 +35,7 @@ fi
 echo ""
 echo "2. 代码格式检查 (ruff)..."
 if command -v ruff &> /dev/null; then
-    if ruff check services/ --quiet; then
+    if ruff check services/ services-preview/markets-service/src services-preview/tui-service/src scripts --quiet; then
         success "ruff 检查通过"
     else
         fail "ruff 检查失败"
@@ -46,82 +47,57 @@ fi
 # 3. 语法检查
 echo ""
 echo "3. Python 语法检查..."
-# 3.1 关键入口文件
-if python3 -m py_compile services/telegram-service/src/bot/app.py 2>/dev/null; then
-    success "telegram-service app.py 语法正确"
-else
-    fail "telegram-service app.py 语法错误"
-fi
-# 3.2 ai-service 全量（compileall，确保真正命中所有文件）
-if python3 -m compileall -q services/ai-service/src 2>/dev/null; then
-    success "ai-service 源码语法正确"
-else
-    fail "ai-service 语法检查失败"
-fi
-# 3.3 其他服务（粗粒度）
-for service in data-service trading-service; do
-    if [ -d "services/$service/src" ]; then
-        if python3 -m py_compile services/$service/src/*.py 2>/dev/null; then
-            success "services/$service 语法正确"
+paths=(
+    "services/data-service/src"
+    "services/trading-service/src"
+    "services/signal-service/src"
+    "services-preview/markets-service/src"
+    "services-preview/tui-service/src"
+)
+
+for path in "${paths[@]}"; do
+    if [ -d "$path" ]; then
+        if python3 -m compileall -q "$path" 2>/dev/null; then
+            success "$path 语法正确"
         else
-            warn "services/$service 部分文件语法检查跳过"
+            fail "$path 语法检查失败"
         fi
+    else
+        warn "$path 不存在，跳过"
     fi
 done
 
-# 4. i18n 翻译检查
+# 4. i18n 翻译检查（可选）
 echo ""
 echo "4. i18n 翻译检查..."
-if command -v msgfmt &> /dev/null; then
-    LOCALE_DIR=$(python3 - <<'PY'
-from pathlib import Path
-# NOTE: this script has already `cd` to repo root; using cwd avoids
-# stdin/__file__ resolution issues that may scan the whole filesystem.
-root = Path.cwd().resolve()
-default = root / "services" / "telegram-service" / "locales"
-def has_bot(p: Path) -> bool:
-    for lang in ("zh_CN", "en"):
-        lc = p / lang / "LC_MESSAGES"
-        if (lc / "bot.po").exists() or (lc / "bot.mo").exists():
-            return True
-    return False
-if has_bot(default):
-    print(default)
-    raise SystemExit(0)
-candidates = set()
-for po in root.rglob("bot.po"):
-    parts = po.parts
-    if "node_modules" in parts:
-        continue
-    if "libs" in parts and "external" in parts:
-        continue
-    if po.parent.name != "LC_MESSAGES":
-        continue
-    candidates.add(po.parents[2])
-for cand in sorted(candidates):
-    if has_bot(cand):
-        print(cand)
-        raise SystemExit(0)
-print(default)
-PY
-)
-    if msgfmt --check -o /dev/null "$LOCALE_DIR/zh_CN/LC_MESSAGES/bot.po" >/dev/null && \
-       msgfmt --check -o /dev/null "$LOCALE_DIR/en/LC_MESSAGES/bot.po" >/dev/null; then
-        success "i18n 词条检查通过"
+if [ -f "services/telegram-service/locales/zh_CN/LC_MESSAGES/bot.po" ] && \
+   [ -f "services/telegram-service/locales/en/LC_MESSAGES/bot.po" ]; then
+    if command -v msgfmt &> /dev/null; then
+        if msgfmt --check -o /dev/null services/telegram-service/locales/zh_CN/LC_MESSAGES/bot.po >/dev/null && \
+           msgfmt --check -o /dev/null services/telegram-service/locales/en/LC_MESSAGES/bot.po >/dev/null; then
+            success "i18n 词条检查通过"
+        else
+            fail "i18n 词条检查失败，请修复缺失或语法错误"
+        fi
     else
-        fail "i18n 词条检查失败，请修复缺失或语法错误"
+        warn "未安装 gettext/msgfmt，跳过 i18n 检查"
     fi
 else
-    warn "未安装 gettext/msgfmt，跳过 i18n 检查"
+    info "未检测到 telegram i18n 词条，跳过"
 fi
 
-# 5. i18n 词条对齐检查
+# 5. i18n 词条对齐检查（可选）
 echo ""
 echo "5. i18n 词条对齐检查..."
-if python3 scripts/check_i18n_keys.py; then
-    success "i18n 代码键与词条对齐"
+if [ -f "services/telegram-service/locales/zh_CN/LC_MESSAGES/bot.po" ] && \
+   [ -f "services/telegram-service/locales/en/LC_MESSAGES/bot.po" ]; then
+    if python3 scripts/check_i18n_keys.py; then
+        success "i18n 代码键与词条对齐"
+    else
+        fail "i18n 代码键缺失，请补充 bot.po"
+    fi
 else
-    fail "i18n 代码键缺失，请补充 bot.po"
+    info "未检测到 telegram i18n 目录，跳过"
 fi
 
 # 6. 文档链接检查

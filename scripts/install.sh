@@ -7,7 +7,7 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-ROOT=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 echo -e "${GREEN}🐱 tradecat 一键安装${NC}"
 echo "安装目录: $ROOT"
 
@@ -57,9 +57,10 @@ echo "  📦 trading-service..."
 pip install -e "$ROOT/services/trading-service" -q 2>/dev/null || \
 pip install pandas numpy ta-lib -q 2>/dev/null || pip install pandas numpy -q
 
-# telegram-service
-echo "  📦 telegram-service..."
-pip install python-telegram-bot httpx aiohttp -q
+# signal-service
+echo "  📦 signal-service..."
+pip install -e "$ROOT/services/signal-service" -q 2>/dev/null || \
+pip install pandas numpy sqlalchemy -q
 
 echo -e "  ✅ Python 依赖安装完成"
 
@@ -79,7 +80,7 @@ setup_env() {
 
 setup_env "$ROOT/services/data-service" "data-service"
 setup_env "$ROOT/services/trading-service" "trading-service"
-setup_env "$ROOT/services/telegram-service" "telegram-service"
+setup_env "$ROOT/services/signal-service" "signal-service"
 
 # ========== 5. 创建数据目录 ==========
 echo -e "\n${YELLOW}[5/6] 创建数据目录...${NC}"
@@ -87,8 +88,7 @@ echo -e "\n${YELLOW}[5/6] 创建数据目录...${NC}"
 mkdir -p "$ROOT/services/data-service/logs"
 mkdir -p "$ROOT/services/data-service/pids"
 mkdir -p "$ROOT/services/trading-service/logs"
-mkdir -p "$ROOT/services/telegram-service/logs"
-mkdir -p "$ROOT/services/telegram-service/data/cache"
+mkdir -p "$ROOT/services/signal-service/logs"
 mkdir -p "$ROOT/libs/database/db/state"
 
 echo -e "  ✅ 数据目录已创建"
@@ -109,9 +109,7 @@ echo -e "\n${GREEN}✅ 安装完成！${NC}"
 echo ""
 echo "下一步："
 echo "  1. 编辑配置文件:"
-echo "     - services/data-service/.env"
-echo "     - services/trading-service/.env"
-echo "     - services/telegram-service/.env (设置 BOT_TOKEN)"
+echo "     - config/.env"
 echo ""
 echo "  2. 导入数据库 schema (如果是新数据库):"
 echo "     cd libs/database/db/schema"
@@ -119,8 +117,8 @@ echo "     for f in *.sql; do psql -h localhost -p 5433 -U opentd -d market_data
 echo ""
 echo "  3. 启动服务:"
 echo "     source .venv/bin/activate"
-echo "     ./scripts/daemon.sh"
+echo "     ./scripts/start.sh daemon"
 echo ""
 echo "  4. 或单独启动:"
 echo "     cd services/data-service && ./scripts/start.sh daemon"
-echo "     cd services/telegram-service && python -m src.main"
+echo "     cd services/signal-service && ./scripts/start.sh start"

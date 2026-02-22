@@ -11,10 +11,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # 核心服务（services/ 目录）
-CORE_SERVICES=(data-service trading-service telegram-service ai-service signal-service)
+CORE_SERVICES=(data-service trading-service signal-service)
 
 # 预览服务（services-preview/ 目录）
-PREVIEW_SERVICES=(markets-service vis-service order-service fate-service tui-service)
+PREVIEW_SERVICES=(markets-service tui-service)
 
 # ==================== 工具函数 ====================
 success() { echo -e "\033[0;32m✓ $1\033[0m"; }
@@ -152,13 +152,6 @@ check_config() {
             warn "config/.env 权限不安全: $perms (建议: chmod 600 config/.env)"
         fi
         
-        # 检查关键配置
-        if grep -q "^BOT_TOKEN=" "$config_file" && ! grep -q "^BOT_TOKEN=$" "$config_file"; then
-            success "BOT_TOKEN: 已配置"
-        else
-            warn "BOT_TOKEN: 未配置 (Telegram Bot 无法启动)"
-        fi
-        
         # 显示 DATABASE_URL 端口
         local db_url=$(grep "^DATABASE_URL=" "$config_file" | cut -d= -f2-)
         if [ -n "$db_url" ]; then
@@ -229,7 +222,7 @@ print_summary() {
         echo "  1. 创建配置文件:"
         echo "     cp config/.env.example config/.env && chmod 600 config/.env"
         echo ""
-        echo "  2. 编辑配置 (必填 BOT_TOKEN, DATABASE_URL):"
+        echo "  2. 编辑配置 (必填 DATABASE_URL):"
         echo "     vim config/.env"
         echo ""
         echo "  3. 启动服务:"
