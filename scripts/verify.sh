@@ -75,7 +75,9 @@ echo "4. i18n 翻译检查..."
 if command -v msgfmt &> /dev/null; then
     LOCALE_DIR=$(python3 - <<'PY'
 from pathlib import Path
-root = Path(__file__).resolve().parents[1]
+# NOTE: this script has already `cd` to repo root; using cwd avoids
+# stdin/__file__ resolution issues that may scan the whole filesystem.
+root = Path.cwd().resolve()
 default = root / "services" / "telegram-service" / "locales"
 def has_bot(p: Path) -> bool:
     for lang in ("zh_CN", "en"):

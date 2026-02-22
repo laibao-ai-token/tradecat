@@ -68,7 +68,7 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
 
     calls = []
 
-    def _fake_run_backtest(cfg, *, mode, run_id):
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None):
         calls.append((cfg.date_range.start, cfg.date_range.end, mode, run_id))
         idx = len(calls)
         return SimpleNamespace(
@@ -135,7 +135,7 @@ def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) 
 
     mode_calls = []
 
-    def _fake_run_backtest(cfg, *, mode, run_id):
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None):
         mode_calls.append(mode)
         idx = len(mode_calls)
         return SimpleNamespace(

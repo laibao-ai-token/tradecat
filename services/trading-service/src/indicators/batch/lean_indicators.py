@@ -108,12 +108,28 @@ def calc_adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int =
     smooth_minus = wilder_smooth(minus_dm, period)
 
     # DI
-    plus_di = np.where(smooth_tr > 0, 100 * smooth_plus / smooth_tr, 0)
-    minus_di = np.where(smooth_tr > 0, 100 * smooth_minus / smooth_tr, 0)
+    # NOTE: avoid np.where(divide) because both branches are evaluated and can emit RuntimeWarning.
+    plus_di = np.divide(
+        100.0 * smooth_plus,
+        smooth_tr,
+        out=np.zeros_like(smooth_tr, dtype=float),
+        where=smooth_tr > 0,
+    )
+    minus_di = np.divide(
+        100.0 * smooth_minus,
+        smooth_tr,
+        out=np.zeros_like(smooth_tr, dtype=float),
+        where=smooth_tr > 0,
+    )
 
     # DX 和 ADX
     di_sum = plus_di + minus_di
-    dx = np.where(di_sum > 0, 100 * np.abs(plus_di - minus_di) / di_sum, 0)
+    dx = np.divide(
+        100.0 * np.abs(plus_di - minus_di),
+        di_sum,
+        out=np.zeros_like(di_sum, dtype=float),
+        where=di_sum > 0,
+    )
     adx = wilder_smooth(dx, period)
 
     return {"ADX": adx[-1], "正向DI": plus_di[-1], "负向DI": minus_di[-1]}

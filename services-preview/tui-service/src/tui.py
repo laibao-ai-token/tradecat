@@ -5,21 +5,26 @@ import curses
 import concurrent.futures
 import json
 import locale
+import math
 import os
+import sys
 import threading
 import unicodedata
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
 from .db import SignalRow, fetch_recent, parse_ts, probe
+from .etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
+from .etf_selector import select_etf_candidates
 from .micro import Candle, MicroConfig, MicroEngine, MicroSnapshot
-from .quote import Quote, fetch_intraday_curve_1m, fetch_quote, fetch_quotes
+from .quote import Quote, fetch_daily_curve_1d, fetch_intraday_curve_1m, fetch_quote, fetch_quotes
 from .watchlists import (
     Watchlists,
+    normalize_cn_fund_symbols,
     normalize_cn_symbols,
     normalize_crypto_symbols,
     normalize_hk_symbols,
@@ -63,6 +68,9 @@ class QuoteConfigs:
     us: QuoteConfig = field(default_factory=lambda: QuoteConfig(market="us_stock", symbols=["NVDA", "META", "ORCL"]))
     hk: QuoteConfig = field(default_factory=lambda: QuoteConfig(market="hk_stock", symbols=["00700", "01810", "03690"]))
     cn: QuoteConfig = field(default_factory=lambda: QuoteConfig(market="cn_stock", symbols=["SH600519", "SZ000001", "SH688256"]))
+    fund_cn: QuoteConfig = field(
+        default_factory=lambda: QuoteConfig(market="cn_fund", symbols=["SH510300", "SZ159915", "SH512100"])
+    )
     crypto: QuoteConfig = field(
         default_factory=lambda: QuoteConfig(
             provider="auto",
@@ -227,14 +235,34 @@ class DebounceSwitch:
         self.ready_at = float(now_ts) + max(0.0, float(delay_s))
 
 
+def _read_env_ratio(name: str, default: float, min_value: float = 0.25, max_value: float = 0.60) -> float:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except Exception:
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    return max(float(min_value), min(float(max_value), float(value)))
+
+
 _CLOSED_CURVE_STALE_SECONDS = 180
 _CLOSED_CURVE_MIN_POINTS = 20
 _CLOSED_CURVE_HISTORY_LIMIT = 60
 _CLOSED_CURVE_RETRY_SECONDS = 120
 _CLOSED_CURVE_TARGET_SPAN_SECONDS = 45 * 60
+_FUND_CN_CURVE_DAYS = max(5, int(os.environ.get("TUI_FUND_CN_CURVE_DAYS", "15")))
+_FUND_CN_CURVE_REFRESH_SECONDS = max(30.0, float(os.environ.get("TUI_FUND_CN_CURVE_REFRESH_SECONDS", "300")))
+_MARKET_MICRO_LEFT_RATIO = _read_env_ratio("TUI_MARKET_MICRO_LEFT_RATIO", 0.36)
+_MARKET_MICRO_LEFT_MIN_WIDTH = 34
+_MARKET_MICRO_RIGHT_MIN_WIDTH = 28
 _RENDER_IDLE_REDRAW_S = 2.0
 _RENDER_FRAME_INTERVAL_S = 1.0 / 30.0
 _SWITCH_DEBOUNCE_S = 0.15
+_PRIMARY_MARKET_VIEWS = ("market_us", "market_cn", "market_hk", "market_fund_cn", "market_micro")
+_BACKTEST_VIEW = "market_backtest"
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -267,6 +295,7 @@ _BACKTEST_SHOW_COMPARE = str(os.environ.get("TUI_BACKTEST_SHOW_COMPARE", "")).st
     "yes",
     "on",
 }
+_FUND_CN_ETF_PROFILE = get_etf_domain_profile("auto_driving_cn")
 
 
 def _backtest_mode_text(mode: str) -> str:
@@ -314,14 +343,45 @@ def _collect_service_status(now_ts: float | None = None) -> ServiceStatus:
 
 def _format_service_status_bar(status: ServiceStatus) -> str:
     if status.data_running <= 0:
-        data_txt = "data dn"
+        data_txt = "数据离线"
     elif status.data_running >= max(1, status.data_total):
-        data_txt = "data up"
+        data_txt = "数据在线"
     else:
-        data_txt = f"data {status.data_running}/{status.data_total}"
-    sig_txt = "sig up" if status.signal_up else "sig dn"
-    trd_txt = "trd up" if status.trading_up else "trd dn"
-    return f"svc {data_txt} | {sig_txt} | {trd_txt}"
+        data_txt = f"数据{status.data_running}/{status.data_total}"
+    sig_txt = "信号在线" if status.signal_up else "信号离线"
+    trd_txt = "交易在线" if status.trading_up else "交易离线"
+    return f"服务 {data_txt} | {sig_txt} | {trd_txt}"
+
+
+def _view_display_name(view: str) -> str:
+    mapping = {
+        "market_us": "行情-美股",
+        "market_cn": "行情-A股",
+        "market_hk": "行情-港股",
+        "market_fund_cn": "行情-基金",
+        "market_micro": "行情-加密",
+        "market_backtest": "回测",
+        "quotes_us": "报价-美股",
+        "quotes_cn": "报价-A股",
+        "quotes_hk": "报价-港股",
+        "quotes_crypto": "报价-加密",
+        "quotes_metals": "报价-金属",
+        "signals": "信号",
+    }
+    return mapping.get((view or "").strip().lower(), view)
+
+
+def _market_display_name(market: str, fallback: str = "") -> str:
+    mapping = {
+        "us_stock": "美股",
+        "hk_stock": "港股",
+        "cn_stock": "A股",
+        "cn_fund": "基金",
+        "crypto_spot": "加密",
+        "metals": "金属",
+        "metals_spot": "金属",
+    }
+    return mapping.get((market or "").strip().lower(), fallback or market)
 
 
 class _HotReloadRequested(RuntimeError):
@@ -384,6 +444,7 @@ class QuotePoller:
         self._state = QuoteBookState()
         self._stop = threading.Event()
         self._paused = threading.Event()
+        self._wake = threading.Event()
         self._t = threading.Thread(target=self._run, name="quote-poller", daemon=True)
 
     def start(self) -> None:
@@ -393,6 +454,7 @@ class QuotePoller:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         try:
             self._t.join(timeout=1.0)
         except Exception:
@@ -403,6 +465,7 @@ class QuotePoller:
             self._paused.set()
         else:
             self._paused.clear()
+            self._wake.set()
 
     def snapshot(self) -> QuoteBookState:
         with self._lock:
@@ -411,6 +474,10 @@ class QuotePoller:
     def set_symbols(self, symbols: list[str]) -> None:
         with self._cfg_lock:
             self._cfg.symbols = list(symbols)
+        self._wake.set()
+
+    def request_refresh(self) -> None:
+        self._wake.set()
 
     def _set_one(self, symbol: str, quote: Quote | None, err: str) -> None:
         sym = (symbol or "").strip().upper()
@@ -431,6 +498,7 @@ class QuotePoller:
         # Poll in a background thread so the UI never blocks on network IO.
         while not self._stop.is_set():
             if self._paused.is_set():
+                self._wake.clear()
                 self._stop.wait(timeout=0.2)
                 continue
 
@@ -490,7 +558,16 @@ class QuotePoller:
             # Sleep remaining interval (if any).
             elapsed = time.time() - started
             sleep_s = max(0.1, float(self._cfg.refresh_s) - elapsed)
-            self._stop.wait(timeout=sleep_s)
+            if sleep_s <= 0:
+                continue
+            deadline = time.time() + sleep_s
+            while not self._stop.is_set():
+                remain = deadline - time.time()
+                if remain <= 0:
+                    break
+                if self._wake.wait(timeout=min(0.2, remain)):
+                    self._wake.clear()
+                    break
 
 
 def _init_colors() -> dict[str, int]:
@@ -603,6 +680,26 @@ def _normalize_cn_symbol(symbol: str) -> str:
     return s
 
 
+def _normalize_cn_fund_symbol(symbol: str) -> str:
+    s = (symbol or "").strip().upper()
+    if not s:
+        return ""
+    s = s.replace("/", "").replace("-", "").replace("_", "")
+    if s.endswith(".SH"):
+        s = "SH" + s[:-3]
+    elif s.endswith(".SZ"):
+        s = "SZ" + s[:-3]
+    if s.startswith(("SH", "SZ")):
+        digits = "".join(ch for ch in s[2:] if ch.isdigit())
+        if len(digits) == 6:
+            return s[:2] + digits
+        return ""
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) == 6:
+        return digits
+    return ""
+
+
 def _normalize_hk_symbol(symbol: str) -> str:
     s = (symbol or "").strip().upper()
     if not s:
@@ -626,6 +723,11 @@ def _match_signal_to_symbol(signal_symbol: str, quote_symbol: str, market: str) 
         return _normalize_hk_symbol(signal_symbol) == _normalize_hk_symbol(qsym)
     if m == "cn_stock":
         return _normalize_cn_symbol(signal_symbol) == _normalize_cn_symbol(qsym)
+    if m == "cn_fund":
+        qfund = _normalize_cn_fund_symbol(qsym)
+        if qfund.startswith(("SH", "SZ")):
+            return _normalize_cn_symbol(signal_symbol) == _normalize_cn_symbol(qfund)
+        return False
     return False
 
 
@@ -679,6 +781,77 @@ def _fmt_freshness(ts: str, now_dt: datetime) -> str:
     return f"{max(0, int((now_dt - dt).total_seconds()))}s"
 
 
+def _fmt_duration_compact(seconds: int | None) -> str:
+    if seconds is None:
+        return "--"
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, sec = divmod(s, 60)
+    if m < 60:
+        return f"{m}m"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h{m:02d}m"
+    d, h = divmod(h, 24)
+    return f"{d}d{h:02d}h"
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except Exception:
+        return False
+
+
+def _window_signal_stats(
+    rows: list[SignalRow],
+    now_dt: datetime,
+    *,
+    windows_minutes: tuple[int, ...] = (60, 24 * 60),
+) -> tuple[dict[int, dict[str, int]], int | None, int | None]:
+    stats = {
+        int(minutes): {"rows": 0, "buy": 0, "sell": 0, "alert": 0, "net": 0}
+        for minutes in windows_minutes
+    }
+    parsed_ages: list[int] = []
+
+    for row in rows:
+        ts_dt = parse_ts(row.timestamp)
+        if ts_dt == datetime.min:
+            continue
+        age_s = max(0, int((now_dt - ts_dt).total_seconds()))
+        parsed_ages.append(age_s)
+
+        direction = (row.direction or "").upper()
+        strength = _safe_int(row.strength, 0)
+
+        for minutes in windows_minutes:
+            if age_s > int(minutes) * 60:
+                continue
+            bucket = stats[int(minutes)]
+            bucket["rows"] += 1
+            if direction == "BUY":
+                bucket["buy"] += 1
+                bucket["net"] += strength
+            elif direction == "SELL":
+                bucket["sell"] += 1
+                bucket["net"] -= strength
+            elif direction in {"ALERT", "ALER"}:
+                bucket["alert"] += 1
+
+    if not parsed_ages:
+        return stats, None, None
+    return stats, min(parsed_ages), max(parsed_ages)
+
+
 def _fmt_vol(v: float) -> str:
     if v <= 0:
         return "--"
@@ -697,6 +870,11 @@ def _display_symbol(sym: str, market: str) -> str:
         return f"{symbol}.HK"
     if market == "cn_stock" and len(symbol) > 2 and symbol[:2] in {"SH", "SZ"}:
         return f"{symbol[2:]}.{symbol[:2]}"
+    if market == "cn_fund":
+        if len(symbol) > 2 and symbol[:2] in {"SH", "SZ"}:
+            return f"{symbol[2:]}.{symbol[:2]}"
+        if symbol.isdigit() and len(symbol) == 6:
+            return symbol
     if market == "crypto_spot" and "_" in symbol:
         return symbol.replace("_", "/")
     if market in {"metals", "metals_spot"} and symbol.endswith("USD") and len(symbol) >= 6:
@@ -882,6 +1060,19 @@ def _truncate(s: str, width: int) -> str:
 
     # Keep ASCII-only suffix to avoid locale-specific truncation glyph issues.
     return "".join(out) + ">"
+
+
+def _fit_cell(text: str, width: int, *, align: str = "left") -> str:
+    """
+    Fit text into a fixed display-width cell (handles CJK full-width chars).
+    """
+    if width <= 0:
+        return ""
+    clipped = _truncate(text, width)
+    pad = max(0, width - _text_display_width(clipped))
+    if align == "right":
+        return (" " * pad) + clipped
+    return clipped + (" " * pad)
 
 
 def _coerce_float(value: object) -> float | None:
@@ -1758,8 +1949,9 @@ def _load_backtest_snapshot(base_dir: Path = _BACKTEST_LATEST_DIR) -> BacktestSn
 
 
 def _build_header_line(now: str, view: str, status: str, svc: str, width: int) -> str:
-    left = f"TradeCat TUI  |  {now}  |  view={view}  |  {status}"
-    left_compact = f"TUI {now} v={view} {status}"
+    view_txt = _view_display_name(view)
+    left = f"TradeCat TUI  |  {now}  |  页面={view_txt}  |  {status}"
+    left_compact = f"TUI {now} 页={view_txt} {status}"
     svc_txt = (svc or "").strip()
     if not svc_txt:
         return _truncate(left, width)
@@ -1797,8 +1989,12 @@ def run(
         sv = "market_us"
     if sv in {"quotes_us"}:
         sv = "market_us"
-    if sv in {"quotes_cn", "quotes_hk"}:
+    if sv in {"quotes_cn"}:
         sv = "market_cn"
+    if sv in {"quotes_hk"}:
+        sv = "market_hk"
+    if sv in {"market_fund", "market_fund_cn", "quotes_fund_cn", "quotes_fund"}:
+        sv = "market_fund_cn"
     if sv in {"quotes_metals", "market_crypto", "quotes_crypto"}:
         # Back-compat: old quote pages are folded into market_micro.
         sv = "market_micro"
@@ -1812,6 +2008,8 @@ def run(
         "quotes_metals",
         "market_us",
         "market_cn",
+        "market_hk",
+        "market_fund_cn",
         "market_micro",
         "market_backtest",
     }:
@@ -1824,10 +2022,15 @@ def run(
             curses.wrapper(_main, db_path, refresh_s, limit, quotes or QuoteConfigs(), micro, sv, watchlists_path, watcher)
             return
         except _HotReloadRequested:
-            # Re-exec curses loop in-place; no need to restart helper services.
             if watcher is None:
                 return
-            continue
+            # Full process restart is required for Python source updates to take effect.
+            # Re-entering curses.wrapper alone would keep old modules/functions in memory.
+            restart_argv = [sys.executable, "-m", "src", *sys.argv[1:]]
+            try:
+                os.execv(sys.executable, restart_argv)
+            except Exception:
+                continue
 
 
 def _main(
@@ -1851,11 +2054,13 @@ def _main(
     poll_us = QuotePoller(quote_cfgs.us)
     poll_hk = QuotePoller(quote_cfgs.hk)
     poll_cn = QuotePoller(quote_cfgs.cn)
+    poll_fund_cn = QuotePoller(quote_cfgs.fund_cn)
     poll_crypto = QuotePoller(quote_cfgs.crypto)
     poll_metals = QuotePoller(quote_cfgs.metals)
     poll_us.start()
     poll_hk.start()
     poll_cn.start()
+    poll_fund_cn.start()
     poll_crypto.start()
     poll_metals.start()
 
@@ -1875,6 +2080,8 @@ def _main(
     master_panes: dict[str, MasterPaneState] = {
         "market_us": MasterPaneState(),
         "market_cn": MasterPaneState(),
+        "market_hk": MasterPaneState(),
+        "market_fund_cn": MasterPaneState(),
     }
     seed = normalize_crypto_symbols(micro_cfg.symbol or "")
     micro_symbol_current = seed[0] if seed else "BTC_USDT"
@@ -1882,16 +2089,27 @@ def _main(
     micro_last_refresh: dict[str, float] = {}
     micro_errors: dict[str, str] = {}
     us_quote_curves: dict[str, deque[Candle]] = {}
+    hk_quote_curves: dict[str, deque[Candle]] = {}
     cn_quote_curves: dict[str, deque[Candle]] = {}
+    fund_cn_quote_curves: dict[str, deque[Candle]] = {}
+    fund_cn_daily_curves: dict[str, deque[Candle]] = {}
     crypto_quote_curves: dict[str, deque[Candle]] = {}
     us_curve_seed_attempts: dict[str, float] = {}
+    hk_curve_seed_attempts: dict[str, float] = {}
     cn_curve_seed_attempts: dict[str, float] = {}
+    fund_cn_curve_seed_attempts: dict[str, float] = {}
     us_micro_engines: dict[str, MicroEngine] = {}
+    hk_micro_engines: dict[str, MicroEngine] = {}
     cn_micro_engines: dict[str, MicroEngine] = {}
+    fund_cn_micro_engines: dict[str, MicroEngine] = {}
     us_micro_errors: dict[str, str] = {}
+    hk_micro_errors: dict[str, str] = {}
     cn_micro_errors: dict[str, str] = {}
+    fund_cn_micro_errors: dict[str, str] = {}
     us_last_ingested_fetch: dict[str, float] = {}
+    hk_last_ingested_fetch: dict[str, float] = {}
     cn_last_ingested_fetch: dict[str, float] = {}
+    fund_cn_last_ingested_fetch: dict[str, float] = {}
     crypto_last_ingested_fetch: dict[str, float] = {}
     service_status = _collect_service_status()
     service_status_refresh_s = 1.0
@@ -1901,8 +2119,38 @@ def _main(
 
     micro_switch = DebounceSwitch()
     micro_switch_applied = 0
-    master_switches: dict[str, DebounceSwitch] = {"market_us": DebounceSwitch(), "market_cn": DebounceSwitch()}
-    master_switch_applied: dict[str, int] = {"market_us": 0, "market_cn": 0}
+    master_switches: dict[str, DebounceSwitch] = {
+        "market_us": DebounceSwitch(),
+        "market_cn": DebounceSwitch(),
+        "market_hk": DebounceSwitch(),
+        "market_fund_cn": DebounceSwitch(),
+    }
+    master_switch_applied: dict[str, int] = {"market_us": 0, "market_cn": 0, "market_hk": 0, "market_fund_cn": 0}
+    view_aliases = {
+        "quotes_us": "market_us",
+        "quotes_cn": "market_cn",
+        "quotes_hk": "market_hk",
+        "quotes_fund_cn": "market_fund_cn",
+        "quotes_metals": "market_micro",
+        "quotes_crypto": "market_micro",
+        "market_crypto": "market_micro",
+        "backtest": _BACKTEST_VIEW,
+        "market_bt": _BACKTEST_VIEW,
+    }
+
+    def _canonical_view(v: str) -> str:
+        return view_aliases.get(v, v)
+
+    last_primary_view = _canonical_view(view)
+    if last_primary_view not in _PRIMARY_MARKET_VIEWS:
+        last_primary_view = "market_micro"
+    backtest_parent_view = last_primary_view
+
+    def _remember_primary_view(v: str) -> None:
+        nonlocal last_primary_view
+        canonical = _canonical_view(v)
+        if canonical in _PRIMARY_MARKET_VIEWS:
+            last_primary_view = canonical
 
     def _is_master_view(v: str) -> bool:
         return v in master_panes
@@ -1912,29 +2160,24 @@ def _main(
         return False
 
     def _next_view(v: str) -> str:
-        order = ["market_us", "market_cn", "market_micro", "market_backtest"]
-        compat = {
-            "quotes_us": "market_us",
-            "quotes_cn": "market_cn",
-            "quotes_hk": "market_cn",
-            "quotes_metals": "market_micro",
-            "quotes_crypto": "market_micro",
-            "market_crypto": "market_micro",
-            "backtest": "market_backtest",
-            "market_bt": "market_backtest",
-        }
-        cur = compat.get(v, v)
+        cur = _canonical_view(v)
+        if cur not in _PRIMARY_MARKET_VIEWS:
+            cur = backtest_parent_view if backtest_parent_view in _PRIMARY_MARKET_VIEWS else last_primary_view
         try:
-            idx = order.index(cur)
+            idx = _PRIMARY_MARKET_VIEWS.index(cur)
         except ValueError:
             return "market_micro"
-        return order[(idx + 1) % len(order)]
+        return _PRIMARY_MARKET_VIEWS[(idx + 1) % len(_PRIMARY_MARKET_VIEWS)]
 
     def _master_symbol_count(v: str) -> int:
         if v == "market_us":
             return len(quote_cfgs.us.symbols)
         if v == "market_cn":
             return len(quote_cfgs.cn.symbols)
+        if v == "market_hk":
+            return len(quote_cfgs.hk.symbols)
+        if v == "market_fund_cn":
+            return len(quote_cfgs.fund_cn.symbols)
         return 0
 
     def _cycle_master_symbol(v: str, delta: int) -> bool:
@@ -2002,6 +2245,42 @@ def _main(
             cn_micro_engines[sym] = engine
         return engine
 
+    def _ensure_hk_micro_engine(symbol: str) -> MicroEngine:
+        sym = _normalize_hk_symbol(symbol)
+        if not sym:
+            sym = "00700"
+        engine = hk_micro_engines.get(sym)
+        if engine is None:
+            engine = MicroEngine(
+                MicroConfig(
+                    symbol=sym,
+                    interval_s=5,
+                    window=micro_cfg.window,
+                    flow_rows=micro_cfg.flow_rows,
+                    refresh_s=quote_cfgs.hk.refresh_s,
+                )
+            )
+            hk_micro_engines[sym] = engine
+        return engine
+
+    def _ensure_fund_cn_micro_engine(symbol: str) -> MicroEngine:
+        sym = _normalize_cn_fund_symbol(symbol)
+        if not sym:
+            sym = "SH510300"
+        engine = fund_cn_micro_engines.get(sym)
+        if engine is None:
+            engine = MicroEngine(
+                MicroConfig(
+                    symbol=sym,
+                    interval_s=5,
+                    window=micro_cfg.window,
+                    flow_rows=micro_cfg.flow_rows,
+                    refresh_s=quote_cfgs.fund_cn.refresh_s,
+                )
+            )
+            fund_cn_micro_engines[sym] = engine
+        return engine
+
     def _micro_watch_symbols() -> list[str]:
         syms = [s.strip().upper() for s in (quote_cfgs.crypto.symbols or []) if (s or "").strip()]
         cur = (micro_symbol_current or "").strip().upper()
@@ -2042,6 +2321,7 @@ def _main(
             us=normalize_us_symbols(",".join(quote_cfgs.us.symbols)),
             hk=normalize_hk_symbols(",".join(quote_cfgs.hk.symbols)),
             cn=normalize_cn_symbols(",".join(quote_cfgs.cn.symbols)),
+            fund_cn=normalize_cn_fund_symbols(",".join(quote_cfgs.fund_cn.symbols)),
             crypto=normalize_crypto_symbols(",".join(quote_cfgs.crypto.symbols)),
             metals=normalize_metals_symbols(",".join(quote_cfgs.metals.symbols)),
         )
@@ -2050,6 +2330,40 @@ def _main(
         except Exception:
             # Persistence should never crash the UI.
             pass
+
+    def _reload_dynamic_fund_universe(top_n: int = 35) -> bool:
+        dynamic = load_dynamic_auto_driving_symbols(_REPO_ROOT, top_n=top_n)
+        if not dynamic:
+            return False
+        normalized = normalize_cn_fund_symbols(",".join(dynamic))
+        if not normalized:
+            return False
+        if normalized == [s.strip().upper() for s in (quote_cfgs.fund_cn.symbols or []) if (s or "").strip()]:
+            return False
+
+        quote_cfgs.fund_cn.symbols = list(normalized)
+        poll_fund_cn.set_symbols(quote_cfgs.fund_cn.symbols)
+        pane = master_panes.get("market_fund_cn")
+        if pane is not None:
+            pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.fund_cn.symbols) - 1))
+            pane.left_scroll = min(max(0, pane.left_scroll), max(0, len(quote_cfgs.fund_cn.symbols) - 1))
+            pane.right_scroll = 0
+        master_switches["market_fund_cn"].bump(time.time(), _SWITCH_DEBOUNCE_S)
+        return True
+
+    def _refresh_all_data() -> None:
+        nonlocal last_refresh
+        last_refresh = 0.0
+        poll_us.request_refresh()
+        poll_hk.request_refresh()
+        poll_cn.request_refresh()
+        poll_fund_cn.request_refresh()
+        poll_crypto.request_refresh()
+        poll_metals.request_refresh()
+        us_curve_seed_attempts.clear()
+        hk_curve_seed_attempts.clear()
+        cn_curve_seed_attempts.clear()
+        fund_cn_curve_seed_attempts.clear()
 
     def _prompt(prompt: str, max_len: int = 64) -> str:
         """
@@ -2119,6 +2433,7 @@ def _main(
             tuple(s.strip().upper() for s in (quote_cfgs.us.symbols or [])),
             tuple(s.strip().upper() for s in (quote_cfgs.hk.symbols or [])),
             tuple(s.strip().upper() for s in (quote_cfgs.cn.symbols or [])),
+            tuple(s.strip().upper() for s in (quote_cfgs.fund_cn.symbols or [])),
             tuple(s.strip().upper() for s in (quote_cfgs.crypto.symbols or [])),
             tuple(s.strip().upper() for s in (quote_cfgs.metals.symbols or [])),
             (micro_symbol_current or "").strip().upper(),
@@ -2136,7 +2451,7 @@ def _main(
                 micro_last_refresh[current] = 0.0
             changed = True
 
-        for mv in ("market_us", "market_cn"):
+        for mv in ("market_us", "market_cn", "market_hk", "market_fund_cn"):
             sw = master_switches[mv]
             if sw.version == master_switch_applied[mv] or now_ts < sw.ready_at:
                 continue
@@ -2155,12 +2470,27 @@ def _main(
                 changed = True
                 continue
 
-            syms_cn = [_normalize_cn_symbol(s) for s in (quote_cfgs.cn.symbols or []) if (s or "").strip()]
+            if mv == "market_hk":
+                syms_hk = [_normalize_hk_symbol(s) for s in (quote_cfgs.hk.symbols or []) if (s or "").strip()]
+                syms_hk = [s for s in syms_hk if s]
+                if not syms_hk:
+                    continue
+                pane.selected = min(max(0, pane.selected), len(syms_hk) - 1)
+                hk_curve_seed_attempts.pop(syms_hk[pane.selected], None)
+                changed = True
+                continue
+
+            source_symbols = quote_cfgs.cn.symbols if mv == "market_cn" else quote_cfgs.fund_cn.symbols
+            norm_fn = _normalize_cn_symbol if mv == "market_cn" else _normalize_cn_fund_symbol
+            syms_cn = [norm_fn(s) for s in (source_symbols or []) if (s or "").strip()]
             syms_cn = [s for s in syms_cn if s]
             if not syms_cn:
                 continue
             pane.selected = min(max(0, pane.selected), len(syms_cn) - 1)
-            cn_curve_seed_attempts.pop(syms_cn[pane.selected], None)
+            if mv == "market_cn":
+                cn_curve_seed_attempts.pop(syms_cn[pane.selected], None)
+            else:
+                fund_cn_curve_seed_attempts.pop(syms_cn[pane.selected], None)
             changed = True
 
         if changed:
@@ -2214,6 +2544,7 @@ def _main(
             quote_state_us = poll_us.snapshot()
             quote_state_hk = poll_hk.snapshot()
             quote_state_cn = poll_cn.snapshot()
+            quote_state_fund_cn = poll_fund_cn.snapshot()
             quote_state_crypto = poll_crypto.snapshot()
             quote_state_metals = poll_metals.snapshot()
 
@@ -2242,6 +2573,32 @@ def _main(
                 else:
                     us_micro_errors[sym] = "no data"
 
+            active_hk_symbols = {_normalize_hk_symbol(s) for s in (quote_cfgs.hk.symbols or []) if (s or "").strip()}
+            active_hk_symbols.discard("")
+            for stale_symbol in list(hk_quote_curves.keys()):
+                if stale_symbol not in active_hk_symbols:
+                    hk_quote_curves.pop(stale_symbol, None)
+                    hk_curve_seed_attempts.pop(stale_symbol, None)
+            for stale_symbol in list(hk_micro_engines.keys()):
+                if stale_symbol not in active_hk_symbols:
+                    hk_micro_engines.pop(stale_symbol, None)
+                    hk_micro_errors.pop(stale_symbol, None)
+                    hk_last_ingested_fetch.pop(stale_symbol, None)
+
+            for sym in active_hk_symbols:
+                st = quote_state_hk.entries.get(sym)
+                if st and st.quote is not None:
+                    curve_ts = _curve_update_ts(st.quote, st.last_fetch_at, now)
+                    _update_quote_curve(hk_quote_curves, sym, st.quote, curve_ts, interval_s=5, max_points=240)
+                    hk_engine = _ensure_hk_micro_engine(sym)
+                    last_seen = hk_last_ingested_fetch.get(sym, 0.0)
+                    if st.last_fetch_at > last_seen:
+                        hk_engine.ingest_quote(st.quote, fetched_at=st.last_fetch_at)
+                        hk_last_ingested_fetch[sym] = st.last_fetch_at
+                    hk_micro_errors[sym] = (st.last_error or "").strip()
+                else:
+                    hk_micro_errors[sym] = "no data"
+
             active_cn_symbols = {_normalize_cn_symbol(s) for s in (quote_cfgs.cn.symbols or []) if (s or "").strip()}
             active_cn_symbols.discard("")
             for stale_symbol in list(cn_quote_curves.keys()):
@@ -2268,6 +2625,57 @@ def _main(
                 else:
                     cn_micro_errors[sym] = "no data"
 
+            active_fund_cn_symbols = {
+                _normalize_cn_fund_symbol(s) for s in (quote_cfgs.fund_cn.symbols or []) if (s or "").strip()
+            }
+            active_fund_cn_symbols.discard("")
+            for stale_symbol in list(fund_cn_quote_curves.keys()):
+                if stale_symbol not in active_fund_cn_symbols:
+                    fund_cn_quote_curves.pop(stale_symbol, None)
+            for stale_symbol in list(fund_cn_daily_curves.keys()):
+                if stale_symbol not in active_fund_cn_symbols:
+                    fund_cn_daily_curves.pop(stale_symbol, None)
+                    fund_cn_curve_seed_attempts.pop(stale_symbol, None)
+            for stale_symbol in list(fund_cn_curve_seed_attempts.keys()):
+                if stale_symbol not in active_fund_cn_symbols:
+                    fund_cn_curve_seed_attempts.pop(stale_symbol, None)
+            for stale_symbol in list(fund_cn_micro_engines.keys()):
+                if stale_symbol not in active_fund_cn_symbols:
+                    fund_cn_micro_engines.pop(stale_symbol, None)
+                    fund_cn_micro_errors.pop(stale_symbol, None)
+                    fund_cn_last_ingested_fetch.pop(stale_symbol, None)
+
+            for sym in active_fund_cn_symbols:
+                st = quote_state_fund_cn.entries.get(sym)
+                if st and st.quote is not None:
+                    curve_ts = _curve_update_ts(st.quote, st.last_fetch_at, now)
+                    _update_quote_curve(fund_cn_quote_curves, sym, st.quote, curve_ts, interval_s=5, max_points=240)
+                    cn_engine = _ensure_fund_cn_micro_engine(sym)
+                    last_seen = fund_cn_last_ingested_fetch.get(sym, 0.0)
+                    if st.last_fetch_at > last_seen:
+                        quote_for_engine = st.quote
+                        if (quote_for_engine.symbol or "").strip().upper() != sym:
+                            # Keep engine key stable for mixed fund symbols (exchange/off-market).
+                            quote_for_engine = Quote(
+                                symbol=sym,
+                                name=quote_for_engine.name,
+                                price=quote_for_engine.price,
+                                prev_close=quote_for_engine.prev_close,
+                                open=quote_for_engine.open,
+                                high=quote_for_engine.high,
+                                low=quote_for_engine.low,
+                                currency=quote_for_engine.currency,
+                                volume=quote_for_engine.volume,
+                                amount=quote_for_engine.amount,
+                                ts=quote_for_engine.ts,
+                                source=quote_for_engine.source,
+                            )
+                        cn_engine.ingest_quote(quote_for_engine, fetched_at=st.last_fetch_at)
+                        fund_cn_last_ingested_fetch[sym] = st.last_fetch_at
+                    fund_cn_micro_errors[sym] = (st.last_error or "").strip()
+                else:
+                    fund_cn_micro_errors[sym] = "no data"
+
             _maybe_seed_closed_curve_from_history(
                 curves=us_quote_curves,
                 quote_state=quote_state_us,
@@ -2288,6 +2696,33 @@ def _main(
                 now_ts=now,
                 max_points=240,
             )
+            _maybe_seed_closed_curve_from_history(
+                curves=hk_quote_curves,
+                quote_state=quote_state_hk,
+                symbols=active_hk_symbols,
+                market=quote_cfgs.hk.market,
+                provider=quote_cfgs.hk.provider,
+                attempts=hk_curve_seed_attempts,
+                now_ts=now,
+                max_points=240,
+            )
+            fund_symbols_order = [_normalize_cn_fund_symbol(s) for s in (quote_cfgs.fund_cn.symbols or []) if (s or "").strip()]
+            fund_symbols_order = [s for s in fund_symbols_order if s]
+            fund_pane = master_panes.get("market_fund_cn")
+            selected_fund_symbol = ""
+            if fund_symbols_order and fund_pane is not None:
+                fund_pane.selected = min(max(0, fund_pane.selected), len(fund_symbols_order) - 1)
+                selected_fund_symbol = fund_symbols_order[fund_pane.selected]
+            if selected_fund_symbol and selected_fund_symbol.startswith(("SH", "SZ")):
+                _maybe_seed_fund_curve_from_daily_history(
+                    curves=fund_cn_daily_curves,
+                    symbols={selected_fund_symbol},
+                    market=quote_cfgs.fund_cn.market,
+                    provider=quote_cfgs.fund_cn.provider,
+                    attempts=fund_cn_curve_seed_attempts,
+                    now_ts=now,
+                    lookback_days=_FUND_CN_CURVE_DAYS,
+                )
 
             micro_symbols = _micro_watch_symbols()
             active_crypto_symbols = set(micro_symbols)
@@ -2355,13 +2790,23 @@ def _main(
 
             latest_sig_map_crypto = _build_latest_signal_map(rows_all)
             us_curve_map = _snapshot_quote_curves(us_quote_curves)
+            hk_curve_map = _snapshot_quote_curves(hk_quote_curves)
             cn_curve_map = _snapshot_quote_curves(cn_quote_curves)
+            fund_cn_curve_map = _snapshot_quote_curves(fund_cn_quote_curves)
+            fund_cn_daily_curve_map = _snapshot_quote_curves(fund_cn_daily_curves)
             crypto_curve_map = _snapshot_quote_curves(crypto_quote_curves)
             us_micro_snapshots = {
                 sym: engine.snapshot(error=us_micro_errors.get(sym, "")) for sym, engine in us_micro_engines.items()
             }
+            hk_micro_snapshots = {
+                sym: engine.snapshot(error=hk_micro_errors.get(sym, "")) for sym, engine in hk_micro_engines.items()
+            }
             cn_micro_snapshots = {
                 sym: engine.snapshot(error=cn_micro_errors.get(sym, "")) for sym, engine in cn_micro_engines.items()
+            }
+            fund_cn_micro_snapshots = {
+                sym: engine.snapshot(error=fund_cn_micro_errors.get(sym, ""))
+                for sym, engine in fund_cn_micro_engines.items()
             }
             micro_snapshot = cur_micro_engine.snapshot(error=micro_errors.get(cur_micro_symbol, ""))
 
@@ -2378,6 +2823,7 @@ def _main(
                 _quote_book_signature(quote_state_us),
                 _quote_book_signature(quote_state_hk),
                 _quote_book_signature(quote_state_cn),
+                _quote_book_signature(quote_state_fund_cn),
                 _quote_book_signature(quote_state_crypto),
                 _quote_book_signature(quote_state_metals),
             )
@@ -2387,10 +2833,15 @@ def _main(
 
             micro_sig = (
                 _curve_map_signature(us_curve_map),
+                _curve_map_signature(hk_curve_map),
                 _curve_map_signature(cn_curve_map),
+                _curve_map_signature(fund_cn_curve_map),
+                _curve_map_signature(fund_cn_daily_curve_map),
                 _curve_map_signature(crypto_curve_map),
                 tuple((sym, _micro_snapshot_signature(ss)) for sym, ss in sorted(us_micro_snapshots.items())),
+                tuple((sym, _micro_snapshot_signature(ss)) for sym, ss in sorted(hk_micro_snapshots.items())),
                 tuple((sym, _micro_snapshot_signature(ss)) for sym, ss in sorted(cn_micro_snapshots.items())),
+                tuple((sym, _micro_snapshot_signature(ss)) for sym, ss in sorted(fund_cn_micro_snapshots.items())),
                 _micro_snapshot_signature(micro_snapshot),
                 tuple(micro_symbols),
             )
@@ -2442,14 +2893,20 @@ def _main(
                         quote_state_us,
                         quote_state_hk,
                         quote_state_cn,
+                        quote_state_fund_cn,
                         quote_state_crypto,
                         quote_state_metals,
                         latest_sig_map_crypto,
                         us_curve_map,
+                        hk_curve_map,
                         cn_curve_map,
+                        fund_cn_curve_map,
+                        fund_cn_daily_curve_map,
                         crypto_curve_map,
                         us_micro_snapshots,
+                        hk_micro_snapshots,
                         cn_micro_snapshots,
+                        fund_cn_micro_snapshots,
                         micro_snapshot,
                         micro_symbols,
                         service_status,
@@ -2475,6 +2932,7 @@ def _main(
                 poll_us.set_paused(filt.paused)
                 poll_hk.set_paused(filt.paused)
                 poll_cn.set_paused(filt.paused)
+                poll_fund_cn.set_paused(filt.paused)
                 poll_crypto.set_paused(filt.paused)
                 poll_metals.set_paused(filt.paused)
             elif key == ord("\t"):
@@ -2483,33 +2941,52 @@ def _main(
                     pane.focus = "right" if pane.focus == "left" else "left"
                 else:
                     view = _next_view(view)
+                    _remember_primary_view(view)
             elif key == ord("t"):
                 view = _next_view(view)
+                _remember_primary_view(view)
             elif key == ord("1"):
                 view = "market_us"
+                _remember_primary_view(view)
             elif key == ord("2"):
                 view = "market_cn"
+                _remember_primary_view(view)
             elif key == ord("3"):
                 view = "market_micro"
+                _remember_primary_view(view)
             elif key == ord("4"):
-                view = "market_backtest"
+                if view == _BACKTEST_VIEW:
+                    view = backtest_parent_view if backtest_parent_view in _PRIMARY_MARKET_VIEWS else last_primary_view
+                    if view not in _PRIMARY_MARKET_VIEWS:
+                        view = "market_micro"
+                    _remember_primary_view(view)
+                elif view == "market_micro":
+                    canonical = _canonical_view(view)
+                    if canonical in _PRIMARY_MARKET_VIEWS:
+                        backtest_parent_view = canonical
+                    else:
+                        backtest_parent_view = last_primary_view
+                    view = _BACKTEST_VIEW
             elif key == ord("5"):
-                view = "market_micro"
+                view = "market_fund_cn"
+                _remember_primary_view(view)
             elif key == ord("6"):
-                view = "market_micro"
+                view = "market_hk"
+                _remember_primary_view(view)
             elif key == ord("["):
                 if view == "market_micro":
                     _switch_micro_symbol(-1)
-                elif view in {"market_us", "market_cn"}:
+                elif view in {"market_us", "market_cn", "market_hk", "market_fund_cn"}:
                     _cycle_master_symbol(view, -1)
             elif key == ord("]"):
                 if view == "market_micro":
                     _switch_micro_symbol(1)
-                elif view in {"market_us", "market_cn"}:
+                elif view in {"market_us", "market_cn", "market_hk", "market_fund_cn"}:
                     _cycle_master_symbol(view, 1)
             elif key == ord("0"):
                 # Keep a stable home key, now pointing to micro page by default.
                 view = "market_micro"
+                _remember_primary_view(view)
             elif key == curses.KEY_UP:
                 if _is_master_view(view):
                     pane = master_panes[view]
@@ -2627,8 +3104,13 @@ def _main(
                 filt.toggle_direction("ALERT")
                 scroll = 0
                 last_refresh = 0.0
-            elif key == ord("r"):
-                last_refresh = 0.0
+            elif key in (ord("r"), ord("R")):
+                _refresh_all_data()
+                if view == "market_fund_cn":
+                    _reload_dynamic_fund_universe(top_n=35)
+            elif key in (ord("u"), ord("U")) and view == "market_fund_cn":
+                if _reload_dynamic_fund_universe(top_n=35):
+                    _refresh_all_data()
             elif key in (ord("+"), ord("=")) and (view.startswith("quotes_") or _is_master_view(view) or view == "market_micro"):
                 raw = _prompt("Add symbols (comma-separated): ")
                 if raw:
@@ -2640,10 +3122,14 @@ def _main(
                         if pane is not None:
                             pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.us.symbols) - 1))
                         master_switches["market_us"].bump(now, _SWITCH_DEBOUNCE_S)
-                    elif view == "quotes_hk":
+                    elif view in {"quotes_hk", "market_hk"}:
                         added = normalize_hk_symbols(raw)
                         quote_cfgs.hk.symbols = normalize_hk_symbols(",".join(quote_cfgs.hk.symbols + added))
                         poll_hk.set_symbols(quote_cfgs.hk.symbols)
+                        pane = master_panes.get("market_hk")
+                        if pane is not None:
+                            pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.hk.symbols) - 1))
+                        master_switches["market_hk"].bump(now, _SWITCH_DEBOUNCE_S)
                     elif view in {"quotes_cn", "market_cn"}:
                         added = normalize_cn_symbols(raw)
                         quote_cfgs.cn.symbols = normalize_cn_symbols(",".join(quote_cfgs.cn.symbols + added))
@@ -2652,6 +3138,14 @@ def _main(
                         if pane is not None:
                             pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.cn.symbols) - 1))
                         master_switches["market_cn"].bump(now, _SWITCH_DEBOUNCE_S)
+                    elif view == "market_fund_cn":
+                        added = normalize_cn_fund_symbols(raw)
+                        quote_cfgs.fund_cn.symbols = normalize_cn_fund_symbols(",".join(quote_cfgs.fund_cn.symbols + added))
+                        poll_fund_cn.set_symbols(quote_cfgs.fund_cn.symbols)
+                        pane = master_panes.get("market_fund_cn")
+                        if pane is not None:
+                            pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.fund_cn.symbols) - 1))
+                        master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
                     elif view in {"quotes_crypto", "market_crypto", "market_micro"}:
                         added = normalize_crypto_symbols(raw)
                         quote_cfgs.crypto.symbols = normalize_crypto_symbols(",".join(quote_cfgs.crypto.symbols + added))
@@ -2673,10 +3167,14 @@ def _main(
                         if pane is not None:
                             pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.us.symbols) - 1))
                         master_switches["market_us"].bump(now, _SWITCH_DEBOUNCE_S)
-                    elif view == "quotes_hk":
+                    elif view in {"quotes_hk", "market_hk"}:
                         rm = set(normalize_hk_symbols(raw))
                         quote_cfgs.hk.symbols = [s for s in quote_cfgs.hk.symbols if s.zfill(5) not in rm]
                         poll_hk.set_symbols(quote_cfgs.hk.symbols)
+                        pane = master_panes.get("market_hk")
+                        if pane is not None:
+                            pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.hk.symbols) - 1))
+                        master_switches["market_hk"].bump(now, _SWITCH_DEBOUNCE_S)
                     elif view in {"quotes_cn", "market_cn"}:
                         rm = set(normalize_cn_symbols(raw))
                         quote_cfgs.cn.symbols = [s for s in quote_cfgs.cn.symbols if s.upper() not in rm]
@@ -2685,6 +3183,14 @@ def _main(
                         if pane is not None:
                             pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.cn.symbols) - 1))
                         master_switches["market_cn"].bump(now, _SWITCH_DEBOUNCE_S)
+                    elif view == "market_fund_cn":
+                        rm = set(normalize_cn_fund_symbols(raw))
+                        quote_cfgs.fund_cn.symbols = [s for s in quote_cfgs.fund_cn.symbols if s.upper() not in rm]
+                        poll_fund_cn.set_symbols(quote_cfgs.fund_cn.symbols)
+                        pane = master_panes.get("market_fund_cn")
+                        if pane is not None:
+                            pane.selected = min(max(0, pane.selected), max(0, len(quote_cfgs.fund_cn.symbols) - 1))
+                        master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
                     elif view in {"quotes_crypto", "market_crypto", "market_micro"}:
                         rm = set(normalize_crypto_symbols(raw))
                         quote_cfgs.crypto.symbols = [s for s in quote_cfgs.crypto.symbols if s.upper() not in rm]
@@ -2700,6 +3206,7 @@ def _main(
         poll_us.stop()
         poll_hk.stop()
         poll_cn.stop()
+        poll_fund_cn.stop()
         poll_crypto.stop()
         poll_metals.stop()
 
@@ -2718,14 +3225,20 @@ def _draw(
     quote_state_us: QuoteBookState,
     quote_state_hk: QuoteBookState,
     quote_state_cn: QuoteBookState,
+    quote_state_fund_cn: QuoteBookState,
     quote_state_crypto: QuoteBookState,
     quote_state_metals: QuoteBookState,
     latest_sig_map_crypto: dict[str, SignalRow],
     us_curve_map: dict[str, list[Candle]],
+    hk_curve_map: dict[str, list[Candle]],
     cn_curve_map: dict[str, list[Candle]],
+    fund_cn_curve_map: dict[str, list[Candle]],
+    fund_cn_daily_curve_map: dict[str, list[Candle]],
     crypto_curve_map: dict[str, list[Candle]],
     us_micro_snapshots: dict[str, MicroSnapshot],
+    hk_micro_snapshots: dict[str, MicroSnapshot],
     cn_micro_snapshots: dict[str, MicroSnapshot],
+    fund_cn_micro_snapshots: dict[str, MicroSnapshot],
     micro_snapshot: MicroSnapshot,
     micro_symbols: list[str],
     service_status: ServiceStatus,
@@ -2753,6 +3266,21 @@ def _draw(
             h=h,
             refresh_s=refresh_s,
         )
+    elif view == "market_hk":
+        _draw_market_quad(
+            stdscr,
+            label="HK",
+            quote_cfg=quote_cfgs.hk,
+            quote_state=quote_state_hk,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=hk_curve_map,
+            micro_snapshots=hk_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+        )
     elif view == "quotes_hk":
         _draw_quotes(stdscr, "HK", quote_cfgs.hk, quote_state_hk, w, h, qscroll)
     elif view == "quotes_cn":
@@ -2768,6 +3296,21 @@ def _draw(
             colors=colors,
             curve_map=cn_curve_map,
             micro_snapshots=cn_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+        )
+    elif view == "market_fund_cn":
+        _draw_market_fund_two_panel(
+            stdscr,
+            quote_cfg=quote_cfgs.fund_cn,
+            quote_state=quote_state_fund_cn,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=fund_cn_curve_map,
+            daily_curve_map=fund_cn_daily_curve_map,
+            micro_snapshots=fund_cn_micro_snapshots,
             w=w,
             h=h,
             refresh_s=refresh_s,
@@ -2798,7 +3341,7 @@ def _draw_header(
     width: int,
 ) -> None:
     now = datetime.now().strftime("%y-%m-%d %H:%M:%S")
-    status = "PAUSED" if filt.paused else f"refresh={refresh_s:.1f}s"
+    status = "已暂停" if filt.paused else f"刷新={refresh_s:.1f}s"
     svc = _format_service_status_bar(service_status)
     header = _build_header_line(now, view, status, svc, width)
     stdscr.move(0, 0)
@@ -2818,24 +3361,26 @@ def _draw_market_master(
     refresh_s: float,
     show_signals: bool = True,
 ) -> None:
+    key_hint = (
+        "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | tab切焦点 | +/-加减自选 | ↑↓滚动"
+        if show_signals
+        else "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | +/-加减自选 | ↑↓滚动"
+    )
+
     symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
     if not (quote_cfg.enabled and symbols):
-        _safe_addstr(stdscr, 1, 0, _truncate("market: disabled / no symbols", w))
-        _safe_addstr(stdscr, 2, 0, _truncate("keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST", w))
+        _safe_addstr(stdscr, 1, 0, _truncate("行情页：未启用或无标的", w))
+        _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
         return
 
     pane.selected = min(max(0, pane.selected), max(0, len(symbols) - 1))
     selected_symbol = symbols[pane.selected]
     selected_rows = _signals_for_symbol(rows, selected_symbol, quote_cfg.market)
 
-    line1 = f"market[{label}]: {quote_cfg.provider}/{quote_cfg.market}  symbols={len(symbols)}"
+    market_name = _market_display_name(quote_cfg.market, label)
+    line1 = f"行情[{market_name}]"
     _safe_addstr(stdscr, 1, 0, _truncate(line1, w))
-    key_hint = (
-        "keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST | tab focus | +/- add/remove | arrows scroll"
-        if show_signals
-        else "keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST | +/- add/remove | arrows scroll"
-    )
-    _safe_addstr(stdscr, 2, 0, _truncate(key_hint, w))
+    _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
 
     if not show_signals:
         pane.focus = "left"
@@ -2852,7 +3397,7 @@ def _draw_market_master(
         right_x = w
         right_w = 0
 
-    panel_top = 3
+    panel_top = 2
     panel_h = max(0, h - panel_top - 1)
     if panel_h < 4:
         return
@@ -2864,21 +3409,21 @@ def _draw_market_master(
     left_focus = "*" if (pane.focus == "left" or not show_signals) else " "
     sel_state = quote_state.entries.get(selected_symbol)
     sel_quote = sel_state.quote if sel_state else None
-    _safe_addstr(stdscr, panel_top, 1, _truncate(f"[{left_focus}] QUOTES", left_w - 2), curses.A_UNDERLINE)
+    _safe_addstr(stdscr, panel_top, 1, _truncate(f"[{left_focus}] 行情", left_w - 2), curses.A_UNDERLINE)
     if show_signals:
         right_focus = "*" if pane.focus == "right" else " "
         _safe_addstr(
             stdscr,
             panel_top,
             right_x + 1,
-            _truncate(f"[{right_focus}] SIGNALS: {_display_name(selected_symbol, sel_quote, quote_cfg.market)}", right_w - 2),
+            _truncate(f"[{right_focus}] 信号: {_display_name(selected_symbol, sel_quote, quote_cfg.market)}", right_w - 2),
             curses.A_UNDERLINE,
         )
 
-    left_col = "name         last     chg      pct     open     high     low      vol      ts       age  st"
+    left_col = "名称         最新     涨跌     幅度     开盘     最高     最低      量      时间      延迟 状态"
     _safe_addstr(stdscr, panel_top + 1, 1, _truncate(left_col, left_w - 2), curses.A_UNDERLINE)
     if show_signals:
-        right_col = "time    dir  str tf  type"
+        right_col = "时间    方向 强度 周期 类型"
         _safe_addstr(stdscr, panel_top + 1, right_x + 1, _truncate(right_col, right_w - 2), curses.A_UNDERLINE)
 
     left_body_top = panel_top + 2
@@ -2931,14 +3476,6 @@ def _draw_market_master(
             line = f"{t:<8}{direction:<5}{strength:>3} {tf:<3} {stype:<10}"
             _safe_addstr(stdscr, y, right_x + 1, _truncate(line, right_w - 2))
 
-    sel_name = _display_name(selected_symbol, sel_quote, quote_cfg.market)
-    sel_last = f"{sel_quote.price:.2f}" if sel_quote else "--"
-    footer = (
-        f"summary: selected={sel_name} | code={_display_symbol(selected_symbol, quote_cfg.market)} | last={sel_last} "
-        f"| signals={len(selected_rows)} | refresh={refresh_s:.1f}s"
-    )
-    _safe_addstr(stdscr, h - 1, 0, _truncate(footer, w))
-
 def _draw_quotes(
     stdscr,
     label: str,
@@ -2949,32 +3486,27 @@ def _draw_quotes(
     qscroll: int,
     sig_map: dict[str, SignalRow] | None = None,
 ) -> None:
+    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | +/-加减自选 | ↑↓滚动 | r刷新"
+
     symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
     if not (quote_cfg.enabled and symbols):
-        _safe_addstr(stdscr, 1, 0, _truncate("quotes: disabled / no symbols", w))
-        _safe_addstr(stdscr, 2, 0, _truncate("keys: q quit | t switch view", w))
+        _safe_addstr(stdscr, 1, 0, _truncate("报价页：未启用或无标的", w))
+        _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
         return
 
     # Summary lines
-    line1 = f"quotes[{label}]: {quote_cfg.provider}/{quote_cfg.market}  symbols={len(symbols)}"
+    market_name = _market_display_name(quote_cfg.market, label)
+    line1 = f"报价[{market_name}]"
     _safe_addstr(stdscr, 1, 0, _truncate(line1, w))
-    _safe_addstr(
-        stdscr,
-        2,
-        0,
-        _truncate(
-            "keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST | +/- add/remove | arrows scroll",
-            w,
-        ),
-    )
+    _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
 
     # Table header
-    col = "symbol      name         last     chg      pct     open     high     low      vol     cur   ts                 age  status"
+    col = "代码        名称         最新     涨跌     幅度     开盘     最高     最低      量      币种  时间               延迟 状态"
     if quote_cfg.market == "crypto_spot":
-        col += "  sig_dir str tf  sig_age  sig_type"
-    _safe_addstr(stdscr, 4, 0, _truncate(col, w), curses.A_UNDERLINE)
+        col += "  信号向 强度 周期 信号旧度 信号类型"
+    _safe_addstr(stdscr, 3, 0, _truncate(col, w), curses.A_UNDERLINE)
 
-    body_top = 5
+    body_top = 4
     body_h = max(0, h - body_top - 1)
     if body_h <= 0:
         return
@@ -3060,17 +3592,17 @@ def _draw_signals(
     quote_state_crypto: QuoteBookState,
 ) -> None:
     # Quote hint (this view focuses on signals)
-    status = "PAUSED" if filt.paused else f"refresh={refresh_s:.1f}s"
-    header2 = f"signals: rows={len(rows)} last_id={last_id}  |  {status}  |  keys: q quit, t next"
+    status = "已暂停" if filt.paused else f"刷新={refresh_s:.1f}s"
+    header2 = f"信号页: 行数={len(rows)} last_id={last_id}  |  {status}  |  按键: q退出, t切页"
     _safe_addstr(stdscr, 1, 0, _truncate(header2, w))
 
-    src = ",".join(sorted(filt.sources)) or "none"
-    dirs = ",".join(sorted(filt.directions)) or "none"
-    line3 = f"DB: {db_path}  |  sources: {src}  |  dirs: {dirs}  |  space pause, arrows scroll"
+    src = ",".join(sorted(filt.sources)) or "无"
+    dirs = ",".join(sorted(filt.directions)) or "无"
+    line3 = f"数据库: {db_path}  |  来源: {src}  |  方向: {dirs}  |  空格暂停, 方向键滚动"
     _safe_addstr(stdscr, 2, 0, _truncate(line3, w))
 
     # Column header
-    col = "time     src   dir  str  symbol        tf   price        type                message"
+    col = "时间     源    向   强度  标的          周期  价格         类型                消息"
     _safe_addstr(stdscr, 3, 0, _truncate(col, w), curses.A_UNDERLINE)
 
     body_top = 4
@@ -3124,7 +3656,10 @@ def _draw_signals(
         _safe_addstr(stdscr, y, x, _truncate(msg, max(0, w - x)))
 
     # Footer
-    footer = "toggle: p pg | s sqlite | b BUY | e SELL | a ALERT | r refresh | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST"
+    footer = (
+        "筛选: p PG | s SQLITE | b BUY | e SELL | a ALERT | r刷新 | "
+        "t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股"
+    )
     _safe_addstr(stdscr, h - 1, 0, _truncate(footer, w))
 
 
@@ -3195,6 +3730,19 @@ def _draw_price_curve(
     if width <= 12 or height <= 5 or not candles:
         return
 
+    clean_candles = [
+        c
+        for c in candles
+        if _is_finite_number(c.open)
+        and _is_finite_number(c.high)
+        and _is_finite_number(c.low)
+        and _is_finite_number(c.close)
+        and _is_finite_number(c.volume_est)
+        and min(float(c.open), float(c.high), float(c.low), float(c.close)) > 0.0
+    ]
+    if not clean_candles:
+        return
+
     # Reserve one row at the bottom for x-axis time labels.
     if height <= 6:
         return
@@ -3211,9 +3759,9 @@ def _draw_price_curve(
     chart_x0 = x0 + label_w
     chart_w = max(4, width - label_w - 1)
 
-    raw_count = len(candles)
+    raw_count = len(clean_candles)
     max_points = max(8, chart_w * 2)
-    draw_candles = _sample_candles_minmax(candles, target_points=max_points)
+    draw_candles = _sample_candles_minmax(clean_candles, target_points=max_points)
     highs = [c.high for c in draw_candles]
     lows = [c.low for c in draw_candles]
     top = max(highs)
@@ -3437,15 +3985,21 @@ def _draw_price_curve(
     axis_attr = curses.color_pair(colors.get("SRC", 0))
     _safe_hline(stdscr, axis_y, chart_x0, chart_w, axis_attr)
 
-    def _fmt_axis_ts(ts_open: int) -> str:
-        try:
-            return datetime.fromtimestamp(int(ts_open)).strftime("%H:%M")
-        except Exception:
-            return "--:--"
-
     first = draw_candles[0]
     mid = draw_candles[len(draw_candles) // 2]
     last = draw_candles[-1]
+    span_ts = max(0, int(last.ts_open) - int(first.ts_open))
+    if span_ts >= 2 * 24 * 3600:
+        axis_fmt = "%m-%d"
+    else:
+        axis_fmt = "%H:%M"
+
+    def _fmt_axis_ts(ts_open: int) -> str:
+        try:
+            return datetime.fromtimestamp(int(ts_open)).strftime(axis_fmt)
+        except Exception:
+            return "--"
+
     axis_labels = [
         (chart_x0, _fmt_axis_ts(first.ts_open), "left"),
         (chart_x0 + chart_w // 2, _fmt_axis_ts(mid.ts_open), "center"),
@@ -3481,7 +4035,7 @@ def _update_quote_curve(
         return
 
     price = float(quote.price)
-    if price <= 0:
+    if price <= 0 or not _is_finite_number(price):
         return
 
     ts = float(fetched_at or 0.0)
@@ -3550,7 +4104,7 @@ def _seed_curve_from_intraday_series(
             vol = float(volume)
         except Exception:
             continue
-        if ts_i <= 0 or px <= 0:
+        if ts_i <= 0 or px <= 0 or not (_is_finite_number(px) and _is_finite_number(vol)):
             continue
         clean.append((ts_i, px, max(0.0, vol)))
 
@@ -3590,6 +4144,107 @@ def _seed_curve_from_intraday_series(
 
     curves[sym] = buffer
     return True
+
+
+def _seed_curve_from_daily_series(
+    curves: dict[str, deque[Candle]],
+    symbol: str,
+    series: list[tuple[int, float, float, float, float, float]],
+    *,
+    max_points: int = 90,
+) -> bool:
+    """Replace/seed curve buffer from daily OHLCV history."""
+    sym = (symbol or "").strip().upper()
+    if not sym or not series:
+        return False
+
+    clean: list[tuple[int, float, float, float, float, float]] = []
+    for ts_open, open_px, high_px, low_px, close_px, volume in series:
+        try:
+            ts_i = int(ts_open)
+            o = float(open_px)
+            h = float(high_px)
+            l = float(low_px)
+            c = float(close_px)
+            v = float(volume)
+        except Exception:
+            continue
+        if ts_i <= 0 or o <= 0 or h <= 0 or l <= 0 or c <= 0:
+            continue
+        if not (_is_finite_number(o) and _is_finite_number(h) and _is_finite_number(l) and _is_finite_number(c) and _is_finite_number(v)):
+            continue
+        clean.append((ts_i, o, h, l, c, max(0.0, v)))
+
+    if not clean:
+        return False
+
+    clean.sort(key=lambda item: item[0])
+    buffer = deque(maxlen=max(20, int(max_points)))
+    for ts_i, o, h, l, c, v in clean:
+        buffer.append(
+            Candle(
+                ts_open=ts_i,
+                open=o,
+                high=max(h, o, c),
+                low=min(l, o, c),
+                close=c,
+                volume_est=v,
+                notional_est=v * c if v > 0 else 0.0,
+            )
+        )
+
+    if not buffer:
+        return False
+    curves[sym] = buffer
+    return True
+
+
+def _maybe_seed_fund_curve_from_daily_history(
+    *,
+    curves: dict[str, deque[Candle]],
+    symbols: set[str],
+    market: str,
+    provider: str,
+    attempts: dict[str, float],
+    now_ts: float,
+    lookback_days: int = 15,
+) -> None:
+    """
+    Seed fund page curves with daily history.
+
+    We fetch at a coarse interval to avoid high-frequency network polling while still keeping
+    the chart window in a multi-day context (default 15D).
+    """
+    days = max(5, int(lookback_days))
+    target_span_s = max(24 * 3600, (days - 1) * 24 * 3600)
+
+    for symbol in sorted(symbols):
+        existing = curves.get(symbol)
+        last_try = float(attempts.get(symbol, 0.0) or 0.0)
+        if existing is not None and len(existing) >= max(5, days // 2):
+            span_s = max(0.0, float(existing[-1].ts_open - existing[0].ts_open))
+            if span_s >= target_span_s and (now_ts - last_try) < _FUND_CN_CURVE_REFRESH_SECONDS:
+                continue
+
+        if (now_ts - last_try) < _FUND_CN_CURVE_REFRESH_SECONDS:
+            continue
+        attempts[symbol] = now_ts
+
+        series = fetch_daily_curve_1d(
+            provider=provider,
+            market=market,
+            symbol=symbol,
+            timeout_s=6.0,
+            limit=days,
+        )
+        if not series:
+            continue
+        _seed_curve_from_daily_series(
+            curves,
+            symbol,
+            series,
+            max_points=max(20, days * 3),
+        )
 
 
 def _maybe_seed_closed_curve_from_history(
@@ -3663,85 +4318,147 @@ def _draw_market_quad(
     h: int,
     refresh_s: float,
 ) -> None:
+    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | [/]切换 | +/-加减自选 | r刷新"
+
     symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
     if not (quote_cfg.enabled and symbols):
-        _safe_addstr(stdscr, 1, 0, _truncate("market: disabled / no symbols", w))
-        _safe_addstr(stdscr, 2, 0, _truncate("keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST", w))
+        _safe_addstr(stdscr, 1, 0, _truncate("行情页：未启用或无标的", w))
+        _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
         return
 
     pane.selected = min(max(0, pane.selected), max(0, len(symbols) - 1))
     selected_symbol = symbols[pane.selected]
     selected_rows = _signals_for_symbol(rows, selected_symbol, quote_cfg.market)
+    selected_state = quote_state.entries.get(selected_symbol)
+    selected_quote = selected_state.quote if selected_state else None
+    selected_curve = curve_map.get(selected_symbol, [])
+    _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
 
-    line1 = f"market[{label}]: {quote_cfg.provider}/{quote_cfg.market}  symbols={len(symbols)}"
-    _safe_addstr(stdscr, 1, 0, _truncate(line1, w))
-    _safe_addstr(
-        stdscr,
-        2,
-        0,
-        _truncate(
-            "keys: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST | [/] switch | +/- add/remove",
-            w,
-        ),
-    )
-
-    selector_chips: list[str] = []
-    for sym in symbols:
-        q_entry = quote_state.entries.get(sym)
-        q_item = q_entry.quote if q_entry else None
-        # CN page uses company names for selector chips (fallback to symbol when name missing).
-        if quote_cfg.market == "cn_stock":
-            disp = _display_name(sym, q_item, quote_cfg.market)
-        else:
-            disp = _display_symbol(sym, quote_cfg.market)
-        selector_chips.append(f"[{disp}]" if sym == selected_symbol else disp)
-    selector_line = "selector([/]): " + "  ".join(selector_chips)
-    _safe_addstr(stdscr, 3, 0, _truncate(selector_line, w), curses.color_pair(colors.get("SRC", 0)))
-
-    panel_top = 4
+    panel_top = 1
     panel_h = max(0, h - panel_top - 1)
     if panel_h < 10:
         return
 
-    split_x = max(42, int(w * 0.60))
-    if split_x >= w - 24:
-        split_x = max(28, w - 24)
+    split_x = max(30, int(w * 0.38))
+    if split_x >= w - 28:
+        split_x = max(24, w - 28)
     left_w = max(24, split_x)
     right_x = min(w - 1, split_x + 1)
-    right_w = max(10, w - right_x)
+    right_w = max(18, w - right_x)
 
-    top_h = int(round(panel_h * 0.62))
-    top_h = max(7, min(top_h, panel_h - 5))
-    bottom_y = panel_top + top_h
-    bottom_h = panel_h - top_h
-    if bottom_h < 5:
+    right_top_h = int(round(panel_h * 0.62))
+    right_top_h = max(8, min(right_top_h, panel_h - 6))
+    right_bottom_y = panel_top + right_top_h
+    right_bottom_h = panel_h - right_top_h
+    if right_bottom_h < 5:
         return
 
-    _draw_box(stdscr, 0, panel_top, left_w, top_h)
-    _draw_box(stdscr, right_x, panel_top, right_w, top_h)
-    _draw_box(stdscr, 0, bottom_y, left_w, bottom_h)
-    _draw_box(stdscr, right_x, bottom_y, right_w, bottom_h)
+    box_attr = curses.color_pair(colors.get("SRC", 0))
+    _draw_box(stdscr, 0, panel_top, left_w, panel_h, box_attr)
+    _draw_box(stdscr, right_x, panel_top, right_w, right_top_h, box_attr)
+    _draw_box(stdscr, right_x, right_bottom_y, right_w, right_bottom_h, box_attr)
 
-    now_dt = datetime.now()
-    selected_state = quote_state.entries.get(selected_symbol)
-    selected_quote = selected_state.quote if selected_state else None
-    selected_micro = micro_snapshots.get(selected_symbol)
+    left_inner_w = max(0, left_w - 2)
+    _safe_addstr(stdscr, panel_top, 2, _truncate(f"候选池({len(symbols)})", max(0, left_w - 4)), curses.A_UNDERLINE)
 
-    if quote_cfg.market == "cn_stock":
-        radar_label = _display_name(selected_symbol, selected_quote, quote_cfg.market)
+    if left_inner_w >= 56:
+        table_cols: list[tuple[str, str, int, str]] = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 10, "left"),
+            ("name", "名称", 1, "left"),
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+            ("sig", "信号", 4, "right"),
+        ]
+    elif left_inner_w >= 44:
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 10, "left"),
+            ("name", "名称", 1, "left"),
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+        ]
+    elif left_inner_w >= 34:
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 8, "left"),
+            ("name", "名称", 1, "left"),
+            ("pct", "涨跌", 7, "right"),
+        ]
     else:
-        radar_label = _display_symbol(selected_symbol, quote_cfg.market)
-    selected_curve = curve_map.get(selected_symbol, [])
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("name", "名称", 1, "left"),
+            ("pct", "涨跌", 6, "right"),
+        ]
+
+    fixed_w = sum(width for key, _, width, _ in table_cols if key != "name")
+    field_count = len(table_cols)
+    overhead_w = 2 + max(0, field_count - 1)
+    resolved_name_w = max(1, left_inner_w - fixed_w - overhead_w)
+    resolved_cols: list[tuple[str, str, int, str]] = []
+    for key, header, width, align in table_cols:
+        if key == "name":
+            resolved_cols.append((key, header, resolved_name_w, align))
+        else:
+            resolved_cols.append((key, header, width, align))
+
+    def _render_left_row(prefix: str, values: dict[str, str]) -> str:
+        cells = [_fit_cell(values.get(key, ""), width, align=align) for key, _, width, align in resolved_cols]
+        body = " ".join(cells)
+        return _fit_cell(f"{prefix} {body}", left_inner_w)
+
+    header_values = {key: header for key, header, _, _ in resolved_cols}
+    _safe_addstr(stdscr, panel_top + 1, 1, _render_left_row(" ", header_values), curses.A_UNDERLINE)
+
+    left_body_top = panel_top + 2
+    left_body_h = max(0, panel_h - 3)
+    pane.left_scroll = min(max(0, pane.left_scroll), max(0, len(symbols) - 1))
+    if pane.selected < pane.left_scroll:
+        pane.left_scroll = pane.selected
+    if pane.selected >= pane.left_scroll + max(1, left_body_h):
+        pane.left_scroll = max(0, pane.selected - max(1, left_body_h) + 1)
+
+    left_visible = symbols[pane.left_scroll : pane.left_scroll + max(1, left_body_h)]
+    for i, sym in enumerate(left_visible):
+        y = left_body_top + i
+        global_idx = pane.left_scroll + i
+        st = quote_state.entries.get(sym) or QuoteEntryState(quote=None, last_error="pending", last_fetch_at=0.0)
+        q = st.quote
+        name = _display_name(sym, q, quote_cfg.market)
+        code = _display_symbol(sym, quote_cfg.market)
+        prefix = ">" if global_idx == pane.selected else " "
+
+        last_txt = "--"
+        pct_txt = "--"
+        if q is not None:
+            chg = q.price - q.prev_close
+            pct = (chg / q.prev_close * 100.0) if q.prev_close else 0.0
+            last_txt = f"{q.price:.2f}"
+            pct_txt = f"{pct:+.2f}%"
+
+        row_values = {
+            "idx": str(global_idx + 1),
+            "code": code,
+            "name": name,
+            "last": last_txt,
+            "pct": pct_txt,
+            "sig": str(len(_signals_for_symbol(rows, sym, quote_cfg.market))),
+        }
+        _safe_addstr(stdscr, y, 1, _render_left_row(prefix, row_values))
+
+    selected_label = _display_name(selected_symbol, selected_quote, quote_cfg.market)
+    selected_disp_symbol = _display_symbol(selected_symbol, quote_cfg.market)
     _safe_addstr(
         stdscr,
         panel_top,
-        2,
-        _truncate(f"Price Curve: {radar_label}  5s  n={len(selected_curve)}", max(0, left_w - 4)),
+        right_x + 2,
+        _truncate(f"标的详情: {selected_label} ({selected_disp_symbol})", max(0, right_w - 4)),
         curses.A_UNDERLINE,
     )
 
     if selected_quote is None:
-        stats_line = "price=--  chg=--  pct=--  vol=--  ts=--"
+        stats_line = "价格=--  涨跌=--  幅度=--  成交量=--  延迟=--  模式=--"
     else:
         selected_chg = selected_quote.price - selected_quote.prev_close
         selected_pct = (selected_chg / selected_quote.prev_close * 100.0) if selected_quote.prev_close else 0.0
@@ -3758,143 +4475,423 @@ def _draw_market_quad(
                 curve_mode = "CLOSE-1H" if curve_span_s >= _CLOSED_CURVE_TARGET_SPAN_SECONDS else "CLOSE"
 
         stats_line = (
-            f"price={selected_quote.price:.2f}  chg={selected_chg:+.2f} ({selected_pct:+.2f}%)  "
-            f"vol={_fmt_vol(selected_quote.volume)}  age={selected_age_s}s  mode={curve_mode}"
+            f"价格={selected_quote.price:.2f}  涨跌={selected_chg:+.2f} ({selected_pct:+.2f}%)  "
+            f"成交量={_fmt_vol(selected_quote.volume)}  延迟={selected_age_s}s  模式={curve_mode}"
         )
-    _safe_addstr(stdscr, panel_top + 1, 1, _truncate(stats_line, max(0, left_w - 2)))
+    _safe_addstr(stdscr, panel_top + 1, right_x + 1, _truncate(stats_line, max(0, right_w - 2)))
 
     chart_y = panel_top + 2
-    chart_h = max(1, top_h - 3)
+    chart_h = max(1, right_top_h - 3)
     _draw_price_curve(
         stdscr,
         selected_curve,
         colors,
-        1,
+        right_x + 1,
         chart_y,
-        left_w - 2,
+        right_w - 2,
         chart_h,
         marker_rows=selected_rows,
     )
 
-    dir_colors = {
-        "BUY": curses.color_pair(colors.get("BUY", 0)) | curses.A_BOLD,
-        "SELL": curses.color_pair(colors.get("SELL", 0)) | curses.A_BOLD,
-        "ALERT": curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD,
-        "ALER": curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD,
-    }
+    _safe_addstr(stdscr, right_bottom_y, right_x + 2, _truncate("规则信号列表（5min/1h/12h）", max(0, right_w - 4)), curses.A_UNDERLINE)
 
-    radar_minutes = 15
-    radar_min_strength = 60
-    radar_rows = _build_signal_radar_rows(
-        rows,
-        selected_symbol,
-        quote_cfg.market,
-        now_dt,
-        window_minutes=radar_minutes,
-        min_strength=radar_min_strength,
-    )
+    now_dt = datetime.now()
+    right_inner_x = right_x + 1
+    right_inner_y = right_bottom_y + 1
+    right_inner_w = max(0, right_w - 2)
+    right_inner_h = max(0, right_bottom_h - 2)
 
-    src_attr = curses.color_pair(colors.get("SRC", 0))
-    if selected_micro is None:
-        bias = "--"
-        score = 0.0
-        fresh = "--"
-        src = "--"
-    else:
-        bias = (selected_micro.signals.bias or "NEUTRAL").upper()
-        score = float(selected_micro.signals.score)
-        fresh = _fmt_freshness(selected_micro.last_quote_ts, now_dt)
-        src = (selected_micro.last_source or "--").upper()
-
-    bias_attr = dir_colors.get(bias, src_attr)
-    header_line = f"Signal Radar: {radar_label} ({radar_minutes}m,str>={radar_min_strength})"
-    meta_line = f"bias={bias:<5} score={score:+.2f} fresh={fresh:<4} src={src[:6]}"
-
-    _safe_addstr(stdscr, panel_top, right_x + 2, _truncate(header_line, max(0, right_w - 4)), curses.A_UNDERLINE)
-    _safe_addstr(stdscr, panel_top + 1, right_x + 1, _truncate(meta_line, max(0, right_w - 2)), bias_attr)
-    _safe_addstr(
-        stdscr,
-        panel_top + 2,
-        right_x + 1,
-        _truncate("time    age dir str tf  src  type", max(0, right_w - 2)),
-        curses.A_UNDERLINE,
-    )
-
-    radar_body_h = max(0, top_h - 4)
-    radar_visible = radar_rows[:radar_body_h] if radar_body_h > 0 else []
-    if radar_visible:
-        for i, (row, age_s) in enumerate(radar_visible):
-            y = panel_top + 3 + i
-            direction = (row.direction or "").upper()
-            dir_short = direction[:4]
-            attr = dir_colors.get(direction, dir_colors.get(dir_short, 0))
-            strength = int(row.strength)
-            tf = (row.timeframe or "")[:3]
-            src_short = (row.source or "--").upper()[:4]
-            stype = (row.signal_type or "")[:12]
-            line = f"{_fmt_time(row.timestamp):<8} {age_s:>3}s {dir_short:<4}{strength:>3} {tf:<3} {src_short:<4} {stype:<12}"
-            _safe_addstr(stdscr, y, right_x + 1, _truncate(line, max(0, right_w - 2)), attr)
-    else:
+    # Keep content readable on very narrow terminals.
+    if right_inner_w < 30 or right_inner_h < 3:
         _safe_addstr(
             stdscr,
-            panel_top + 3,
-            right_x + 1,
-            _truncate(f"no recent rule signals for {radar_label}", max(0, right_w - 2)),
-            src_attr,
+            right_inner_y,
+            right_inner_x,
+            _truncate("信号区过窄：请放大终端查看三列（5min/1h/12h）", right_inner_w),
+            curses.color_pair(colors.get("SRC", 0)),
         )
+        right_body_h = max(0, right_inner_h - 1)
+        if selected_rows and right_body_h > 0:
+            right_visible = selected_rows[: max(1, right_body_h)]
+            for i, row in enumerate(right_visible):
+                y = right_inner_y + 1 + i
+                ts_dt = parse_ts(row.timestamp)
+                age_s = max(0, int((now_dt - ts_dt).total_seconds())) if ts_dt != datetime.min else 0
+                direction = (row.direction or "--").upper()[:4]
+                tf = (row.timeframe or "--")[:3]
+                strength = _safe_int(row.strength, 0)
+                line = f"{_fmt_time(row.timestamp):<8} {age_s:>3}s {direction:<4}{strength:>3} {tf:<3}"
+                _safe_addstr(stdscr, y, right_inner_x, _truncate(line, right_inner_w))
+    else:
+        col_count = 3
+        sep_count = col_count - 1
+        usable_w = max(3, right_inner_w - sep_count)
+        col_ws = [usable_w // col_count] * col_count
+        for i in range(usable_w % col_count):
+            col_ws[i] += 1
+        col_xs = [right_inner_x]
+        for i in range(1, col_count):
+            col_xs.append(col_xs[-1] + col_ws[i - 1] + 1)
+        sep_xs = [col_xs[1] - 1, col_xs[2] - 1]
 
+        for sep_x in sep_xs:
+            _safe_vline(stdscr, right_inner_y, sep_x, right_inner_h, curses.color_pair(colors.get("SRC", 0)))
+
+        realtime_rows: list[tuple[SignalRow, int]] = []
+        h1_rows: list[tuple[SignalRow, int]] = []
+        h12_rows: list[tuple[SignalRow, int]] = []
+        for row in selected_rows:
+            ts_dt = parse_ts(row.timestamp)
+            if ts_dt == datetime.min:
+                continue
+            age_s = max(0, int((now_dt - ts_dt).total_seconds()))
+            if age_s <= 5 * 60:
+                realtime_rows.append((row, age_s))
+            elif age_s <= 60 * 60:
+                h1_rows.append((row, age_s))
+            elif age_s <= 12 * 60 * 60:
+                h12_rows.append((row, age_s))
+
+        buckets: list[tuple[str, list[tuple[SignalRow, int]]]] = [
+            ("实时", realtime_rows),
+            ("1h", h1_rows),
+            ("12h", h12_rows),
+        ]
+
+        for i, (title, bucket_rows) in enumerate(buckets):
+            header = f"{title}({len(bucket_rows)})"
+            _safe_addstr(
+                stdscr,
+                right_inner_y,
+                col_xs[i],
+                _fit_cell(header, col_ws[i], align="left"),
+                curses.A_UNDERLINE,
+            )
+
+        body_h = max(0, right_inner_h - 1)
+        for i, (_title, bucket_rows) in enumerate(buckets):
+            col_x = col_xs[i]
+            col_w = col_ws[i]
+            if body_h <= 0:
+                continue
+            if not bucket_rows:
+                _safe_addstr(
+                    stdscr,
+                    right_inner_y + 1,
+                    col_x,
+                    _fit_cell("暂无", col_w, align="left"),
+                    curses.color_pair(colors.get("SRC", 0)),
+                )
+                continue
+
+            for row_idx, (row, _age_s) in enumerate(bucket_rows[:body_h]):
+                y = right_inner_y + 1 + row_idx
+                direction = (row.direction or "--").upper()
+                tf = (row.timeframe or "--")[:3]
+                strength = _safe_int(row.strength, 0)
+                if col_w >= 20:
+                    line = f"{_fmt_time(row.timestamp):<8} {direction[:4]:<4}{strength:>3} {tf:<3}"
+                elif col_w >= 14:
+                    line = f"{_fmt_time(row.timestamp)[3:]:<5} {direction[:1]}{strength:>2} {tf:<3}"
+                else:
+                    line = f"{direction[:1]}{strength:>2} {_fmt_time(row.timestamp)[3:]}"
+
+                attr = 0
+                if direction.startswith("BUY"):
+                    attr = curses.color_pair(colors.get("BUY", 0))
+                elif direction.startswith("SELL"):
+                    attr = curses.color_pair(colors.get("SELL", 0))
+                elif direction.startswith("ALER"):
+                    attr = curses.color_pair(colors.get("ALERT", 0))
+                _safe_addstr(stdscr, y, col_x, _fit_cell(line, col_w, align="left"), attr)
+
+    # Keep footer row for key hints.
+
+
+def _draw_market_fund_two_panel(
+    stdscr,
+    quote_cfg: QuoteConfig,
+    quote_state: QuoteBookState,
+    rows: list[SignalRow],
+    pane: MasterPaneState,
+    colors: dict[str, int],
+    curve_map: dict[str, list[Candle]],
+    daily_curve_map: dict[str, list[Candle]],
+    micro_snapshots: dict[str, MicroSnapshot],
+    w: int,
+    h: int,
+    refresh_s: float,
+) -> None:
+    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | [/]切换 | +/-加减自选 | r刷新"
+
+    symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
+    if not (quote_cfg.enabled and symbols):
+        _safe_addstr(stdscr, 1, 0, _truncate("行情页：未启用或无标的", w))
+        _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
+        return
+
+    pane.selected = min(max(0, pane.selected), max(0, len(symbols) - 1))
+    selected_symbol = symbols[pane.selected]
+    selected_state = quote_state.entries.get(selected_symbol)
+    selected_quote = selected_state.quote if selected_state else None
+    selected_rows = _signals_for_symbol(rows, selected_symbol, quote_cfg.market)
+    selected_live_curve = curve_map.get(selected_symbol, [])
+    selected_curve = daily_curve_map.get(selected_symbol) or selected_live_curve
+
+    top_n_limit = max(1, int(_FUND_CN_ETF_PROFILE.top_n))
+    ranking_profile = replace(_FUND_CN_ETF_PROFILE, top_n=max(top_n_limit, len(symbols)))
+    ranking_snapshot = select_etf_candidates(
+        profile=ranking_profile,
+        symbols=symbols,
+        quote_entries=quote_state.entries,
+        curve_map=curve_map,
+        micro_snapshots=micro_snapshots,
+        now_ts=time.time(),
+        stale_seconds=120,
+    )
+    top_items = tuple(ranking_snapshot.items[:top_n_limit])
+    topn_by_symbol = {item.symbol: (idx + 1, item) for idx, item in enumerate(ranking_snapshot.items)}
+    candidate_rank_map = {sym: idx + 1 for idx, sym in enumerate(symbols)}
+    selected_rank, selected_item = topn_by_symbol.get(selected_symbol, (None, None))
+    risk_map = {"LOW": "低", "MED": "中", "HIGH": "高"}
+
+    line2 = (
+        f"策略={ranking_snapshot.strategy_label} {ranking_snapshot.strategy_version} | 领域=自动驾驶 | 覆盖={ranking_snapshot.valid_candidates}/"
+        f"{ranking_snapshot.total_candidates} 过期={ranking_snapshot.skipped_stale} | 候序=相关序 评序=评分序 | 更新时间={ranking_snapshot.as_of}"
+    )
+    _safe_addstr(stdscr, 1, 0, _truncate(line2, w), curses.color_pair(colors.get("SRC", 0)))
+    _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
+
+    panel_top = 2
+    panel_h = max(0, h - panel_top - 1)
+    if panel_h < 10:
+        return
+
+    split_x = max(30, int(w * 0.38))
+    if split_x >= w - 28:
+        split_x = max(24, w - 28)
+    left_w = max(24, split_x)
+    right_x = min(w - 1, split_x + 1)
+    right_w = max(18, w - right_x)
+
+    right_top_h = int(round(panel_h * 0.58))
+    right_top_h = max(8, min(right_top_h, panel_h - 6))
+    right_bottom_y = panel_top + right_top_h
+    right_bottom_h = panel_h - right_top_h
+    if right_bottom_h < 5:
+        return
+
+    box_attr = curses.color_pair(colors.get("SRC", 0))
+    _draw_box(stdscr, 0, panel_top, left_w, panel_h, box_attr)
+    _draw_box(stdscr, right_x, panel_top, right_w, right_top_h, box_attr)
+    _draw_box(stdscr, right_x, right_bottom_y, right_w, right_bottom_h, box_attr)
+
+    left_inner_w = max(0, left_w - 2)
+    _safe_addstr(stdscr, panel_top, 2, _truncate(f"候选池({len(symbols)})", max(0, left_w - 4)), curses.A_UNDERLINE)
+
+    if left_inner_w >= 55:
+        table_cols: list[tuple[str, str, int, str]] = [
+            ("cand", "候序", 4, "right"),
+            ("code", "代码", 10, "left"),
+            ("name", "名称", 1, "left"),  # width is resolved dynamically
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+            ("rank", "评序", 5, "right"),
+            ("score", "评分", 6, "right"),
+        ]
+    elif left_inner_w >= 38:
+        table_cols = [
+            ("cand", "候序", 4, "right"),
+            ("code", "代码", 10, "left"),
+            ("name", "名称", 1, "left"),
+            ("rank", "评序", 5, "right"),
+            ("score", "评分", 6, "right"),
+        ]
+    elif left_inner_w >= 30:
+        table_cols = [
+            ("cand", "候", 3, "right"),
+            ("code", "代码", 8, "left"),
+            ("name", "名称", 1, "left"),
+            ("rank", "评", 4, "right"),
+            ("score", "分", 5, "right"),
+        ]
+    else:
+        table_cols = [
+            ("cand", "候", 3, "right"),
+            ("name", "名称", 1, "left"),
+            ("rank", "评", 4, "right"),
+            ("score", "分", 5, "right"),
+        ]
+
+    fixed_w = sum(width for key, _, width, _ in table_cols if key != "name")
+    field_count = len(table_cols)
+    # Row layout = prefix(1) + leading blank(1) + fields + blanks between fields.
+    overhead_w = 2 + max(0, field_count - 1)
+    resolved_name_w = max(1, left_inner_w - fixed_w - overhead_w)
+    resolved_cols: list[tuple[str, str, int, str]] = []
+    for key, header, width, align in table_cols:
+        if key == "name":
+            resolved_cols.append((key, header, resolved_name_w, align))
+        else:
+            resolved_cols.append((key, header, width, align))
+
+    def _render_left_row(prefix: str, values: dict[str, str]) -> str:
+        cells = [_fit_cell(values.get(key, ""), width, align=align) for key, _, width, align in resolved_cols]
+        body = " ".join(cells)
+        return _fit_cell(f"{prefix} {body}", left_inner_w)
+
+    header_values = {key: header for key, header, _, _ in resolved_cols}
+    _safe_addstr(stdscr, panel_top + 1, 1, _render_left_row(" ", header_values), curses.A_UNDERLINE)
+
+    left_body_top = panel_top + 2
+    left_body_h = max(0, panel_h - 3)
+    pane.left_scroll = min(max(0, pane.left_scroll), max(0, len(symbols) - 1))
+    if pane.selected < pane.left_scroll:
+        pane.left_scroll = pane.selected
+    if pane.selected >= pane.left_scroll + max(1, left_body_h):
+        pane.left_scroll = max(0, pane.selected - max(1, left_body_h) + 1)
+
+    left_visible = symbols[pane.left_scroll : pane.left_scroll + max(1, left_body_h)]
+    for i, sym in enumerate(left_visible):
+        y = left_body_top + i
+        candidate_rank = candidate_rank_map.get(sym)
+        st = quote_state.entries.get(sym) or QuoteEntryState(quote=None, last_error="pending", last_fetch_at=0.0)
+        q = st.quote
+        name = _display_name(sym, q, quote_cfg.market)
+        code = _display_symbol(sym, quote_cfg.market)
+        prefix = ">" if (pane.left_scroll + i) == pane.selected else " "
+        rank, item = topn_by_symbol.get(sym, (None, None))
+        rank_txt = f"#{rank}" if rank is not None else "--"
+        score_txt = f"{item.total_score:.1f}" if item is not None else "--"
+        cand_txt = str(candidate_rank) if candidate_rank is not None else "--"
+        last_txt = "--"
+        pct_txt = "--"
+        if q is not None:
+            chg = q.price - q.prev_close
+            pct = (chg / q.prev_close * 100.0) if q.prev_close else 0.0
+            last_txt = f"{q.price:.2f}"
+            pct_txt = f"{pct:+.2f}%"
+
+        row_values = {
+            "cand": cand_txt,
+            "code": code,
+            "name": name,
+            "last": last_txt,
+            "pct": pct_txt,
+            "rank": rank_txt,
+            "score": score_txt,
+        }
+        _safe_addstr(stdscr, y, 1, _render_left_row(prefix, row_values))
+
+    selected_label = _display_name(selected_symbol, selected_quote, quote_cfg.market)
+    selected_disp_symbol = _display_symbol(selected_symbol, quote_cfg.market)
     _safe_addstr(
         stdscr,
-        bottom_y,
-        2,
-        _truncate(f"Rule Signals: {radar_label}  date={datetime.now().strftime('%y-%m-%d')}  n={len(selected_rows)}", max(0, left_w - 4)),
+        panel_top,
+        right_x + 2,
+        _truncate(f"票详情: {selected_label} ({selected_disp_symbol})", max(0, right_w - 4)),
         curses.A_UNDERLINE,
     )
-    _safe_addstr(
+    if selected_quote is None:
+        stats_line = "价格=--  涨跌=--  幅度=--  成交量=--  延迟=--  模式=--"
+    else:
+        selected_chg = selected_quote.price - selected_quote.prev_close
+        selected_pct = (selected_chg / selected_quote.prev_close * 100.0) if selected_quote.prev_close else 0.0
+        selected_age_s = int(max(0.0, time.time() - (selected_state.last_fetch_at or 0.0))) if selected_state else 0
+
+        curve_mode = "LIVE"
+        quote_ts_dt = parse_ts(selected_quote.ts)
+        if quote_ts_dt != datetime.min:
+            quote_age_s = max(0, int(time.time() - quote_ts_dt.timestamp()))
+            if quote_age_s >= _CLOSED_CURVE_STALE_SECONDS:
+                curve_span_s = 0.0
+                if len(selected_curve) >= 2:
+                    curve_span_s = max(0.0, float(selected_curve[-1].ts_open - selected_curve[0].ts_open))
+                target_days_span_s = max(24 * 3600, (_FUND_CN_CURVE_DAYS - 1) * 24 * 3600)
+                if curve_span_s >= target_days_span_s:
+                    curve_mode = f"CLOSE-{_FUND_CN_CURVE_DAYS}D"
+                elif curve_span_s >= _CLOSED_CURVE_TARGET_SPAN_SECONDS:
+                    curve_mode = "CLOSE-1H"
+                else:
+                    curve_mode = "CLOSE"
+
+        stats_line = (
+            f"价格={selected_quote.price:.2f}  涨跌={selected_chg:+.2f} ({selected_pct:+.2f}%)  "
+            f"成交量={_fmt_vol(selected_quote.volume)}  延迟={selected_age_s}s  模式={curve_mode}  周期={_FUND_CN_CURVE_DAYS}D"
+        )
+    _safe_addstr(stdscr, panel_top + 1, right_x + 1, _truncate(stats_line, max(0, right_w - 2)))
+
+    chart_y = panel_top + 2
+    chart_h = max(1, right_top_h - 3)
+    _draw_price_curve(
         stdscr,
-        bottom_y + 1,
-        1,
-        _truncate("time    src  dir  str tf  type", max(0, left_w - 2)),
-        curses.A_UNDERLINE,
+        selected_curve,
+        colors,
+        right_x + 1,
+        chart_y,
+        right_w - 2,
+        chart_h,
+        marker_rows=selected_rows,
     )
 
-    detail_h = max(0, bottom_h - 3)
-    for i, row in enumerate(selected_rows[: max(1, detail_h)]):
-        y = bottom_y + 2 + i
-        direction = (row.direction or "").upper()[:4]
-        stype = (row.signal_type or "")[:12]
-        src = (row.source or "--").upper()[:4]
-        tf = (row.timeframe or "")[:3]
-        line = f"{_fmt_time(row.timestamp):<8}{src:<5}{direction:<5}{int(row.strength):>3} {tf:<3} {stype:<12}"
-        _safe_addstr(stdscr, y, 1, _truncate(line, max(0, left_w - 2)))
+    _safe_addstr(stdscr, right_bottom_y, right_x + 2, _truncate("选票信息 / 前N(模型评分)", max(0, right_w - 4)), curses.A_UNDERLINE)
+    details: list[str] = []
+    details.extend(
+        [
+            "结论主选: 516520.SH 智能驾驶ETF",
+            "结论备选: 515250.SH 智能汽车ETF",
+            "结论观察: 024389 中航智选领航混合发起C（场外）",
+        ]
+    )
+    conclusion_role_map = {
+        "SH516520": "主选",
+        "SH515250": "备选",
+        "024389": "观察",
+    }
+    role = conclusion_role_map.get(selected_symbol)
+    if role is not None:
+        details.append(f"当前票定位: {role}（自动驾驶结论清单）")
+    else:
+        details.append("当前票定位: 非结论清单（自动驾驶候选池）")
 
-    _safe_addstr(stdscr, bottom_y, right_x + 2, _truncate("Signal Summary", max(0, right_w - 4)), curses.A_UNDERLINE)
+    if selected_item is None:
+        details.append("当前状态: 暂无模型评分（数据缺失或过期）")
+        details.append("提示: 可按 r 刷新，或等待行情更新")
+    else:
+        risk_txt = risk_map.get(selected_item.risk_level, selected_item.risk_level)
+        cand_rank_txt = candidate_rank_map.get(selected_symbol)
+        cand_rank_disp = str(cand_rank_txt) if cand_rank_txt is not None else "--"
+        details.append(
+            f"候选序: {cand_rank_disp}  模型排名: #{selected_rank}/{ranking_snapshot.valid_candidates}  总分={selected_item.total_score:.1f}  风险={risk_txt}"
+        )
+        if selected_rank is not None and selected_rank > top_n_limit:
+            details.append(f"前{top_n_limit}: 未入选（当前模型排名偏后）")
+        details.append(
+            f"因子: 趋势{selected_item.trend_score:.1f} 动量{selected_item.momentum_score:.1f} "
+            f"流动{selected_item.liquidity_score:.1f} 风险{selected_item.risk_adjusted_score:.1f}"
+        )
+        details.append(f"标签: {' / '.join(selected_item.reason_tags[:3])}")
 
-    buy_n = sum(1 for r in selected_rows if (r.direction or "").upper() == "BUY")
-    sell_n = sum(1 for r in selected_rows if (r.direction or "").upper() == "SELL")
-    alert_n = sum(1 for r in selected_rows if (r.direction or "").upper() == "ALERT")
     if selected_rows:
         latest = selected_rows[0]
-        latest_line = f"latest: {_fmt_time(latest.timestamp)} {(latest.direction or '--').upper()[:4]} {(latest.signal_type or '--')[:12]}"
+        latest_dir = (latest.direction or "--").upper()[:4]
+        details.append(f"近期信号: {len(selected_rows)} | 最新={_fmt_time(latest.timestamp)} {latest_dir}")
     else:
-        latest_line = "latest: --"
+        details.append("近期信号: 0（基金页以选票为主，信号仅作参考）")
 
-    micro_bias = "--"
-    micro_score = 0.0
-    if selected_micro is not None:
-        micro_bias = (selected_micro.signals.bias or "--").upper()
-        micro_score = float(selected_micro.signals.score)
+    details.append(f"前{top_n_limit}(模型评分):")
+    for idx, item in enumerate(top_items, start=1):
+        rank_symbol = _display_symbol(item.symbol, quote_cfg.market)
+        rank_state = quote_state.entries.get(item.symbol)
+        rank_name = _display_name(item.symbol, rank_state.quote if rank_state else None, quote_cfg.market)
+        risk_txt = risk_map.get(item.risk_level, item.risk_level)
+        details.append(f"{idx}. {rank_symbol:<10} {rank_name:<12} {item.total_score:>5.1f} 风险={risk_txt}")
 
-    summary_lines = [
-        latest_line,
-        f"rows: {len(selected_rows)}  BUY={buy_n} SELL={sell_n} ALERT={alert_n}",
-        f"micro: bias={micro_bias} score={micro_score:+.2f}",
-        f"price: {(selected_quote.price if selected_quote else 0.0):.2f}  refresh={refresh_s:.1f}s",
-    ]
-    summary_h = max(0, bottom_h - 2)
-    for i, line in enumerate(summary_lines[: max(1, summary_h)]):
-        _safe_addstr(stdscr, bottom_y + 1 + i, right_x + 1, _truncate(line, max(0, right_w - 2)))
+    right_body_h = max(0, right_bottom_h - 2)
+    for i, line in enumerate(details[: max(1, right_body_h)]):
+        _safe_addstr(stdscr, right_bottom_y + 1 + i, right_x + 1, _truncate(line, max(0, right_w - 2)))
 
+    # Keep footer row for key hints.
 
 
 def _draw_backtest_curve(
@@ -3995,7 +4992,7 @@ def _draw_market_backtest(stdscr, colors: dict[str, int], w: int, h: int) -> Non
             current_run_id=snap.run_id,
         )
 
-    _safe_addstr(stdscr, 1, 0, _truncate("回测看板[只读]: latest 产物展示", w))
+    _safe_addstr(stdscr, 1, 0, _truncate("回测看板[只读]: latest目录产物展示", w))
     resolved_latest = _BACKTEST_LATEST_DIR
     try:
         resolved_latest = _BACKTEST_LATEST_DIR.resolve()
@@ -4264,7 +5261,7 @@ def _draw_market_backtest(stdscr, colors: dict[str, int], w: int, h: int) -> Non
         if compare_snap.missing_rule_reason and row < max_row:
             _line(f"缺失主因: {compare_snap.missing_rule_reason}")
         if compare_snap.signal_type_delta_top and row < max_row:
-            _line("命中差异Top:")
+            _line("命中差异前列:")
             for item in compare_snap.signal_type_delta_top:
                 if row >= max_row:
                     break
@@ -4320,7 +5317,7 @@ def _draw_market_backtest(stdscr, colors: dict[str, int], w: int, h: int) -> Non
             hint = "提示: 读图顺序=折均指标 -> 折来源 -> 最近折结果"
         _line(hint, curses.color_pair(colors.get("SRC", 0)))
 
-    footer = "回测页: q退出 | t切换 | 1美股 | 2A股 | 3加密 | 4回测 | r刷新"
+    footer = "回测页: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 4返回主页面 | 5基金 | 6港股 | r刷新"
     _safe_addstr(stdscr, h - 1, 0, _truncate(footer, w))
 
 
@@ -4335,257 +5332,288 @@ def _draw_market_micro(
     w: int,
     h: int,
 ) -> None:
-    line1 = (
-        f"micro: {snapshot.symbol}  tf={snapshot.interval_s}s  candles={len(snapshot.candles)}  "
-        f"price={(snapshot.last_price if snapshot.last_price > 0 else 0):.2f}"
-    )
-    _safe_addstr(stdscr, 1, 0, _truncate(line1, w))
+    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 4回测切换 | 5基金 | 6港股 | [/]切换标的 | r刷新"
+    _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
 
-    src = snapshot.last_source or "--"
-    ts = _fmt_quote_ts(snapshot.last_quote_ts)
-    err = snapshot.error or "ok"
-    _safe_addstr(stdscr, 2, 0, _truncate(f"source={src}  ts={ts}  status={err}", w))
-
-    watch = [s.strip().upper() for s in (micro_symbols or []) if (s or "").strip()]
+    symbols = [s.strip().upper() for s in (micro_symbols or []) if (s or "").strip()]
     focus_symbol = (snapshot.symbol or "").strip().upper()
-    if focus_symbol and focus_symbol not in watch:
-        watch.insert(0, focus_symbol)
-    chips: list[str] = []
-    for sym in watch:
-        label = _display_symbol(sym, "crypto_spot")
-        chips.append(f"[{label}]" if sym == focus_symbol else label)
-    watchline = "symbols([/]): " + ("  ".join(chips) if chips else "--")
-    _safe_addstr(stdscr, 3, 0, _truncate(watchline, w), curses.color_pair(colors.get("SRC", 0)))
+    if focus_symbol and focus_symbol not in symbols:
+        symbols.insert(0, focus_symbol)
 
-    # Explain apparent "staleness": show symbol-level and DB-level latest signal ages.
-    now_dt = datetime.now()
-    latest_symbol_dt = datetime.min
-    latest_all_dt = datetime.min
-    for row in rows:
-        ts_dt = parse_ts(row.timestamp)
-        if ts_dt == datetime.min:
-            continue
-        if ts_dt > latest_all_dt:
-            latest_all_dt = ts_dt
-        if _match_signal_to_symbol(row.symbol, focus_symbol, "crypto_spot") and ts_dt > latest_symbol_dt:
-            latest_symbol_dt = ts_dt
+    if not symbols:
+        _safe_addstr(stdscr, 1, 0, _truncate("加密行情：无可用标的（可用 + 添加）", w))
+        return
 
-    symbol_age = "--"
-    symbol_time = "--:--:--"
-    if latest_symbol_dt != datetime.min:
-        symbol_age = f"{max(0, int((now_dt - latest_symbol_dt).total_seconds()))}s"
-        symbol_time = latest_symbol_dt.strftime("%H:%M:%S")
+    selected_symbol = focus_symbol if focus_symbol in symbols else symbols[0]
+    selected_idx = symbols.index(selected_symbol)
+    selected_rows = _signals_for_symbol(rows, selected_symbol, "crypto_spot")
+    selected_state = quote_state.entries.get(selected_symbol)
+    selected_quote = selected_state.quote if selected_state else None
+    selected_curve = curve_map.get(selected_symbol, [])
 
-    db_age = "--"
-    db_time = "--:--:--"
-    if latest_all_dt != datetime.min:
-        db_age = f"{max(0, int((now_dt - latest_all_dt).total_seconds()))}s"
-        db_time = latest_all_dt.strftime("%H:%M:%S")
-
-    signal_line = f"signal freshness: symbol={symbol_time}/{symbol_age} | db={db_time}/{db_age}"
-    _safe_addstr(stdscr, 4, 0, _truncate(signal_line, w), curses.color_pair(colors.get("SRC", 0)))
-
-    top_box_y = 5
-    # Reserve the last row for footer; split remaining area into 65/35 (top/bottom).
-    panel_h = max(0, h - top_box_y - 1)
+    panel_top = 1
+    panel_h = max(0, h - panel_top - 1)
     if panel_h < 10:
         return
 
-    split_x = max(38, int(w * 0.57))
-    if split_x >= w - 22:
-        split_x = max(24, w - 22)
-    left_w = max(24, split_x)
+    split_x = max(_MARKET_MICRO_LEFT_MIN_WIDTH, int(w * _MARKET_MICRO_LEFT_RATIO))
+    if split_x >= w - _MARKET_MICRO_RIGHT_MIN_WIDTH:
+        split_x = max(_MARKET_MICRO_LEFT_MIN_WIDTH, w - _MARKET_MICRO_RIGHT_MIN_WIDTH)
+    left_w = max(_MARKET_MICRO_LEFT_MIN_WIDTH, split_x)
     right_x = min(w - 1, split_x + 1)
-    right_w = max(12, w - right_x)
+    right_w = max(18, w - right_x)
 
-    top_box_h = int(round(panel_h * 0.65))
-    top_box_h = max(7, min(top_box_h, panel_h - 5))
-    bottom_box_y = top_box_y + top_box_h
-    bottom_box_h = panel_h - top_box_h
-    if bottom_box_h < 5:
+    right_top_h = int(round(panel_h * 0.62))
+    right_top_h = max(8, min(right_top_h, panel_h - 6))
+    right_bottom_y = panel_top + right_top_h
+    right_bottom_h = panel_h - right_top_h
+    if right_bottom_h < 5:
         return
 
-    left_box_x = 0
-    left_box_w = max(10, left_w)
-    right_box_x = right_x
-    right_box_w = max(10, right_w)
-
     box_attr = curses.color_pair(colors.get("SRC", 0))
-    _draw_box(stdscr, left_box_x, top_box_y, left_box_w, top_box_h, box_attr)
-    _draw_box(stdscr, right_box_x, top_box_y, right_box_w, top_box_h, box_attr)
-    _draw_box(stdscr, left_box_x, bottom_box_y, left_box_w, bottom_box_h, box_attr)
-    _draw_box(stdscr, right_box_x, bottom_box_y, right_box_w, bottom_box_h, box_attr)
+    _draw_box(stdscr, 0, panel_top, left_w, panel_h, box_attr)
+    _draw_box(stdscr, right_x, panel_top, right_w, right_top_h, box_attr)
+    _draw_box(stdscr, right_x, right_bottom_y, right_w, right_bottom_h, box_attr)
 
-    focus_symbol = (snapshot.symbol or "").strip().upper()
-    radar_label = _display_symbol(focus_symbol, "crypto_spot")
-    selected_state = quote_state.entries.get(focus_symbol)
-    selected_quote = selected_state.quote if selected_state else None
-    selected_curve = curve_map.get(focus_symbol, [])
+    left_inner_w = max(0, left_w - 2)
+    _safe_addstr(stdscr, panel_top, 2, _truncate(f"候选池({len(symbols)})", max(0, left_w - 4)), curses.A_UNDERLINE)
 
+    if left_inner_w >= 56:
+        table_cols: list[tuple[str, str, int, str]] = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 11, "left"),
+            ("name", "名称", 1, "left"),
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+            ("sig", "信号", 4, "right"),
+        ]
+    elif left_inner_w >= 46:
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 11, "left"),
+            ("name", "名称", 1, "left"),
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+        ]
+    elif left_inner_w >= 36:
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 9, "left"),
+            ("name", "名称", 1, "left"),
+            ("last", "最新", 7, "right"),
+            ("pct", "涨跌", 7, "right"),
+        ]
+    else:
+        table_cols = [
+            ("idx", "序", 3, "right"),
+            ("code", "代码", 9, "left"),
+            ("last", "最新", 7, "right"),
+        ]
+        if left_inner_w >= 30:
+            table_cols.append(("pct", "涨跌", 7, "right"))
+
+    fixed_w = sum(width for key, _, width, _ in table_cols if key != "name")
+    field_count = len(table_cols)
+    overhead_w = 2 + max(0, field_count - 1)
+    resolved_name_w = max(1, left_inner_w - fixed_w - overhead_w)
+    resolved_cols: list[tuple[str, str, int, str]] = []
+    for key, header, width, align in table_cols:
+        if key == "name":
+            resolved_cols.append((key, header, resolved_name_w, align))
+        else:
+            resolved_cols.append((key, header, width, align))
+
+    def _render_left_row(prefix: str, values: dict[str, str]) -> str:
+        cells = [_fit_cell(values.get(key, ""), width, align=align) for key, _, width, align in resolved_cols]
+        body = " ".join(cells)
+        return _fit_cell(f"{prefix} {body}", left_inner_w)
+
+    header_values = {key: header for key, header, _, _ in resolved_cols}
+    _safe_addstr(stdscr, panel_top + 1, 1, _render_left_row(" ", header_values), curses.A_UNDERLINE)
+
+    left_body_top = panel_top + 2
+    left_body_h = max(0, panel_h - 3)
+    left_scroll = 0
+    if selected_idx >= max(1, left_body_h):
+        left_scroll = selected_idx - max(1, left_body_h) + 1
+    left_visible = symbols[left_scroll : left_scroll + max(1, left_body_h)]
+
+    for i, sym in enumerate(left_visible):
+        y = left_body_top + i
+        global_idx = left_scroll + i
+        st = quote_state.entries.get(sym) or QuoteEntryState(quote=None, last_error="pending", last_fetch_at=0.0)
+        q = st.quote
+        name = _display_name(sym, q, "crypto_spot")
+        code = _display_symbol(sym, "crypto_spot")
+        prefix = ">" if global_idx == selected_idx else " "
+
+        last_txt = "--"
+        pct_txt = "--"
+        if q is not None:
+            chg = q.price - q.prev_close
+            pct = (chg / q.prev_close * 100.0) if q.prev_close else 0.0
+            last_txt = f"{q.price:.2f}"
+            pct_txt = f"{pct:+.2f}%"
+
+        row_values = {
+            "idx": str(global_idx + 1),
+            "code": code,
+            "name": name,
+            "last": last_txt,
+            "pct": pct_txt,
+            "sig": str(len(_signals_for_symbol(rows, sym, "crypto_spot"))),
+        }
+        _safe_addstr(stdscr, y, 1, _render_left_row(prefix, row_values))
+
+    selected_label = _display_name(selected_symbol, selected_quote, "crypto_spot")
+    selected_disp_symbol = _display_symbol(selected_symbol, "crypto_spot")
     _safe_addstr(
         stdscr,
-        top_box_y,
-        left_box_x + 2,
-        _truncate(f"Price Curve: {radar_label}  5s  n={len(selected_curve)}", max(0, left_box_w - 4)),
+        panel_top,
+        right_x + 2,
+        _truncate(f"标的详情: {selected_label} ({selected_disp_symbol})", max(0, right_w - 4)),
         curses.A_UNDERLINE,
     )
 
     if selected_quote is None:
-        stats_line = "price=--  chg=--  pct=--  vol=--  ts=--"
+        stats_line = "价格=--  涨跌=--  幅度=--  成交量=--  延迟=--  源=--  模式=--"
     else:
         selected_chg = selected_quote.price - selected_quote.prev_close
         selected_pct = (selected_chg / selected_quote.prev_close * 100.0) if selected_quote.prev_close else 0.0
         selected_age_s = int(max(0.0, time.time() - (selected_state.last_fetch_at or 0.0))) if selected_state else 0
+        src = (selected_quote.source or "--").upper()[:8]
+        mode = "LIVE" if selected_age_s <= 15 else ("LIVE-SLOW" if selected_age_s <= 120 else "STALE")
         stats_line = (
-            f"price={selected_quote.price:.2f}  chg={selected_chg:+.2f} ({selected_pct:+.2f}%)  "
-            f"vol={_fmt_vol(selected_quote.volume)}  age={selected_age_s}s"
+            f"价格={selected_quote.price:.2f}  涨跌={selected_chg:+.2f} ({selected_pct:+.2f}%)  "
+            f"成交量={_fmt_vol(selected_quote.volume)}  延迟={selected_age_s}s  源={src}  模式={mode}"
         )
-    _safe_addstr(stdscr, top_box_y + 1, left_box_x + 1, _truncate(stats_line, max(0, left_box_w - 2)))
+        if selected_symbol == focus_symbol:
+            bias = (snapshot.signals.bias or "NEUTRAL").upper()
+            score = float(snapshot.signals.score)
+            stats_line += f"  偏向={bias}  评分={score:+.2f}"
+    _safe_addstr(stdscr, panel_top + 1, right_x + 1, _truncate(stats_line, max(0, right_w - 2)))
 
-    chart_y = top_box_y + 2
-    chart_h = max(1, top_box_h - 3)
-    focus_rows = _signals_for_symbol(rows, focus_symbol, "crypto_spot")
+    chart_y = panel_top + 2
+    chart_h = max(1, right_top_h - 3)
     _draw_price_curve(
         stdscr,
         selected_curve,
         colors,
-        left_box_x + 1,
+        right_x + 1,
         chart_y,
-        left_box_w - 2,
+        right_w - 2,
         chart_h,
-        marker_rows=focus_rows,
+        marker_rows=selected_rows,
     )
 
-    top_body_y = top_box_y + 1
-    top_body_h = max(1, top_box_h - 2)
+    _safe_addstr(stdscr, right_bottom_y, right_x + 2, _truncate("规则信号列表（5min/1h/12h）", max(0, right_w - 4)), curses.A_UNDERLINE)
 
-    radar_minutes = 15
-    radar_min_strength = 60
-    radar_rows = _build_signal_radar_rows(
-        rows,
-        focus_symbol,
-        "crypto_spot",
-        now_dt,
-        window_minutes=radar_minutes,
-        min_strength=radar_min_strength,
-    )
+    now_dt = datetime.now()
+    right_inner_x = right_x + 1
+    right_inner_y = right_bottom_y + 1
+    right_inner_w = max(0, right_w - 2)
+    right_inner_h = max(0, right_bottom_h - 2)
 
-    dir_colors = {
-        "BUY": curses.color_pair(colors.get("BUY", 0)) | curses.A_BOLD,
-        "SELL": curses.color_pair(colors.get("SELL", 0)) | curses.A_BOLD,
-        "ALER": curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD,
-        "ALERT": curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD,
-    }
-
-    bias = (snapshot.signals.bias or "NEUTRAL").upper()
-    score = float(snapshot.signals.score)
-    fresh = _fmt_freshness(snapshot.last_quote_ts, now_dt)
-    src = (snapshot.last_source or "--").upper()
-    bias_attr = dir_colors.get(bias, curses.color_pair(colors.get("SRC", 0)))
-
-    header_line = f"Signal Radar: {radar_label} ({radar_minutes}m,str>={radar_min_strength})"
-    meta_line = f"bias={bias:<5} score={score:+.2f} fresh={fresh:<4} src={src[:6]}"
-
-    _safe_addstr(
-        stdscr,
-        top_box_y,
-        right_box_x + 2,
-        _truncate(header_line, max(0, right_box_w - 4)),
-        curses.A_UNDERLINE,
-    )
-    _safe_addstr(stdscr, top_body_y, right_box_x + 1, _truncate(meta_line, max(0, right_box_w - 2)), bias_attr)
-    _safe_addstr(
-        stdscr,
-        top_body_y + 1,
-        right_box_x + 1,
-        _truncate("time    age dir str tf  src  type", max(0, right_box_w - 2)),
-        curses.A_UNDERLINE,
-    )
-
-    radar_body_h = max(0, top_body_h - 2)
-    radar_visible = radar_rows[:radar_body_h] if radar_body_h > 0 else []
-    for offset, (row, age_s) in enumerate(radar_visible):
-        y = top_body_y + 2 + offset
-        direction = (row.direction or "").upper()
-        dir_short = direction[:4]
-        attr = dir_colors.get(direction, dir_colors.get(dir_short, 0))
-        src_short = (row.source or "--").upper()[:4]
-        tf = (row.timeframe or "")[:3]
-        stype = (row.signal_type or "")[:12]
-        strength = int(row.strength)
-        line = f"{_fmt_time(row.timestamp):<8} {age_s:>3}s {dir_short:<4}{strength:>3} {tf:<3} {src_short:<4} {stype:<12}"
-        _safe_addstr(stdscr, y, right_box_x + 1, _truncate(line, max(0, right_box_w - 2)), attr)
-
-    if not radar_visible:
+    # Fallback to legacy single-column rendering on very narrow terminals.
+    if right_inner_w < 30 or right_inner_h < 3:
         _safe_addstr(
             stdscr,
-            top_body_y + 2,
-            right_box_x + 1,
-            _truncate(f"no recent rule signals for {radar_label}", max(0, right_box_w - 2)),
+            right_inner_y,
+            right_inner_x,
+            _truncate("信号区过窄：请放大终端查看三列（5min/1h/12h）", right_inner_w),
             curses.color_pair(colors.get("SRC", 0)),
         )
-
-    legacy_rows = _signals_for_symbol(rows, snapshot.symbol, "crypto_spot")
-    sig_label = _display_symbol(snapshot.symbol, "crypto_spot")
-    _safe_addstr(
-        stdscr,
-        bottom_box_y,
-        left_box_x + 2,
-        _truncate(f"Rule Signals: {sig_label}  date={datetime.now().strftime('%y-%m-%d')}  n={len(legacy_rows)}", max(0, left_box_w - 4)),
-        curses.A_UNDERLINE,
-    )
-    _safe_addstr(
-        stdscr,
-        bottom_box_y + 1,
-        left_box_x + 1,
-        _truncate("time    src  dir  str tf  type", max(0, left_box_w - 2)),
-        curses.A_UNDERLINE,
-    )
-
-    left_inner_h = max(0, bottom_box_h - 3)
-    visible_signals = legacy_rows[:left_inner_h]
-    for idx, row in enumerate(visible_signals):
-        y = bottom_box_y + 2 + idx
-        t = _fmt_time(row.timestamp)
-        src_short = (row.source or "--").upper()[:4]
-        direction = (row.direction or "").upper()[:4]
-        strength = str(row.strength)[:3]
-        tf = (row.timeframe or "")[:3]
-        stype = (row.signal_type or "")[:12]
-        line = f"{t:<8}{src_short:<5}{direction:<5}{strength:>3} {tf:<3} {stype:<12}"
-        _safe_addstr(stdscr, y, left_box_x + 1, _truncate(line, max(0, left_box_w - 2)))
-
-    _safe_addstr(
-        stdscr,
-        bottom_box_y,
-        right_box_x + 2,
-        _truncate("Signal Summary", max(0, right_box_w - 4)),
-        curses.A_UNDERLINE,
-    )
-    if legacy_rows:
-        latest = legacy_rows[0]
-        latest_time = _fmt_time(latest.timestamp)
-        latest_dir = (latest.direction or "").upper()[:4]
-        latest_type = (latest.signal_type or "--")[:18]
-        latest_src = (latest.source or "--").upper()[:8]
-        tf = (latest.timeframe or "--")[:6]
-        summary_lines = [
-            f"latest: {latest_time} {latest_dir} {latest_type}",
-            f"source: {latest_src}  tf={tf}",
-            f"rows: {len(legacy_rows)}",
-            f"symbol: {sig_label}",
-        ]
+        right_body_h = max(0, right_inner_h - 1)
+        if selected_rows and right_body_h > 0:
+            right_visible = selected_rows[: max(1, right_body_h)]
+            for i, row in enumerate(right_visible):
+                y = right_inner_y + 1 + i
+                ts_dt = parse_ts(row.timestamp)
+                age_s = max(0, int((now_dt - ts_dt).total_seconds())) if ts_dt != datetime.min else 0
+                direction = (row.direction or "--").upper()[:4]
+                tf = (row.timeframe or "--")[:3]
+                strength = _safe_int(row.strength, 0)
+                line = f"{_fmt_time(row.timestamp):<8} {age_s:>3}s {direction:<4}{strength:>3} {tf:<3}"
+                _safe_addstr(stdscr, y, right_inner_x, _truncate(line, right_inner_w))
     else:
-        summary_lines = [
-            "latest: --",
-            "source: --",
-            "rows: 0",
-            f"symbol: {sig_label}",
+        col_count = 3
+        sep_count = col_count - 1
+        usable_w = max(3, right_inner_w - sep_count)
+        col_ws = [usable_w // col_count] * col_count
+        for i in range(usable_w % col_count):
+            col_ws[i] += 1
+        col_xs = [right_inner_x]
+        for i in range(1, col_count):
+            col_xs.append(col_xs[-1] + col_ws[i - 1] + 1)
+        sep_xs = [col_xs[1] - 1, col_xs[2] - 1]
+
+        for sep_x in sep_xs:
+            _safe_vline(stdscr, right_inner_y, sep_x, right_inner_h, curses.color_pair(colors.get("SRC", 0)))
+
+        realtime_rows: list[tuple[SignalRow, int]] = []
+        h1_rows: list[tuple[SignalRow, int]] = []
+        h12_rows: list[tuple[SignalRow, int]] = []
+        for row in selected_rows:
+            ts_dt = parse_ts(row.timestamp)
+            if ts_dt == datetime.min:
+                continue
+            age_s = max(0, int((now_dt - ts_dt).total_seconds()))
+            if age_s <= 5 * 60:
+                realtime_rows.append((row, age_s))
+            elif age_s <= 60 * 60:
+                h1_rows.append((row, age_s))
+            elif age_s <= 12 * 60 * 60:
+                h12_rows.append((row, age_s))
+
+        buckets: list[tuple[str, list[tuple[SignalRow, int]]]] = [
+            ("实时", realtime_rows),
+            ("1h", h1_rows),
+            ("12h", h12_rows),
         ]
 
-    right_inner_h = max(0, bottom_box_h - 2)
-    for idx, line in enumerate(summary_lines[:right_inner_h]):
-        _safe_addstr(stdscr, bottom_box_y + 1 + idx, right_box_x + 1, _truncate(line, max(0, right_box_w - 2)))
+        for i, (title, bucket_rows) in enumerate(buckets):
+            header = f"{title}({len(bucket_rows)})"
+            _safe_addstr(
+                stdscr,
+                right_inner_y,
+                col_xs[i],
+                _fit_cell(header, col_ws[i], align="left"),
+                curses.A_UNDERLINE,
+            )
 
-    footer = "market_micro: q quit | t next | 1 US | 2 CN | 3 CRYPTO | 4 BACKTEST | [/] switch symbol"
-    _safe_addstr(stdscr, h - 1, 0, _truncate(footer, w))
+        body_h = max(0, right_inner_h - 1)
+        for i, (_title, bucket_rows) in enumerate(buckets):
+            col_x = col_xs[i]
+            col_w = col_ws[i]
+            if body_h <= 0:
+                continue
+            if not bucket_rows:
+                _safe_addstr(
+                    stdscr,
+                    right_inner_y + 1,
+                    col_x,
+                    _fit_cell("暂无", col_w, align="left"),
+                    curses.color_pair(colors.get("SRC", 0)),
+                )
+                continue
+
+            for row_idx, (row, _age_s) in enumerate(bucket_rows[:body_h]):
+                y = right_inner_y + 1 + row_idx
+                direction = (row.direction or "--").upper()
+                tf = (row.timeframe or "--")[:3]
+                strength = _safe_int(row.strength, 0)
+                if col_w >= 20:
+                    line = f"{_fmt_time(row.timestamp):<8} {direction[:4]:<4}{strength:>3} {tf:<3}"
+                elif col_w >= 14:
+                    line = f"{_fmt_time(row.timestamp)[3:]:<5} {direction[:1]}{strength:>2} {tf:<3}"
+                else:
+                    line = f"{direction[:1]}{strength:>2} {_fmt_time(row.timestamp)[3:]}"
+
+                attr = 0
+                if direction.startswith("BUY"):
+                    attr = curses.color_pair(colors.get("BUY", 0))
+                elif direction.startswith("SELL"):
+                    attr = curses.color_pair(colors.get("SELL", 0))
+                elif direction.startswith("ALER"):
+                    attr = curses.color_pair(colors.get("ALERT", 0))
+                _safe_addstr(stdscr, y, col_x, _fit_cell(line, col_w, align="left"), attr)

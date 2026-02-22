@@ -11,6 +11,7 @@ class Watchlists:
     us: list[str] = field(default_factory=list)
     hk: list[str] = field(default_factory=list)  # 5-digit strings, e.g. "00700"
     cn: list[str] = field(default_factory=list)  # "SH600519"/"SZ000001"
+    fund_cn: list[str] = field(default_factory=list)  # CN exchange-traded funds, e.g. "SH510300"/"SZ159915"
     crypto: list[str] = field(default_factory=list)  # Gate spot pairs, e.g. "BTC_USDT"
     metals: list[str] = field(default_factory=list)  # Yahoo symbols, e.g. "XAUUSD=X"
 
@@ -65,13 +66,13 @@ def normalize_cn_symbols(raw: str) -> list[str]:
         if not t:
             continue
         # Allow pure 6-digit codes and infer exchange:
-        # - 6xxxxx -> SH
-        # - 0xxxxx/3xxxxx -> SZ
+        # - 5xxxxx/6xxxxx/9xxxxx -> SH
+        # - 0xxxxx/1xxxxx/2xxxxx/3xxxxx -> SZ
         # (BJ/others are not handled here)
         if t.isdigit() and len(t) == 6:
-            if t.startswith("6"):
+            if t.startswith(("5", "6", "9")):
                 syms.append("SH" + t)
-            elif t.startswith(("0", "3")):
+            elif t.startswith(("0", "1", "2", "3")):
                 syms.append("SZ" + t)
             continue
         if t.endswith(".SH"):
@@ -84,6 +85,38 @@ def normalize_cn_symbols(raw: str) -> list[str]:
             if len(digits) != 6:
                 continue
             syms.append(ex + digits)
+    return _dedup_keep_order(syms)
+
+
+def normalize_cn_fund_symbols(raw: str) -> list[str]:
+    """
+    Normalize CN fund watchlist symbols.
+
+    fund_cn supports mixed watchlists:
+    - Exchange-traded ETF/LOF: SH510300 / SZ159915
+    - Off-market public funds: 024389 (6-digit fund code)
+    """
+    syms: list[str] = []
+    for token in (raw or "").replace(" ", "").split(","):
+        t = token.strip().upper()
+        if not t:
+            continue
+        if t.endswith(".SH"):
+            t = "SH" + t[:-3]
+        elif t.endswith(".SZ"):
+            t = "SZ" + t[:-3]
+        if t.startswith(("SH", "SZ")):
+            ex = t[:2]
+            digits = "".join([c for c in t[2:] if c.isdigit()])
+            if len(digits) != 6:
+                continue
+            syms.append(ex + digits)
+            continue
+        # Keep 6-digit raw fund code for off-market funds.
+        digits = "".join([c for c in t if c.isdigit()])
+        if len(digits) == 6:
+            syms.append(digits)
+            continue
     return _dedup_keep_order(syms)
 
 
@@ -164,6 +197,9 @@ def load_watchlists(path: str) -> Watchlists:
         us=normalize_us_symbols(",".join(data.get("us", []) if isinstance(data.get("us"), list) else [])),
         hk=normalize_hk_symbols(",".join(data.get("hk", []) if isinstance(data.get("hk"), list) else [])),
         cn=normalize_cn_symbols(",".join(data.get("cn", []) if isinstance(data.get("cn"), list) else [])),
+        fund_cn=normalize_cn_fund_symbols(
+            ",".join(data.get("fund_cn", []) if isinstance(data.get("fund_cn"), list) else [])
+        ),
         crypto=normalize_crypto_symbols(",".join(data.get("crypto", []) if isinstance(data.get("crypto"), list) else [])),
         metals=normalize_metals_symbols(",".join(data.get("metals", []) if isinstance(data.get("metals"), list) else [])),
     )
@@ -176,6 +212,7 @@ def save_watchlists(path: str, wl: Watchlists) -> None:
         "us": _dedup_keep_order([s.strip().upper() for s in (wl.us or []) if s.strip()]),
         "hk": _dedup_keep_order([s.strip().zfill(5) for s in (wl.hk or []) if s.strip()]),
         "cn": _dedup_keep_order([s.strip().upper() for s in (wl.cn or []) if s.strip()]),
+        "fund_cn": _dedup_keep_order([s.strip().upper() for s in (wl.fund_cn or []) if s.strip()]),
         "crypto": _dedup_keep_order([s.strip().upper() for s in (wl.crypto or []) if s.strip()]),
         "metals": _dedup_keep_order([s.strip().upper() for s in (wl.metals or []) if s.strip()]),
     }

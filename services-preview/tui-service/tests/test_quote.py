@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import time
 import unittest
+from unittest.mock import patch
 
 
 class TestTencentQuoteParse(unittest.TestCase):
@@ -85,6 +86,16 @@ class TestTencentQuoteParse(unittest.TestCase):
         self.assertEqual(normalize_cn_symbols("688041"), ["SH688041"])
         self.assertEqual(normalize_cn_symbols("000001"), ["SZ000001"])
         self.assertEqual(normalize_cn_symbols("300750"), ["SZ300750"])
+        self.assertEqual(normalize_cn_symbols("510300"), ["SH510300"])
+        self.assertEqual(normalize_cn_symbols("159915"), ["SZ159915"])
+
+    def test_normalize_cn_fund_symbols(self) -> None:
+        from src.watchlists import normalize_cn_fund_symbols
+
+        self.assertEqual(
+            normalize_cn_fund_symbols("510300,159915,SH512100,024389,021490.SZ"),
+            ["510300", "159915", "SH512100", "024389", "SZ021490"],
+        )
 
     def test_normalize_crypto_symbols(self) -> None:
         from src.watchlists import normalize_crypto_symbols
@@ -100,6 +111,22 @@ class TestTencentQuoteParse(unittest.TestCase):
         self.assertEqual(normalize_metals_symbols("XAUUSD,XAGUSD"), ["XAUUSD", "XAGUSD"])
         self.assertEqual(normalize_metals_symbols("XAUUSD=X,XAGUSD=X"), ["XAUUSD", "XAGUSD"])
         self.assertEqual(normalize_metals_symbols("bad$,XAUUSD=X"), ["XAUUSD"])
+
+    def test_watchlists_roundtrip_keeps_fund_cn(self) -> None:
+        from src.watchlists import Watchlists, load_watchlists, save_watchlists
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "watchlists.json"
+            save_watchlists(
+                str(path),
+                Watchlists(
+                    us=["NVDA"],
+                    cn=["SH600519"],
+                    fund_cn=["SH510300", "SZ159915"],
+                ),
+            )
+            wl = load_watchlists(str(path))
+            self.assertEqual(wl.fund_cn, ["SH510300", "SZ159915"])
 
     def test_parse_hk_line(self) -> None:
         from src.quote import _parse_tencent_quote_line
@@ -190,6 +217,127 @@ class TestTencentQuoteParse(unittest.TestCase):
         self.assertEqual(q.currency, "USD")
         self.assertEqual(q.source, "yahoo")
 
+    def test_parse_fundgz_jsonp(self) -> None:
+        from src.quote import _parse_fundgz_jsonp
+
+        payload = (
+            'jsonpgz({"fundcode":"024389","name":"中航智选领航混合发起C",'
+            '"jzrq":"2026-02-18","dwjz":"1.1234","gsz":"1.1301","gszzl":"0.60",'
+            '"gztime":"2026-02-19 14:32"});'
+        )
+        q = _parse_fundgz_jsonp(payload)
+        self.assertIsNotNone(q)
+        assert q is not None
+        self.assertEqual(q.symbol, "024389")
+        self.assertEqual(q.currency, "CNY")
+        self.assertAlmostEqual(q.price, 1.1301, places=6)
+        self.assertAlmostEqual(q.prev_close, 1.1234, places=6)
+        self.assertEqual(q.source, "fundgz")
+
+    def test_fetch_quote_cn_fund_falls_back_to_offmarket(self) -> None:
+        from src.quote import Quote, fetch_quote
+
+        fake = Quote(
+            symbol="024389",
+            name="中航智选领航混合发起C",
+            price=1.23,
+            prev_close=1.22,
+            open=1.22,
+            high=1.23,
+            low=1.23,
+            currency="CNY",
+            volume=0.0,
+            amount=0.0,
+            ts="2026-02-19 14:32:00",
+            source="fundgz",
+        )
+        with patch("src.quote.fetch_tencent_cn_quotes", return_value={}), patch(
+            "src.quote.fetch_cn_offmarket_fund_quote", return_value=fake
+        ):
+            q = fetch_quote("tencent", "cn_fund", "024389", timeout_s=1.0)
+        self.assertIsNotNone(q)
+        assert q is not None
+        self.assertEqual(q.symbol, "024389")
+
+    def test_cn_fund_exchange_candidates(self) -> None:
+        from src.quote import _cn_fund_exchange_candidates
+
+        self.assertEqual(_cn_fund_exchange_candidates("SH510300"), ["SH510300"])
+        self.assertEqual(_cn_fund_exchange_candidates("510300"), ["SH510300"])
+        self.assertEqual(_cn_fund_exchange_candidates("159915"), ["SZ159915"])
+        self.assertEqual(_cn_fund_exchange_candidates("024389"), [])
+
+    def test_normalize_eastmoney_cn_secid_for_fund(self) -> None:
+        from src.quote import _normalize_eastmoney_cn_secid
+
+        self.assertEqual(_normalize_eastmoney_cn_secid("SH516520", "cn_fund"), ("1.516520", "SH516520"))
+        self.assertEqual(_normalize_eastmoney_cn_secid("159995", "cn_fund"), ("0.159995", "SZ159995"))
+        self.assertEqual(_normalize_eastmoney_cn_secid("024389", "cn_fund"), ("", "024389"))
+
+    def test_fetch_daily_curve_1d_cn_fund(self) -> None:
+        from src.quote import fetch_daily_curve_1d
+
+        payload = json.dumps(
+            {
+                "data": {
+                    "name": "智能驾驶ETF",
+                    "klines": [
+                        "2026-02-11,1.317,1.318,1.327,1.317,209497",
+                        "2026-02-12,1.318,1.337,1.339,1.314,409231",
+                        "2026-02-13,1.329,1.334,1.351,1.325,384225",
+                    ],
+                }
+            }
+        )
+        with patch("src.quote._http_get_with_headers", return_value=payload):
+            out = fetch_daily_curve_1d("tencent", "cn_fund", "SH516520", timeout_s=1.0, limit=15)
+        self.assertEqual(len(out), 3)
+        ts_open, open_px, high_px, low_px, close_px, volume = out[-1]
+        self.assertGreater(ts_open, 0)
+        self.assertAlmostEqual(open_px, 1.329, places=6)
+        self.assertAlmostEqual(high_px, 1.351, places=6)
+        self.assertAlmostEqual(low_px, 1.325, places=6)
+        self.assertAlmostEqual(close_px, 1.334, places=6)
+        self.assertAlmostEqual(volume, 384225.0, places=6)
+
+    def test_fetch_quotes_cn_fund_keeps_input_keys(self) -> None:
+        from src.quote import Quote, fetch_quotes
+
+        etf = Quote(
+            symbol="SH510300",
+            name="300ETF",
+            price=3.1,
+            prev_close=3.0,
+            open=3.0,
+            high=3.1,
+            low=3.0,
+            currency="CNY",
+            volume=1.0,
+            amount=1.0,
+            ts="2026-02-19 14:32:00",
+            source="tencent",
+        )
+        nav = Quote(
+            symbol="024389",
+            name="中航智选领航混合发起C",
+            price=1.23,
+            prev_close=1.22,
+            open=1.22,
+            high=1.23,
+            low=1.23,
+            currency="CNY",
+            volume=0.0,
+            amount=0.0,
+            ts="2026-02-19 14:32:00",
+            source="fundgz",
+        )
+        with patch("src.quote.fetch_tencent_cn_quotes", return_value={"SH510300": etf}), patch(
+            "src.quote.fetch_cn_offmarket_fund_quote", return_value=nav
+        ):
+            out = fetch_quotes("tencent", "cn_fund", ["SH510300", "024389"], timeout_s=1.0)
+        self.assertIn("SH510300", out)
+        self.assertIn("024389", out)
+
     def test_parse_stooq_csv_line(self) -> None:
         from src.quote import _parse_stooq_csv_line
 
@@ -212,10 +360,12 @@ class TestTencentQuoteParse(unittest.TestCase):
         self.assertGreaterEqual(len(parts), 14)
 
     def test_fmt_quote_ts_compact_year(self) -> None:
-        from src.tui import _fmt_quote_ts, _fmt_quote_ts_date8
+        from src.tui import _display_symbol, _fmt_quote_ts, _fmt_quote_ts_date8
 
         self.assertEqual(_fmt_quote_ts("2026-02-07 11:35:16"), "26-02-07 11:35:16")
         self.assertEqual(_fmt_quote_ts_date8("2026-02-07 11:35:16"), "26-02-07")
+        self.assertEqual(_display_symbol("SH510300", "cn_fund"), "510300.SH")
+        self.assertEqual(_display_symbol("024389", "cn_fund"), "024389")
 
     def test_truncate_handles_wide_chars(self) -> None:
         from src.tui import _text_display_width, _truncate
@@ -245,7 +395,7 @@ class TestTencentQuoteParse(unittest.TestCase):
         bar = _format_service_status_bar(
             ServiceStatus(data_running=4, data_total=4, signal_up=True, trading_up=True, checked_at=0.0)
         )
-        self.assertEqual(bar, "svc data up | sig up | trd up")
+        self.assertEqual(bar, "服务 数据在线 | 信号在线 | 交易在线")
 
     def test_format_service_status_bar_partial(self) -> None:
         from src.tui import ServiceStatus, _format_service_status_bar
@@ -253,21 +403,26 @@ class TestTencentQuoteParse(unittest.TestCase):
         bar = _format_service_status_bar(
             ServiceStatus(data_running=2, data_total=4, signal_up=False, trading_up=True, checked_at=0.0)
         )
-        self.assertEqual(bar, "svc data 2/4 | sig dn | trd up")
+        self.assertEqual(bar, "服务 数据2/4 | 信号离线 | 交易在线")
 
     def test_build_header_line_keeps_service_tail(self) -> None:
         from src.tui import _build_header_line
 
-        svc = "svc data up | sig up | trd dn"
+        svc = "服务 数据在线 | 信号在线 | 交易离线"
         line = _build_header_line("26-02-10 12:00:00", "market_micro", "refresh=1.0s", svc, 64)
         self.assertTrue(line.endswith(svc))
 
     def test_build_header_line_narrow_falls_back_to_service(self) -> None:
         from src.tui import _build_header_line
 
-        svc = "svc data up | sig up | trd dn"
+        svc = "服务 数据在线 | 信号在线 | 交易离线"
         line = _build_header_line("26-02-10 12:00:00", "market_micro", "refresh=1.0s", svc, 20)
-        self.assertTrue(line.startswith("svc"))
+        self.assertTrue(line.startswith("服务"))
+
+    def test_view_display_name_market_hk(self) -> None:
+        from src.tui import _view_display_name
+
+        self.assertEqual(_view_display_name("market_hk"), "行情-港股")
 
     def test_hot_reload_watcher_detects_py_change(self) -> None:
         from src.tui import _HotReloadWatcher

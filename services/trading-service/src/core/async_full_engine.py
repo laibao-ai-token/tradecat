@@ -67,7 +67,10 @@ def get_high_priority_symbols_fast(top_n: int = 30) -> Set[str]:
                 table = "market_data.candles_5m"
                 try:
                     row = conn.execute("SELECT to_regclass(%s) AS reg", ("market_data.candles_5m",)).fetchone()
-                    if not row or not row.get("reg"):
+                    reg = None
+                    if row:
+                        reg = row.get("reg") if hasattr(row, "get") else (row[0] if len(row) > 0 else None)
+                    if not reg:
                         table = "market_data.candles_1m"
                 except Exception:
                     table = "market_data.candles_1m"

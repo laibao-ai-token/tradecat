@@ -1153,7 +1153,7 @@ def backfill_symbol_interval_fast(
     *,
     bar_limit: int,
     workers: int = 1,
-    fallback: str = "broadcast",
+    fallback: str = "skip",
 ) -> int:
     """Fast backfill: compute full-history rows per indicator and bulk-write once."""
     # 获取尽可能多的K线数据
@@ -1221,7 +1221,7 @@ def backfill_all(
     bar_limit_map: dict[str, int] | None = None,
     fast: bool = False,
     fast_workers: int = 1,
-    fast_fallback: str = "broadcast",
+    fast_fallback: str = "skip",
 ):
     """回填所有历史指标"""
     if symbols is None:
@@ -1255,6 +1255,8 @@ def backfill_all(
     print(f"开始回填({mode}): {len(symbols)} 币种, {len(intervals)} 周期, {len(indicators)} 指标")
     print(f"保留配置: {retention_map}")
     print(f"K线读取上限: {bar_limit_map}")
+    if fast and str(fast_fallback).strip().lower() == "broadcast":
+        print("WARNING: --fast-fallback=broadcast 会把最后一行结果广播到历史K线，可能产生非真实历史值。")
     print("-" * 60)
 
     total_start = time.time()
@@ -1319,8 +1321,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fast-fallback",
         choices=["broadcast", "skip"],
-        default="broadcast",
-        help="fast 模式未支持指标的处理方式：broadcast 最后一行 / skip 跳过（默认 broadcast）",
+        default="skip",
+        help="fast 模式未支持指标的处理方式：broadcast 最后一行 / skip 跳过（默认 skip）",
     )
     parser.add_argument(
         "--retention-overrides",
@@ -1368,5 +1370,5 @@ if __name__ == "__main__":
         bar_limit_map=bar_limit_map,
         fast=bool(args.fast),
         fast_workers=max(1, int(args.fast_workers or 1)),
-        fast_fallback=str(args.fast_fallback or "broadcast"),
+        fast_fallback=str(args.fast_fallback or "skip"),
     )

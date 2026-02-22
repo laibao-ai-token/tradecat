@@ -34,9 +34,13 @@ safe_load_env() {
             elif [[ "$val" =~ ^\'.*\'$ ]]; then
                 val="${val#\'}" && val="${val%\'}"
             else
-                # Strip trailing inline comments for unquoted values.
-                val="${val%%#*}"
-                # Trim trailing spaces.
+                # 仅当 # 前有空白时才视为注释，避免截断 URL/密码中的 #
+                if [[ "$val" =~ ^(.*[^[:space:]])[[:space:]]+#.*$ ]]; then
+                    val="${BASH_REMATCH[1]}"
+                elif [[ "$val" =~ ^[[:space:]]*#.*$ ]]; then
+                    val=""
+                fi
+                val="${val#"${val%%[![:space:]]*}"}"
                 val="${val%"${val##*[![:space:]]}"}"
             fi
 

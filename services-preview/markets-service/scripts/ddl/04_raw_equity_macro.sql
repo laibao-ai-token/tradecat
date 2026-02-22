@@ -34,6 +34,42 @@ CREATE INDEX idx_us_equity_symbol_date ON raw.us_equity_1d (symbol, trade_date D
 COMMENT ON TABLE raw.us_equity_1d IS '美股日线 (yfinance)';
 
 -- ============================================================
+-- raw.us_equity_1m - 美股分钟线 (1m)
+-- 说明: 分钟线主要用于“近实时”调度与短周期策略；数据源可来自 yfinance/alltick 等。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS raw.us_equity_1m (
+    exchange            TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    open_time           TIMESTAMPTZ NOT NULL,
+    close_time          TIMESTAMPTZ,
+    open                NUMERIC(18,6) NOT NULL,
+    high                NUMERIC(18,6) NOT NULL,
+    low                 NUMERIC(18,6) NOT NULL,
+    close               NUMERIC(18,6) NOT NULL,
+    volume              NUMERIC(38,8) NOT NULL,
+    amount              NUMERIC(38,8),
+    -- 血缘字段
+    source              TEXT NOT NULL DEFAULT 'alltick',
+    ingest_batch_id     BIGINT NOT NULL,
+    source_event_time   TIMESTAMPTZ,
+    ingested_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (exchange, symbol, open_time)
+);
+
+SELECT create_hypertable('raw.us_equity_1m', 'open_time',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_us_equity_1m_symbol_time ON raw.us_equity_1m (symbol, open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_us_equity_1m_time ON raw.us_equity_1m (open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_us_equity_1m_batch ON raw.us_equity_1m (ingest_batch_id);
+
+COMMENT ON TABLE raw.us_equity_1m IS '美股1分钟K线';
+
+-- ============================================================
 -- raw.cn_equity_1d - A股日线
 -- ============================================================
 CREATE TABLE IF NOT EXISTS raw.cn_equity_1d (
@@ -67,6 +103,42 @@ CREATE INDEX idx_cn_equity_symbol_date ON raw.cn_equity_1d (symbol, trade_date D
 COMMENT ON TABLE raw.cn_equity_1d IS 'A股日线 (akshare/baostock)';
 
 -- ============================================================
+-- raw.cn_equity_1m - A股分钟线 (1m)
+-- 说明: 免费数据源通常仅保留最近N个交易日；生产建议使用授权数据源。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS raw.cn_equity_1m (
+    exchange            TEXT NOT NULL,          -- sse/szse
+    symbol              TEXT NOT NULL,
+    open_time           TIMESTAMPTZ NOT NULL,
+    close_time          TIMESTAMPTZ,
+    open                NUMERIC(18,6) NOT NULL,
+    high                NUMERIC(18,6) NOT NULL,
+    low                 NUMERIC(18,6) NOT NULL,
+    close               NUMERIC(18,6) NOT NULL,
+    volume              NUMERIC(38,8) NOT NULL,
+    amount              NUMERIC(38,8),
+    -- 血缘字段
+    source              TEXT NOT NULL DEFAULT 'alltick',
+    ingest_batch_id     BIGINT NOT NULL,
+    source_event_time   TIMESTAMPTZ,
+    ingested_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (exchange, symbol, open_time)
+);
+
+SELECT create_hypertable('raw.cn_equity_1m', 'open_time',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cn_equity_1m_symbol_time ON raw.cn_equity_1m (symbol, open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_cn_equity_1m_time ON raw.cn_equity_1m (open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_cn_equity_1m_batch ON raw.cn_equity_1m (ingest_batch_id);
+
+COMMENT ON TABLE raw.cn_equity_1m IS 'A股1分钟K线';
+
+-- ============================================================
 -- raw.hk_equity_1d - 港股日线
 -- ============================================================
 CREATE TABLE IF NOT EXISTS raw.hk_equity_1d (
@@ -93,6 +165,41 @@ SELECT create_hypertable('raw.hk_equity_1d', 'trade_date',
 );
 
 COMMENT ON TABLE raw.hk_equity_1d IS '港股日线';
+
+-- ============================================================
+-- raw.hk_equity_1m - 港股分钟线 (1m)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS raw.hk_equity_1m (
+    exchange            TEXT NOT NULL DEFAULT 'hkex',
+    symbol              TEXT NOT NULL,
+    open_time           TIMESTAMPTZ NOT NULL,
+    close_time          TIMESTAMPTZ,
+    open                NUMERIC(18,6) NOT NULL,
+    high                NUMERIC(18,6) NOT NULL,
+    low                 NUMERIC(18,6) NOT NULL,
+    close               NUMERIC(18,6) NOT NULL,
+    volume              NUMERIC(38,8) NOT NULL,
+    amount              NUMERIC(38,8),
+    -- 血缘字段
+    source              TEXT NOT NULL DEFAULT 'alltick',
+    ingest_batch_id     BIGINT NOT NULL,
+    source_event_time   TIMESTAMPTZ,
+    ingested_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (exchange, symbol, open_time)
+);
+
+SELECT create_hypertable('raw.hk_equity_1m', 'open_time',
+    chunk_time_interval => INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_hk_equity_1m_symbol_time ON raw.hk_equity_1m (symbol, open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_hk_equity_1m_time ON raw.hk_equity_1m (open_time DESC);
+CREATE INDEX IF NOT EXISTS idx_hk_equity_1m_batch ON raw.hk_equity_1m (ingest_batch_id);
+
+COMMENT ON TABLE raw.hk_equity_1m IS '港股1分钟K线';
 
 -- ============================================================
 -- raw.futures_1d - 期货日线

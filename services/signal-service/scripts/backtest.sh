@@ -6,6 +6,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$(dirname "$PROJECT_DIR")")"
+CALLER_INDICATOR_SQLITE_PATH="${INDICATOR_SQLITE_PATH:-}"
+
+resolve_default_backtest_indicator_db() {
+    local dir="$REPO_ROOT/artifacts/indicator_db"
+    local best=""
+
+    if [[ -d "$dir" ]]; then
+        shopt -s nullglob
+        for f in "$dir"/bt_indicators_*_1m_30d_*.db; do
+            if [[ -z "$best" || "$f" -nt "$best" ]]; then
+                best="$f"
+            fi
+        done
+        shopt -u nullglob
+    fi
+
+    if [[ -n "$best" ]]; then
+        echo "$best"
+        return 0
+    fi
+
+    echo "$REPO_ROOT/libs/database/services/telegram-service/market_data.db"
+}
 
 safe_load_env() {
     local file="$1"
@@ -46,7 +69,13 @@ safe_load_env() {
             elif [[ "$val" =~ ^\'.*\'$ ]]; then
                 val="${val#\'}" && val="${val%\'}"
             else
-                val="${val%%#*}"
+                # 仅当 # 前有空白时才视为注释，避免截断 URL/密码中的 #
+                if [[ "$val" =~ ^(.*[^[:space:]])[[:space:]]+#.*$ ]]; then
+                    val="${BASH_REMATCH[1]}"
+                elif [[ "$val" =~ ^[[:space:]]*#.*$ ]]; then
+                    val=""
+                fi
+                val="${val#"${val%%[![:space:]]*}"}"
                 val="${val%"${val##*[![:space:]]}"}"
             fi
 
@@ -56,6 +85,16 @@ safe_load_env() {
 }
 
 safe_load_env "$REPO_ROOT/config/.env"
+
+# Backtest default: prefer the latest 30d indicator snapshot in artifacts/indicator_db.
+# If caller explicitly provides INDICATOR_SQLITE_PATH, keep caller value unchanged.
+if [[ -z "$CALLER_INDICATOR_SQLITE_PATH" ]]; then
+    export INDICATOR_SQLITE_PATH="$(resolve_default_backtest_indicator_db)"
+else
+    export INDICATOR_SQLITE_PATH="$CALLER_INDICATOR_SQLITE_PATH"
+fi
+
+echo "回测指标库: $INDICATOR_SQLITE_PATH"
 
 VENV_DIR="$PROJECT_DIR/.venv"
 if [[ ! -d "$VENV_DIR" ]]; then

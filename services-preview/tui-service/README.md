@@ -62,8 +62,9 @@ Notes:
 - `market_micro` is included in in-app page cycling.
 
 Switch pages inside TUI:
-- `t` / `Tab`: US -> CN -> MICRO -> BACKTEST -> US
-- `1` US, `2` CN, `3` MICRO, `4` BACKTEST, `0` home(MICRO)
+- `t` / `Tab`: US -> CN -> HK -> FUND-CN -> MICRO -> US（主行情页循环，不含回测）
+- `1` US, `2` CN, `3` MICRO, `5` FUND-CN, `6` HK, `0` home(MICRO)
+- `4`: 仅在 MICRO(加密) 页可打开回测；在回测页按 `4` 返回 MICRO
 - `+` add symbols, `-` remove symbols (per current page)
   - `Enter` confirm, `Esc` cancel
 
@@ -72,7 +73,18 @@ Override watchlists:
 ```bash
 ./scripts/start.sh run --view quotes_hk --hk-symbols 00700,01810,03690 --quote-refresh 1
 ./scripts/start.sh run --view quotes_cn --cn-symbols SH600519,SZ000001,SH688256 --quote-refresh 1
+./scripts/start.sh run --view market_fund_cn --fund-cn-symbols SH510300,SZ159915,SH512100 --quote-refresh 1
 ./scripts/start.sh run --view quotes_crypto --crypto-symbols BTC_USDT,ETH_USDT --quote-refresh 1
+```
+
+`market_fund_cn` supports mixed monitoring:
+- Exchange-traded ETF/LOF (`SH/SZ` + 6 digits, realtime)
+- Off-market public funds (`6-digit fund code`, valuation/NAV based)
+
+Example (on-market + off-market):
+
+```bash
+./scripts/start.sh run --view market_fund_cn --fund-cn-symbols SH516110,SZ159889,024389,021490 --quote-refresh 1
 ```
 
 Crypto symbol input tips:
@@ -108,8 +120,9 @@ python -m src --refresh 1
 
 - `q`: quit
 - Arrow keys: scroll
-- `t` / `Tab`: cycle pages (US/CN/MICRO/BACKTEST)
-- `1`/`2`/`3`/`4`: jump to US/CN/MICRO/BACKTEST
+- `t` / `Tab`: cycle main market pages (US/CN/HK/FUND-CN/MICRO)
+- `1`/`2`/`3`/`5`/`6`: jump to US/CN/MICRO/FUND-CN/HK
+- `4`: toggle backtest only from MICRO page; press again in backtest to return MICRO
 - `0`: jump to home (MICRO)
 - `p`: toggle PG source
 - `s`: toggle SQLite source

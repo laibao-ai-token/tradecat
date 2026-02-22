@@ -2,18 +2,39 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
-from .micro import MicroConfig
-from .tui import QuoteConfig, QuoteConfigs, run
-from .watchlists import (
-    Watchlists,
-    load_watchlists,
-    normalize_cn_symbols,
-    normalize_crypto_symbols,
-    normalize_hk_symbols,
-    normalize_metals_symbols,
-    normalize_us_symbols,
-)
+try:
+    from .etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
+    from .micro import MicroConfig
+    from .tui import QuoteConfig, QuoteConfigs, run
+    from .watchlists import (
+        Watchlists,
+        normalize_cn_fund_symbols,
+        load_watchlists,
+        normalize_cn_symbols,
+        normalize_crypto_symbols,
+        normalize_hk_symbols,
+        normalize_metals_symbols,
+        normalize_us_symbols,
+    )
+except ImportError:
+    pkg_root = Path(__file__).resolve().parent.parent
+    if str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
+    from src.etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
+    from src.micro import MicroConfig
+    from src.tui import QuoteConfig, QuoteConfigs, run
+    from src.watchlists import (
+        Watchlists,
+        normalize_cn_fund_symbols,
+        load_watchlists,
+        normalize_cn_symbols,
+        normalize_crypto_symbols,
+        normalize_hk_symbols,
+        normalize_metals_symbols,
+        normalize_us_symbols,
+    )
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -26,6 +47,12 @@ def _find_repo_root(start: Path) -> Path:
 
 
 def main() -> int:
+    repo_root = _find_repo_root(Path(__file__).resolve())
+    etf_profile = get_etf_domain_profile("auto_driving_cn")
+    legacy_default_fund_cn_symbols = ",".join(etf_profile.symbols)
+    dynamic_symbols = load_dynamic_auto_driving_symbols(repo_root, top_n=35)
+    default_fund_cn_symbols = ",".join(dynamic_symbols or list(etf_profile.symbols))
+
     parser = argparse.ArgumentParser(description="TradeCat TUI (preview): view pg/sqlite signals from signal_history.db")
     parser.add_argument("--db", default="", help="Path to signal_history.db (default: repo libs/database/.../signal_history.db)")
     parser.add_argument("--refresh", type=float, default=1.0, help="Refresh interval seconds (default: 1.0)")
@@ -44,10 +71,19 @@ def main() -> int:
     parser.add_argument("--us-symbols", default="NVDA,META,ORCL", help="US watchlist. Example: NVDA,META,ORCL")
     parser.add_argument("--hk-symbols", default="00700,01810,03690", help="HK watchlist. Example: 00700,01810,03690")
     parser.add_argument("--cn-symbols", default="SH600519,SZ000001,SH688256", help="A-share watchlist. Example: SH600519,SZ000001")
+    parser.add_argument(
+        "--fund-cn-symbols",
+        default=default_fund_cn_symbols,
+        help="CN fund watchlist (ETF/LOF). Default: auto-driving Top35 from analysis CSV",
+    )
     parser.add_argument("--crypto-symbols", default="BTC_USDT,ETH_USDT", help="Crypto spot watchlist. Example: BTC_USDT,ETH_USDT")
     parser.add_argument("--metals-symbols", default="XAUUSD,XAGUSD", help="Metals watchlist. Example: XAUUSD,XAGUSD")
     # Backward compatible flags (if you used earlier versions).
-    parser.add_argument("--quote-market", default="", help="(compat) Quote market: us_stock/hk_stock/cn_stock/crypto_spot/metals")
+    parser.add_argument(
+        "--quote-market",
+        default="",
+        help="(compat) Quote market: us_stock/hk_stock/cn_stock/cn_fund/crypto_spot/metals",
+    )
     parser.add_argument("--quote-symbols", default="", help="(compat) Comma-separated quote symbols for quote-market")
     parser.add_argument(
         "--view",
@@ -62,6 +98,8 @@ def main() -> int:
             "quotes_crypto",
             "quotes_metals",
             "market_cn",
+            "market_hk",
+            "market_fund_cn",
             "market_crypto",
             "market_micro",
             "market_backtest",
@@ -90,7 +128,6 @@ def main() -> int:
     if args.db:
         db_path = Path(args.db).expanduser().resolve()
     else:
-        repo_root = _find_repo_root(Path(__file__).resolve())
         db_path = repo_root / "libs" / "database" / "services" / "signal-service" / "signal_history.db"
 
     service_root = Path(__file__).resolve().parents[1]
@@ -100,6 +137,7 @@ def main() -> int:
     us_symbols = normalize_us_symbols(str(args.us_symbols))
     hk_symbols = normalize_hk_symbols(str(args.hk_symbols))
     cn_symbols = normalize_cn_symbols(str(args.cn_symbols))
+    fund_cn_symbols = normalize_cn_fund_symbols(str(args.fund_cn_symbols))
     crypto_symbols = normalize_crypto_symbols(str(args.crypto_symbols))
     metals_symbols = normalize_metals_symbols(str(args.metals_symbols))
 
@@ -110,6 +148,10 @@ def main() -> int:
         hk_symbols = list(file_wl.hk)
     if file_wl.cn and str(args.cn_symbols) == "SH600519,SZ000001,SH688256":
         cn_symbols = list(file_wl.cn)
+    # Keep dynamic Top35 as default for fund page.
+    # Only fall back to watchlists.json when user still uses the legacy fixed profile symbols.
+    if file_wl.fund_cn and str(args.fund_cn_symbols) == legacy_default_fund_cn_symbols:
+        fund_cn_symbols = list(file_wl.fund_cn)
     if file_wl.crypto and str(args.crypto_symbols) == "BTC_USDT,ETH_USDT":
         crypto_symbols = list(file_wl.crypto)
     if file_wl.metals and str(args.metals_symbols) == "XAUUSD,XAGUSD":
@@ -125,6 +167,8 @@ def main() -> int:
             hk_symbols = normalize_hk_symbols(",".join(qsymbols))
         elif qmarket == "cn_stock":
             cn_symbols = normalize_cn_symbols(",".join(qsymbols))
+        elif qmarket in {"cn_fund", "fund_cn"}:
+            fund_cn_symbols = normalize_cn_fund_symbols(",".join(qsymbols))
         elif qmarket == "crypto_spot":
             crypto_symbols = normalize_crypto_symbols(",".join(qsymbols))
         elif qmarket in {"metals", "metals_spot"}:
@@ -150,6 +194,13 @@ def main() -> int:
             provider=str(args.quote_provider),
             market="cn_stock",
             symbols=cn_symbols,
+            refresh_s=max(0.2, float(args.quote_refresh)),
+        ),
+        fund_cn=QuoteConfig(
+            enabled=not bool(args.no_quote),
+            provider=str(args.quote_provider),
+            market="cn_fund",
+            symbols=fund_cn_symbols,
             refresh_s=max(0.2, float(args.quote_refresh)),
         ),
         crypto=QuoteConfig(

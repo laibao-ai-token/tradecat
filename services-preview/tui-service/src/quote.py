@@ -32,6 +32,7 @@ class Quote:
 
 _TENCENT_PREFIX_RE = re.compile(r"^v_([a-zA-Z]+)")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
+_SAFE_CN_FUND_CODE_RE = re.compile(r"^\d{6}$")
 
 
 def _is_safe_token(token: str) -> bool:
@@ -368,6 +369,116 @@ def _to_float(raw: str) -> float:
         return 0.0
 
 
+def _normalize_cn_fund_symbol(symbol: str) -> str:
+    s = (symbol or "").strip().upper()
+    if not s:
+        return ""
+    s = s.replace("/", "").replace("-", "").replace("_", "")
+    if s.endswith(".SH"):
+        s = "SH" + s[:-3]
+    elif s.endswith(".SZ"):
+        s = "SZ" + s[:-3]
+    if s.startswith(("SH", "SZ")):
+        digits = "".join(ch for ch in s[2:] if ch.isdigit())
+        if len(digits) == 6:
+            return s[:2] + digits
+        return ""
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) == 6:
+        return digits
+    return ""
+
+
+def _cn_fund_exchange_candidates(symbol: str) -> list[str]:
+    sym = _normalize_cn_fund_symbol(symbol)
+    if not sym:
+        return []
+    if sym.startswith(("SH", "SZ")):
+        return [sym]
+    # Try both exchanges for 6-digit raw code; ETF/LOF codes are exchange-scoped.
+    code = sym
+    out: list[str] = []
+    if code[0] in {"5", "6", "9"}:
+        out.append("SH" + code)
+    if code.startswith(("15", "16", "18")):
+        out.append("SZ" + code)
+    return out
+
+
+def _parse_fundgz_jsonp(payload: str) -> Quote | None:
+    """
+    Parse Eastmoney fund valuation payload:
+      jsonpgz({...});
+    """
+    text = (payload or "").strip()
+    if not text:
+        return None
+    m = re.search(r"\((\{.*\})\)\s*;?\s*$", text, flags=re.S)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(1))
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    code = str(obj.get("fundcode") or "").strip()
+    if not _SAFE_CN_FUND_CODE_RE.match(code):
+        return None
+    name = str(obj.get("name") or code).strip() or code
+    est_nav = _to_float(str(obj.get("gsz") or ""))
+    nav = _to_float(str(obj.get("dwjz") or ""))
+    price = est_nav if est_nav > 0 else nav
+    if price <= 0:
+        return None
+    prev_close = nav if nav > 0 else price
+    change_pct = _to_float(str(obj.get("gszzl") or ""))
+    open_price = prev_close
+    if prev_close > 0:
+        open_price = prev_close
+    elif abs(change_pct) > 1e-9:
+        open_price = price / max(1e-9, (1 + change_pct / 100.0))
+    ts = str(obj.get("gztime") or "").strip()
+    if not ts:
+        d = str(obj.get("jzrq") or "").strip()
+        ts = f"{d} 15:00:00" if d else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return Quote(
+        symbol=code,
+        name=name,
+        price=price,
+        prev_close=prev_close,
+        open=open_price,
+        high=price,
+        low=price,
+        currency="CNY",
+        volume=0.0,
+        amount=0.0,
+        ts=ts,
+        source="fundgz",
+    )
+
+
+def fetch_cn_offmarket_fund_quote(symbol: str, timeout_s: float = 3.0) -> Optional[Quote]:
+    code = _normalize_cn_fund_symbol(symbol)
+    if not _SAFE_CN_FUND_CODE_RE.match(code):
+        return None
+    url = f"https://fundgz.1234567.com.cn/js/{code}.js"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Referer": f"https://fund.eastmoney.com/{code}.html",
+        "Accept": "application/javascript,text/javascript,*/*;q=0.1",
+    }
+    try:
+        payload = _http_get_with_headers(url, headers=headers, timeout_s=timeout_s)
+    except Exception:
+        return None
+    return _parse_fundgz_jsonp(payload)
+
+
 def _parse_tencent_quote_line(line: str) -> Optional[Quote]:
     """
     Parse a single Tencent quote line:
@@ -585,14 +696,23 @@ def _normalize_tencent_equity_code(symbol: str, market: str) -> tuple[str, str]:
             return "", ""
         return f"us{sym}", sym
 
-    if m == "cn_stock":
+    if m in {"cn_stock", "cn_fund"}:
         sym = raw.upper()
         if sym.endswith(".SH") and len(sym) > 3:
             sym = "SH" + sym[:-3]
         elif sym.endswith(".SZ") and len(sym) > 3:
             sym = "SZ" + sym[:-3]
         if sym.isdigit() and len(sym) == 6:
-            sym = ("SH" if sym.startswith("6") else "SZ") + sym
+            if m == "cn_fund":
+                if sym[0] in {"5", "6", "9"}:
+                    sym = "SH" + sym
+                elif sym.startswith(("15", "16", "18")):
+                    sym = "SZ" + sym
+                else:
+                    # Off-market fund codes (e.g. 024389) don't have minute bars.
+                    return "", sym
+            else:
+                sym = ("SH" if sym[0] in {"5", "6", "9"} else "SZ") + sym
         if not (sym.startswith("SH") or sym.startswith("SZ")):
             return "", ""
         digits = "".join([c for c in sym[2:] if c.isdigit()])
@@ -745,6 +865,148 @@ _NASDAQ_INTRADAY_HEADERS = {
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
 }
 
+_EASTMONEY_KLINE_HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "referer": "https://quote.eastmoney.com/",
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+}
+
+
+def _normalize_eastmoney_cn_secid(symbol: str, market: str) -> tuple[str, str]:
+    """
+    Normalize CN stock/fund symbol to Eastmoney secid.
+
+    Returns:
+      - (secid, normalized_symbol)
+      - secid is empty for unsupported symbols (e.g. off-market fund codes like 024389).
+    """
+    m = (market or "").strip().lower()
+    raw = (symbol or "").strip()
+    if m not in {"cn_stock", "cn_fund"} or not raw:
+        return "", ""
+
+    sym = raw.upper()
+    if sym.endswith(".SH") and len(sym) > 3:
+        sym = "SH" + sym[:-3]
+    elif sym.endswith(".SZ") and len(sym) > 3:
+        sym = "SZ" + sym[:-3]
+
+    if sym.startswith(("SH", "SZ")):
+        ex = sym[:2]
+        digits = "".join(ch for ch in sym[2:] if ch.isdigit())
+        if len(digits) != 6:
+            return "", ""
+        secid = ("1." if ex == "SH" else "0.") + digits
+        return secid, ex + digits
+
+    digits = "".join(ch for ch in sym if ch.isdigit())
+    if len(digits) != 6:
+        return "", ""
+
+    if m == "cn_fund":
+        if digits[0] in {"5", "6", "9"}:
+            return "1." + digits, "SH" + digits
+        if digits.startswith(("15", "16", "18")):
+            return "0." + digits, "SZ" + digits
+        # Off-market fund codes don't have Eastmoney exchange secid.
+        return "", digits
+
+    if digits[0] in {"5", "6", "9"}:
+        return "1." + digits, "SH" + digits
+    return "0." + digits, "SZ" + digits
+
+
+def _parse_eastmoney_daily_kline_payload(payload: str, limit: int = 15) -> list[tuple[int, float, float, float, float, float]]:
+    """
+    Parse Eastmoney daily kline payload into:
+      (epoch_s, open, high, low, close, volume)
+    """
+    try:
+        obj = json.loads(payload)
+    except Exception:
+        return []
+
+    data = obj.get("data") if isinstance(obj, dict) else None
+    klines = data.get("klines") if isinstance(data, dict) else None
+    if not isinstance(klines, list):
+        return []
+
+    out: list[tuple[int, float, float, float, float, float]] = []
+    for raw in klines:
+        row = str(raw or "").strip()
+        if not row:
+            continue
+        parts = row.split(",")
+        if len(parts) < 6:
+            continue
+        try:
+            dt = datetime.strptime(parts[0].strip(), "%Y-%m-%d")
+            ts = int(dt.replace(hour=15, minute=0, second=0).timestamp())
+            open_px = _to_float(parts[1])
+            close_px = _to_float(parts[2])
+            high_px = _to_float(parts[3])
+            low_px = _to_float(parts[4])
+            vol = max(0.0, _to_float(parts[5]))
+        except Exception:
+            continue
+        if open_px <= 0 or close_px <= 0 or high_px <= 0 or low_px <= 0:
+            continue
+        out.append((ts, open_px, high_px, low_px, close_px, vol))
+
+    if not out:
+        return []
+    out.sort(key=lambda item: item[0])
+    safe_limit = max(5, min(120, int(limit)))
+    return out[-safe_limit:]
+
+
+def fetch_eastmoney_cn_daily_series(
+    symbol: str,
+    market: str,
+    timeout_s: float = 6.0,
+    limit: int = 15,
+) -> list[tuple[int, float, float, float, float, float]]:
+    """Fetch CN stock/fund daily kline series from Eastmoney (no API key)."""
+    secid, _ = _normalize_eastmoney_cn_secid(symbol, market)
+    if not secid:
+        return []
+
+    params = urllib.parse.urlencode(
+        {
+            "secid": secid,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56",
+            "klt": "101",  # daily
+            "fqt": "1",  # forward-adjusted
+            "lmt": str(max(5, min(120, int(limit)))),
+            "end": "20500101",
+        }
+    )
+    url = f"https://push2his.eastmoney.com/api/qt/stock/kline/get?{params}"
+    try:
+        payload = _http_get_with_headers(url, headers=_EASTMONEY_KLINE_HEADERS, timeout_s=timeout_s)
+    except Exception:
+        return []
+    return _parse_eastmoney_daily_kline_payload(payload, limit=limit)
+
+
+def fetch_daily_curve_1d(
+    provider: str,
+    market: str,
+    symbol: str,
+    timeout_s: float = 6.0,
+    limit: int = 15,
+) -> list[tuple[int, float, float, float, float, float]]:
+    """Fetch daily curve points for chart windows longer than intraday."""
+    p = (provider or "").strip().lower()
+    m = (market or "").strip().lower()
+    safe_limit = max(5, min(120, int(limit)))
+
+    if m in {"cn_stock", "cn_fund"} and p in {"", "auto", "tencent", "eastmoney"}:
+        return fetch_eastmoney_cn_daily_series(symbol, market=m, timeout_s=timeout_s, limit=safe_limit)
+    return []
+
 
 def _parse_nasdaq_intraday_payload(payload: str, symbol: str, limit: int = 60) -> list[tuple[int, float, float]]:
     """Parse Nasdaq intraday payload into (epoch_s, price, volume_cum)."""
@@ -827,7 +1089,7 @@ def fetch_intraday_curve_1m(
             return fetch_tencent_equity_minute_series(symbol, market=m, timeout_s=timeout_s, limit=safe_limit)
         return []
 
-    if m in {"cn_stock", "hk_stock"}:
+    if m in {"cn_stock", "hk_stock", "cn_fund"}:
         if p in {"", "auto", "tencent"}:
             return fetch_tencent_equity_minute_series(symbol, market=m, timeout_s=timeout_s, limit=safe_limit)
         return []
@@ -1739,6 +2001,17 @@ def fetch_quote(provider: str, market: str, symbol: str, timeout_s: float = 3.0)
         elif upper.endswith(".SZ"):
             upper = "SZ" + upper[:-3]
         return res.get(upper)
+    if p == "tencent" and m == "cn_fund":
+        # 1) Try exchange-traded route first (ETF/LOF).
+        candidates = _cn_fund_exchange_candidates(symbol)
+        if candidates:
+            res = fetch_tencent_cn_quotes(candidates, timeout_s=timeout_s)
+            for key in candidates:
+                q = res.get(key)
+                if q is not None and q.price > 0:
+                    return q
+        # 2) Fallback to off-market valuation quote.
+        return fetch_cn_offmarket_fund_quote(symbol, timeout_s=timeout_s)
     if p == "stooq" and m in {"metals", "metals_spot"}:
         return fetch_stooq_metals_quote(symbol, timeout_s=timeout_s)
     if p == "sina" and m in {"metals", "metals_spot"}:
@@ -1777,6 +2050,38 @@ def fetch_quotes(provider: str, market: str, symbols: Iterable[str], timeout_s: 
         return fetch_tencent_hk_quotes(symbols, timeout_s=timeout_s)
     if p == "tencent" and m == "cn_stock":
         return fetch_tencent_cn_quotes(symbols, timeout_s=timeout_s)
+    if p == "tencent" and m == "cn_fund":
+        # Mixed list: exchange-traded funds + off-market funds.
+        out: dict[str, Optional[Quote]] = {}
+        normalized_inputs: list[str] = []
+        exchange_queries: list[str] = []
+        exchange_map: dict[str, list[str]] = {}
+        offmarket_codes: list[str] = []
+
+        for raw in symbols:
+            norm = _normalize_cn_fund_symbol(raw)
+            if not norm:
+                continue
+            normalized_inputs.append(norm)
+            if _SAFE_CN_FUND_CODE_RE.match(norm):
+                offmarket_codes.append(norm)
+            cands = _cn_fund_exchange_candidates(norm)
+            if cands:
+                exchange_map[norm] = cands
+                exchange_queries.extend(cands)
+
+        exchange_quotes = fetch_tencent_cn_quotes(exchange_queries, timeout_s=timeout_s) if exchange_queries else {}
+        for sym in normalized_inputs:
+            q: Optional[Quote] = None
+            for key in exchange_map.get(sym, []):
+                item = exchange_quotes.get(key)
+                if item is not None and item.price > 0:
+                    q = item
+                    break
+            if q is None and _SAFE_CN_FUND_CODE_RE.match(sym):
+                q = fetch_cn_offmarket_fund_quote(sym, timeout_s=timeout_s)
+            out[sym] = q
+        return out
     if p == "stooq" and m in {"metals", "metals_spot"}:
         return fetch_stooq_metals_quotes(symbols, timeout_s=timeout_s)
     if p == "sina" and m in {"metals", "metals_spot"}:
