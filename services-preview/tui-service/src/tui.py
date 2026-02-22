@@ -5411,7 +5411,7 @@ def _draw_market_micro(
         ]
         if left_inner_w >= 30:
             table_cols.append(("pct", "涨跌", 7, "right"))
-
+    
     fixed_w = sum(width for key, _, width, _ in table_cols if key != "name")
     field_count = len(table_cols)
     overhead_w = 2 + max(0, field_count - 1)
