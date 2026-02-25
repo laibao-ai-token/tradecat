@@ -4,7 +4,7 @@
 **Status**: Open  
 **Priority**: High  
 **Created**: 2026-02-19  
-**Updated**: 2026-02-20  
+**Updated**: 2026-02-22  
 **Assignee**: Unassigned  
 **Labels**: feature, enhancement, etf, china-fund, tui
 
@@ -44,7 +44,7 @@
 
 - TopN ETF 列表
 - 每只 ETF 的总分/子分
-- 风险等级（Low/Medium/High）
+- 风险等级（LOW/MED/HIGH，UI 显示低/中/高）
 - 理由标签（至少 2 条）
 - 更新时间、策略版本
 
@@ -90,6 +90,13 @@
 - [ ] 30 天离线评估
 - [ ] 与等权基准做对比
 
+### Phase 4：结果一致性与可解释（当前推进）
+
+- [ ] 统一“左侧候选序”和“右侧模型排名”的口径说明（避免误读为同一排序）
+- [ ] 基金页补充 MRank/sRank 含义提示（页内文案 + 一行帮助说明）
+- [ ] Top5 展示切换为“领域内 Top5（自动驾驶）”并保留全池榜单入口（避免芯片主题干扰）
+- [ ] 选票信息固定输出“编号+代码+名称+角色（主选/备选/观察）”
+
 ## 验收标准（DoD）
 
 - [x] 能稳定输出指定领域 TopN
@@ -98,6 +105,8 @@
 - [x] 仅在 `market_fund_cn` 展示，不新增页面/view
 - [ ] 参数支持 YAML 配置化
 - [ ] 评估结果可复现
+- [ ] 左右栏排序口径可解释（用户不再混淆候选序与模型排名）
+- [ ] Top5 明确为自动驾驶领域榜（可与全池榜切换）
 
 ## 进展记录
 
@@ -134,6 +143,29 @@
 - [x] 核验 ETF 相关测试通过（57 passed）
 - [ ] 待完成：30 天离线评估 + 等权基准对照（Issue 关闭前必须完成）
 - [ ] 待完成：决定是否把 Cybercab 打分并入生产策略（需要开关与回归验证）
+
+### 2026-02-22 15:20（SSU2）
+
+- [x] 仓库实现对齐确认（基于 commit `966ec11`）：
+  - 已新增 `etf_profiles.py` + `etf_selector.py` 与对应单测
+  - `market_fund_cn` 页面已接入策略摘要与 TopN（策略标签 `ETF-AUTO-V1`）
+  - 已支持从 `artifacts/analysis/cybercab_fund_relevance_*.csv` 动态加载候选池（TopN 回退到静态 profile）
+- [x] 回归核验更新：
+  - ETF 定向测试通过：`tests/test_etf_profiles.py` + `tests/test_etf_selector.py`（5 passed）
+  - TUI 全量测试通过：`services-preview/tui-service/tests`（65 passed）
+- [ ] 现阶段仍未完成（保持 Open）：
+  - YAML 配置化尚未落地（当前仍为代码内 profile/dataclass 配置）
+  - 30 天离线评估与等权基准对照尚缺可复现脚本/报告闭环
+- [ ] 备注：`artifacts/analysis/fund_recent_performance_20260220.csv` 与
+  `artifacts/analysis/fund_recent_portfolio_20260220.csv` 已存在，但仓库内尚未形成与 Issue 验收直接绑定的可复现流程说明
+
+### 2026-02-22 23:25（SSU3）
+
+- [x] 与当前执行方式对齐：Issue 继续本地推进，不提交 Git
+- [x] 确认下一阶段目标聚焦“自动驾驶领域一致性解释 + Top5 口径修正”
+- [ ] 待完成：MRank/sRank/cnd 三者口径说明落地到基金页（避免“左1右22”理解冲突）
+- [ ] 待完成：Top5 默认改为“自动驾驶领域榜”，全池榜改为可选视图
+- [ ] 待完成：输出一份可直接用于实盘参考的“编号+名称+结论+风险”固定格式卡片
 
 ---
 
