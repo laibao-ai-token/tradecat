@@ -298,7 +298,17 @@ class WSCollector:
 
     def _run_backfill(self, lookback_days: int = 1, lookback_hours: int = 0) -> None:
         """运行缺口补齐 (启动时调用)"""
-        self._smart_backfill(lookback_days or 1, set())
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._smart_backfill(lookback_days or 1, set())
+                return
+            except Exception as e:
+                logger.error("启动缺口补齐失败(%d/%d): %s", attempt, max_attempts, e, exc_info=True)
+                if attempt >= max_attempts:
+                    logger.error("启动缺口补齐连续失败，保留周期巡检兜底")
+                    return
+                self._gap_stop.wait(min(30, 5 * attempt))
 
 
 def main() -> None:
