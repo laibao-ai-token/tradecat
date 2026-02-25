@@ -78,6 +78,7 @@ class DataCache:
         """初始化单个周期 - 单SQL批量查询"""
         LOG.info(f"[{interval}] 初始化缓存 ({len(symbols)} 币种)...")
         t0 = time.time()
+        init_ok = True
 
         with self._lock:
             self._klines[interval] = {}
@@ -123,9 +124,11 @@ class DataCache:
 
         except Exception as e:
             LOG.error(f"[{interval}] 初始化失败: {e}")
+            init_ok = False
 
         with self._lock:
-            self._initialized[interval] = True
+            # 仅在初始化成功时标记已初始化；失败后允许后续重试恢复。
+            self._initialized[interval] = init_ok
 
         LOG.info(f"[{interval}] 缓存完成: {count} 币种, {time.time()-t0:.1f}s")
 
@@ -320,7 +323,10 @@ def init_cache(symbols: List[str], intervals: List[str], lookback: int = 300):
             except Exception as e:
                 LOG.error(f"初始化失败: {e}")
 
-    _global_cache._initialized = {iv: True for iv in intervals}  # 标记已初始化
+    with _global_cache._lock:
+        # 保留每个周期真实的初始化状态，不用全量强制置为 True。
+        for iv in intervals:
+            _global_cache._initialized.setdefault(iv, False)
 
     # 启动更新线程
     _cache_updater = CacheUpdater(_global_cache, symbols, intervals)

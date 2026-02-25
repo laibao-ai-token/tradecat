@@ -430,6 +430,20 @@ class FullAsyncEngine:
         LOG.info(f"收到信号 {signum}，停止...")
         self.stop()
 
+    def _enqueue_write(self, ind_name: str, interval: str, result: pd.DataFrame, timeout_s: float = 3.0) -> None:
+        """向写入队列投递结果，避免队列满时静默丢数据。"""
+        try:
+            self._write_queue.put((ind_name, interval, result), timeout=timeout_s)
+        except queue.Full:
+            LOG.warning(
+                "[%s] 写入队列已满，丢弃指标结果: %s (qsize=%d)",
+                interval,
+                ind_name,
+                self._write_queue.qsize(),
+            )
+        except Exception as e:
+            LOG.error("[%s] 写入队列异常 %s: %s", interval, ind_name, e)
+
     def _split_symbols(self, symbols: List[str], cache) -> tuple:
         """按优先级分割币种 - 动态计算"""
         # 用5m周期判断（数据更及时）
@@ -553,7 +567,7 @@ class FullAsyncEngine:
                     timeout = 60 if tag == 'fast' else 300
                     ind_name, iv, result = future.result(timeout=timeout)
                     if result is not None:
-                        self._write_queue.put_nowait((ind_name, iv, result))
+                        self._enqueue_write(ind_name, iv, result)
                     if tag == 'fast':
                         fast_done += 1
                     else:
@@ -623,10 +637,11 @@ class FullAsyncEngine:
         """计算完成回调"""
         try:
             ind_name, iv, result = future.result(timeout=0)
-            if result is not None:
-                self._write_queue.put_nowait((ind_name, iv, result))
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.warning("异步指标计算失败: %s", e)
+            return
+        if result is not None:
+            self._enqueue_write(ind_name, iv, result)
 
     def stop(self):
         self._running = False
