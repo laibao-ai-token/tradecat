@@ -248,6 +248,14 @@ def _read_env_ratio(name: str, default: float, min_value: float = 0.25, max_valu
     return max(float(min_value), min(float(max_value), float(value)))
 
 
+def _adaptive_left_min_width(total_width: int, *, base_min: int, floor_min: int, min_ratio: float) -> int:
+    width = max(0, int(total_width))
+    if width <= 0:
+        return max(0, int(floor_min))
+    ratio_bound = int(width * max(0.0, float(min_ratio)))
+    return max(int(floor_min), min(int(base_min), ratio_bound))
+
+
 _CLOSED_CURVE_STALE_SECONDS = 180
 _CLOSED_CURVE_MIN_POINTS = 20
 _CLOSED_CURVE_HISTORY_LIMIT = 60
@@ -256,7 +264,9 @@ _CLOSED_CURVE_TARGET_SPAN_SECONDS = 45 * 60
 _FUND_CN_CURVE_DAYS = max(5, int(os.environ.get("TUI_FUND_CN_CURVE_DAYS", "15")))
 _FUND_CN_CURVE_REFRESH_SECONDS = max(30.0, float(os.environ.get("TUI_FUND_CN_CURVE_REFRESH_SECONDS", "300")))
 _MARKET_MICRO_LEFT_RATIO = _read_env_ratio("TUI_MARKET_MICRO_LEFT_RATIO", 0.36)
-_MARKET_MICRO_LEFT_MIN_WIDTH = 34
+_MARKET_MICRO_LEFT_BASE_MIN_WIDTH = 34
+_MARKET_MICRO_LEFT_FLOOR_MIN_WIDTH = 24
+_MARKET_MICRO_LEFT_MIN_RATIO = 0.24
 _MARKET_MICRO_RIGHT_MIN_WIDTH = 28
 _RENDER_IDLE_REDRAW_S = 2.0
 _RENDER_FRAME_INTERVAL_S = 1.0 / 30.0
@@ -725,8 +735,14 @@ def _match_signal_to_symbol(signal_symbol: str, quote_symbol: str, market: str) 
         return _normalize_cn_symbol(signal_symbol) == _normalize_cn_symbol(qsym)
     if m == "cn_fund":
         qfund = _normalize_cn_fund_symbol(qsym)
+        sfund = _normalize_cn_fund_symbol(signal_symbol)
         if qfund.startswith(("SH", "SZ")):
-            return _normalize_cn_symbol(signal_symbol) == _normalize_cn_symbol(qfund)
+            return _normalize_cn_symbol(sfund) == _normalize_cn_symbol(qfund)
+        # 支持场外基金(6位代码)匹配，避免基金页“有信号但显示0”。
+        qdigits = "".join(ch for ch in qfund if ch.isdigit())
+        sdigits = "".join(ch for ch in sfund if ch.isdigit())
+        if len(qdigits) == 6:
+            return sdigits == qdigits
         return False
     return False
 
@@ -5356,10 +5372,16 @@ def _draw_market_micro(
     if panel_h < 10:
         return
 
-    split_x = max(_MARKET_MICRO_LEFT_MIN_WIDTH, int(w * _MARKET_MICRO_LEFT_RATIO))
+    left_min_w = _adaptive_left_min_width(
+        w,
+        base_min=_MARKET_MICRO_LEFT_BASE_MIN_WIDTH,
+        floor_min=_MARKET_MICRO_LEFT_FLOOR_MIN_WIDTH,
+        min_ratio=_MARKET_MICRO_LEFT_MIN_RATIO,
+    )
+    split_x = max(left_min_w, int(w * _MARKET_MICRO_LEFT_RATIO))
     if split_x >= w - _MARKET_MICRO_RIGHT_MIN_WIDTH:
-        split_x = max(_MARKET_MICRO_LEFT_MIN_WIDTH, w - _MARKET_MICRO_RIGHT_MIN_WIDTH)
-    left_w = max(_MARKET_MICRO_LEFT_MIN_WIDTH, split_x)
+        split_x = max(left_min_w, w - _MARKET_MICRO_RIGHT_MIN_WIDTH)
+    left_w = max(left_min_w, split_x)
     right_x = min(w - 1, split_x + 1)
     right_w = max(18, w - right_x)
 

@@ -50,6 +50,15 @@ def parse_ts(ts: str) -> datetime:
     return datetime.min
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def fetch_recent(
     db_path: str,
     limit: int = 200,
@@ -93,12 +102,12 @@ def fetch_recent(
         for r in rows:
             out.append(
                 SignalRow(
-                    id=int(r["id"]),
+                    id=_safe_int(r["id"]),
                     timestamp=str(r["timestamp"]),
                     symbol=str(r["symbol"]),
                     signal_type=str(r["signal_type"]),
                     direction=str(r["direction"]),
-                    strength=int(r["strength"]),
+                    strength=_safe_int(r["strength"]),
                     message=r["message"],
                     timeframe=r["timeframe"],
                     price=r["price"],
@@ -106,7 +115,7 @@ def fetch_recent(
                 )
             )
         return out
-    except sqlite3.Error:
+    except Exception:
         return []
 
 
