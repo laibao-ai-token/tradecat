@@ -34,6 +34,8 @@ def aggregate_signal_scores(signals: list[SignalEvent], *, timeframe: str = "1m"
     """
 
     out: dict[str, dict[datetime, int]] = defaultdict(dict)
+    base_minutes = _timeframe_to_minutes(timeframe)
+    hold_minutes_by_bucket: dict[str, dict[datetime, int]] = defaultdict(dict)
 
     for event in signals:
         symbol = event.symbol.upper().strip()
@@ -52,9 +54,16 @@ def aggregate_signal_scores(signals: list[SignalEvent], *, timeframe: str = "1m"
 
         current = out[symbol].get(bucket, 0)
         out[symbol][bucket] = current + delta
+        event_minutes = _timeframe_to_minutes(getattr(event, "timeframe", "") or "")
+        hold_minutes = max(1, base_minutes, event_minutes)
+        prev_hold = hold_minutes_by_bucket[symbol].get(bucket, 1)
+        if hold_minutes > prev_hold:
+            hold_minutes_by_bucket[symbol][bucket] = hold_minutes
 
-    minutes = _timeframe_to_minutes(timeframe)
-    if minutes <= 1:
+    needs_expansion = base_minutes > 1 or any(
+        minutes > 1 for by_bucket in hold_minutes_by_bucket.values() for minutes in by_bucket.values()
+    )
+    if not needs_expansion:
         return dict(out)
 
     expanded: dict[str, dict[datetime, int]] = {}
@@ -65,6 +74,7 @@ def aggregate_signal_scores(signals: list[SignalEvent], *, timeframe: str = "1m"
         filled: dict[datetime, int] = {}
         for idx, ts in enumerate(times):
             score = int(buckets[ts])
+            minutes = max(1, hold_minutes_by_bucket.get(symbol, {}).get(ts, base_minutes))
             end = ts + timedelta(minutes=minutes)
             if idx + 1 < len(times):
                 end = min(end, times[idx + 1])

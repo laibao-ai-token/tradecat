@@ -90,7 +90,14 @@ def main():
         from events import SignalPublisher
 
         history = get_history()
-        SignalPublisher.register_persist(lambda ev: history.save(ev, source=ev.source))
+
+        def _persist_event(ev):
+            # PG 引擎已在内部落历史，避免重复写入导致统计翻倍。
+            if str(getattr(ev, "source", "")).lower() == "pg":
+                return
+            history.save(ev, source=ev.source)
+
+        SignalPublisher.register_persist(_persist_event)
         logger.info("已注册历史持久化回调")
     except Exception as e:
         logger.warning(f"历史持久化注册失败: {e}")

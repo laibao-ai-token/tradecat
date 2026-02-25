@@ -42,6 +42,17 @@ def _safe_float(val, default: float = 0.0) -> float:
         return default
 
 
+def _extract_volume(row: dict) -> tuple[bool, float]:
+    """提取量能字段；若表无量能列，返回 (False, 0.0)。"""
+    for key in ("成交额", "成交额（USDT）", "quote_volume", "成交量", "volume"):
+        if key in row:
+            raw = row.get(key)
+            if raw is None or raw == "":
+                return True, 0.0
+            return True, _safe_float(raw, 0.0)
+    return False, 0.0
+
+
 class SQLiteSignalEngine(BaseEngine):
     """SQLite 信号检测引擎"""
 
@@ -315,7 +326,7 @@ class SQLiteSignalEngine(BaseEngine):
                 current_data = self._get_table_data_cached(table, timeframe, table_cache)
 
                 for symbol, curr_row in current_data.items():
-                    volume = _safe_float(curr_row.get("成交额") or curr_row.get("成交额（USDT）") or 0, 0.0)
+                    has_volume, volume = _extract_volume(curr_row)
                     cache_key = f"{table}_{symbol}_{timeframe}"
                     prev_row = self.baseline.get(cache_key)
 
@@ -326,7 +337,8 @@ class SQLiteSignalEngine(BaseEngine):
                     for rule in active_rules:
                         if timeframe not in rule.timeframes:
                             continue
-                        if volume < _safe_float(rule.min_volume, 0.0):
+                        # 对无量能列的数据表不做 min_volume 拦截，避免规则被整批误杀。
+                        if has_volume and volume < _safe_float(rule.min_volume, 0.0):
                             continue
 
                         try:
