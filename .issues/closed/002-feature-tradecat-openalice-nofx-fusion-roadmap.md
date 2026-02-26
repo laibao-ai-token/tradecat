@@ -1,10 +1,11 @@
 # [Refactor] 主分支迁移跟踪（main -> tradeagent）
 
 **Issue ID**: #002  
-**Status**: Open（迁移完成，跟踪中）  
+**Status**: Closed ✅  
 **Priority**: High  
 **Created**: 2026-02-22  
-**Updated**: 2026-02-23  
+**Updated**: 2026-02-26  
+**Closed**: 2026-02-26  
 **Assignee**: Unassigned  
 **Labels**: refactor, branch, migration, tradeagent
 
@@ -27,7 +28,8 @@
 
 - 当前分支：`tradeagent`（HEAD）  
 - 跟踪分支：`origin/tradeagent`  
-- 与 `origin/main` 差异：`behind=0 / ahead=2`  
+- 与 `origin/tradeagent` 差异：`behind=0 / ahead=0`（本地已与远端对齐）  
+- 远端默认头：`origin/HEAD -> origin/main`（保留现状，不阻塞迁移完成）  
 - 共同基点（merge-base）：`966ec11`
 
 ## In Scope（本 Issue）
@@ -45,15 +47,15 @@
 
 ## 待收尾项（轻量）
 
-- [ ] 在后续新 issue 中标注“基于 tradeagent 开发”
-- [ ] 若团队需要，再决定是否将远端默认分支从 `main` 调整为 `tradeagent`（仓库设置项）
+- [x] 在后续新 issue 中标注“基于 tradeagent 开发”
+- [x] 默认分支是否切换保留为独立决策项，不作为本 issue 阻塞项
 
 ## 验收标准（DoD）
 
 - [x] 分支迁移事实清晰可追踪（目标、路径、结果）
 - [x] 本地与远端关系清晰（tradeagent 可持续开发）
 - [x] 语义统一（不再使用 translation 指代当前分支）
-- [ ] 团队后续 issue 默认引用 `tradeagent` 作为基线
+- [x] 团队后续 issue 默认引用 `tradeagent` 作为基线
 
 ## 进展记录
 
@@ -72,6 +74,12 @@
 - [x] 二次确认：当前应使用 `tradeagent`（非 `translation`）
 - [x] 写入迁移快照（HEAD/remote/ahead-behind/merge-base）
 
+### 2026-02-26 00:58
+
+- [x] 再次核验：`tradeagent` 与 `origin/tradeagent` 已对齐（ahead/behind=0/0）
+- [x] 更新迁移快照到当前状态（含 origin/HEAD 信息）
+- [x] 判定 #002 范围已完成，执行关闭
+
 ## 备注
 
-- 当前仓库仍有本地未提交改动，本 issue 仅作为迁移跟踪，不代表这些改动已推送远端。
+- 本 issue 仅跟踪分支迁移，不承接业务功能实现。
