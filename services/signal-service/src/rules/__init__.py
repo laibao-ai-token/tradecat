@@ -15,7 +15,7 @@ from .trend import TREND_RULES
 from .volatility import VOLATILITY_RULES
 from .volume import VOLUME_RULES
 
-# Optional global override for rule timeframes.
+# Optional process-level override for rule timeframes.
 # This is useful when you want to run the SQLite rule set on faster candles (e.g. 1m/5m) while keeping
 # the codebase stable. Only rules that keep the default timeframes will be overridden.
 #

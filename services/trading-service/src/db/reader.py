@@ -12,6 +12,7 @@ import os
 import sqlite3
 import threading
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Sequence
 from contextlib import contextmanager
@@ -29,9 +30,13 @@ LOG = logging.getLogger("indicator_service.db")
 _pg_query_total = metrics.counter("pg_query_total", "PG 查询次数")
 _sqlite_commit_total = metrics.counter("sqlite_commit_total", "SQLite 提交次数")
 
-# 共享 PG 连接池（默认行工厂）
-_shared_pg_pool: ConnectionPool | None = None
-_shared_pg_pool_lock = threading.Lock()
+@dataclass
+class DBRuntimeState:
+    shared_pg_pool: ConnectionPool | None = None
+    shared_pg_pool_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+_DB_RUNTIME_STATE = DBRuntimeState()
 
 _DEFAULT_RETENTION = {
     "1m": 120,   # 2小时
@@ -124,18 +129,17 @@ def inc_sqlite_commit():
 
 def get_shared_pg_pool() -> ConnectionPool:
     """获取共享 PG 连接池"""
-    global _shared_pg_pool
-    if _shared_pg_pool is None:
-        with _shared_pg_pool_lock:
-            if _shared_pg_pool is None:
-                _shared_pg_pool = ConnectionPool(
+    if _DB_RUNTIME_STATE.shared_pg_pool is None:
+        with _DB_RUNTIME_STATE.shared_pg_pool_lock:
+            if _DB_RUNTIME_STATE.shared_pg_pool is None:
+                _DB_RUNTIME_STATE.shared_pg_pool = ConnectionPool(
                     config.db_url,
                     min_size=1,
                     max_size=10,
                     timeout=30,
                     kwargs={"connect_timeout": 3},
                 )
-    return _shared_pg_pool
+    return _DB_RUNTIME_STATE.shared_pg_pool
 
 
 @contextmanager

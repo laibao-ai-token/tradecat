@@ -1,6 +1,7 @@
 """K线形态指标 - 蜡烛形态 + 价格图形形态"""
 import os
 import logging
+from functools import lru_cache
 import pandas as pd
 from ..base import Indicator, IndicatorMeta, register
 
@@ -49,23 +50,18 @@ PRICE_PATTERN_NAMES = {
 }
 
 
-# 缓存 talib CDL 函数列表
-_TALIB_CDL_FUNCS = None
-
+@lru_cache(maxsize=1)
 def _get_talib_cdl_funcs():
     """获取并缓存 talib CDL 函数"""
-    global _TALIB_CDL_FUNCS
-    if _TALIB_CDL_FUNCS is None:
-        try:
-            import talib
-            _TALIB_CDL_FUNCS = [
-                (fname, getattr(talib, fname))
-                for fname in talib.get_function_groups().get("Pattern Recognition", [])
-                if hasattr(talib, fname)
-            ]
-        except ImportError:
-            _TALIB_CDL_FUNCS = []
-    return _TALIB_CDL_FUNCS
+    try:
+        import talib
+        return [
+            (fname, getattr(talib, fname))
+            for fname in talib.get_function_groups().get("Pattern Recognition", [])
+            if hasattr(talib, fname)
+        ]
+    except ImportError:
+        return []
 
 
 def _detect_talib(df: pd.DataFrame) -> dict:

@@ -23,9 +23,11 @@ class FuturesMetricsRow(TypedDict, total=False):
     x: Optional[int]
 
 # 期货历史缓存（按周期、按币种）
-_HISTORY_CACHE: Dict[str, Dict[str, List[FuturesMetricsRow]]] = {}
-_CACHE_TS: Dict[str, float] = {}
-_CACHE_SYMBOLS: Dict[str, set] = {}
+_CACHE_STATE: dict[str, object] = {
+    "history": {},
+    "ts": {},
+    "symbols": {},
+}
 _CACHE_TTL_SECONDS = 60
 
 def _fetch_metrics_history_batch(symbols: List[str], limit: int, interval: str) -> Dict[str, List[FuturesMetricsRow]]:
@@ -81,26 +83,29 @@ def _fetch_metrics_history_batch(symbols: List[str], limit: int, interval: str) 
 def _ensure_history_cache(symbols: List[str], interval: str, limit: int):
     """确保历史缓存可用"""
     import time
+    history_cache: Dict[str, Dict[str, List[FuturesMetricsRow]]] = _CACHE_STATE["history"]  # type: ignore[assignment]
+    ts_cache: Dict[str, float] = _CACHE_STATE["ts"]  # type: ignore[assignment]
+    symbols_cache: Dict[str, set] = _CACHE_STATE["symbols"]  # type: ignore[assignment]
 
     symbols = [s for s in symbols if s]
     if not symbols:
         return
 
     now = time.time()
-    stale = (now - _CACHE_TS.get(interval, 0)) >= _CACHE_TTL_SECONDS
+    stale = (now - ts_cache.get(interval, 0)) >= _CACHE_TTL_SECONDS
     if stale:
-        _HISTORY_CACHE[interval] = {}
-        _CACHE_SYMBOLS[interval] = set()
+        history_cache[interval] = {}
+        symbols_cache[interval] = set()
 
-    cached_symbols = _CACHE_SYMBOLS.get(interval, set())
+    cached_symbols = symbols_cache.get(interval, set())
     missing_symbols = [s for s in symbols if s not in cached_symbols]
 
     if stale or missing_symbols:
         batch = _fetch_metrics_history_batch(missing_symbols or symbols, limit, interval)
         if batch:
-            _HISTORY_CACHE.setdefault(interval, {}).update(batch)
-            _CACHE_SYMBOLS[interval] = cached_symbols.union(batch.keys())
-            _CACHE_TS[interval] = now
+            history_cache.setdefault(interval, {}).update(batch)
+            symbols_cache[interval] = cached_symbols.union(batch.keys())
+            ts_cache[interval] = now
 
 
 def get_history_cache(
@@ -112,7 +117,8 @@ def get_history_cache(
         if interval == "1m":
             continue
         _ensure_history_cache(symbols, interval, limit)
-        interval_cache = _HISTORY_CACHE.get(interval, {})
+        history_cache: Dict[str, Dict[str, List[FuturesMetricsRow]]] = _CACHE_STATE["history"]  # type: ignore[assignment]
+        interval_cache = history_cache.get(interval, {})
         cache[interval] = {s: interval_cache.get(s, []) for s in symbols}
     return cache
 
@@ -120,10 +126,10 @@ def get_history_cache(
 def set_history_cache(cache: Dict[str, Dict[str, List[FuturesMetricsRow]]]):
     """设置期货历史缓存（用于跨进程传递）"""
     import time
-    global _HISTORY_CACHE, _CACHE_TS, _CACHE_SYMBOLS
-    _HISTORY_CACHE = cache or {}
-    _CACHE_TS = {iv: time.time() for iv in _HISTORY_CACHE}
-    _CACHE_SYMBOLS = {iv: set(_HISTORY_CACHE[iv].keys()) for iv in _HISTORY_CACHE}
+    normalized = cache or {}
+    _CACHE_STATE["history"] = normalized
+    _CACHE_STATE["ts"] = {iv: time.time() for iv in normalized}
+    _CACHE_STATE["symbols"] = {iv: set(normalized[iv].keys()) for iv in normalized}
 
 
 def _f(v) -> Optional[float]:
@@ -260,7 +266,8 @@ def _clip_numeric_fields(data: dict) -> dict:
 def get_metrics_history(symbol: str, limit: int = 100, interval: str = "5m") -> List[FuturesMetricsRow]:
     """从 PostgreSQL 读取期货情绪历史数据"""
     _ensure_history_cache([symbol], interval, limit)
-    history = _HISTORY_CACHE.get(interval, {}).get(symbol, [])
+    history_cache: Dict[str, Dict[str, List[FuturesMetricsRow]]] = _CACHE_STATE["history"]  # type: ignore[assignment]
+    history = history_cache.get(interval, {}).get(symbol, [])
     if limit and len(history) > limit:
         return history[-limit:]
     return history

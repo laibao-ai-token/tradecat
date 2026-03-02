@@ -1481,26 +1481,34 @@ class PGSignalEngine(BaseEngine):
         }
 
 
-# 单例
-_pg_engine: PGSignalEngine | None = None
-_pg_engine_lock = threading.Lock()
+@dataclass
+class PGEngineRuntimeState:
+    engine: PGSignalEngine | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
-def get_pg_engine(symbols: list[str] = None) -> PGSignalEngine:
+_PG_ENGINE_RUNTIME = PGEngineRuntimeState()
+
+
+def get_pg_engine(symbols: list[str] = None, runtime_state: PGEngineRuntimeState | None = None) -> PGSignalEngine:
     """获取 PG 信号引擎单例"""
-    global _pg_engine
-    if _pg_engine is None:
-        with _pg_engine_lock:
-            if _pg_engine is None:
-                _pg_engine = PGSignalEngine(symbols=symbols)
-    return _pg_engine
+    state = runtime_state or _PG_ENGINE_RUNTIME
+    if state.engine is None:
+        with state.lock:
+            if state.engine is None:
+                state.engine = PGSignalEngine(symbols=symbols)
+    return state.engine
 
 
-def start_pg_signal_loop(interval: int = 60, symbols: list[str] = None):
+def start_pg_signal_loop(
+    interval: int = 60,
+    symbols: list[str] = None,
+    runtime_state: PGEngineRuntimeState | None = None,
+):
     """在后台线程启动 PG 信号检测循环"""
 
     def run():
-        engine = get_pg_engine(symbols)
+        engine = get_pg_engine(symbols, runtime_state=runtime_state)
         engine.run_loop(interval=interval)
 
     thread = threading.Thread(target=run, daemon=True, name="PGSignalEngine")

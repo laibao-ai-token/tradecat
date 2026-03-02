@@ -16,9 +16,6 @@ from typing import Optional
 from contextlib import contextmanager
 from functools import wraps
 
-_LOG_LEVEL = logging.INFO
-_JSON_FORMAT = True
-
 
 class JsonFormatter(logging.Formatter):
     """JSON格式日志"""
@@ -73,12 +70,10 @@ def setup_logging(
     json_format: bool = True,
 ) -> None:
     """初始化日志系统"""
-    global _LOG_LEVEL, _JSON_FORMAT
-    _LOG_LEVEL = getattr(logging, level.upper(), logging.INFO)
-    _JSON_FORMAT = json_format
+    log_level = getattr(logging, level.upper(), logging.INFO)
 
     root = logging.getLogger()
-    root.setLevel(_LOG_LEVEL)
+    root.setLevel(log_level)
 
     # 清除已有handler
     root.handlers.clear()

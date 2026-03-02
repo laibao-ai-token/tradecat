@@ -1,23 +1,39 @@
 """
 计算模块：指标计算与并行调度
 """
+import atexit
 import pickle
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from multiprocessing import cpu_count
 from typing import Dict, List, Tuple, Optional
 
 
 # ==================== 进程池复用 ====================
 
-_executor: ProcessPoolExecutor = None
+
+@dataclass
+class ComputeRuntimeState:
+    executor: ProcessPoolExecutor | None = None
+
+    def get_executor(self, max_workers: int | None) -> ProcessPoolExecutor:
+        if self.executor is None:
+            self.executor = ProcessPoolExecutor(max_workers=max_workers)
+        return self.executor
+
+    def close(self) -> None:
+        if self.executor is not None:
+            self.executor.shutdown(wait=False, cancel_futures=False)
+            self.executor = None
 
 
-def _get_executor(max_workers: int) -> ProcessPoolExecutor:
+_DEFAULT_RUNTIME_STATE = ComputeRuntimeState()
+atexit.register(_DEFAULT_RUNTIME_STATE.close)
+
+
+def _get_executor(max_workers: int, runtime_state: ComputeRuntimeState | None = None) -> ProcessPoolExecutor:
     """获取或创建进程池"""
-    global _executor
-    if _executor is None:
-        _executor = ProcessPoolExecutor(max_workers=max_workers)
-    return _executor
+    return (runtime_state or _DEFAULT_RUNTIME_STATE).get_executor(max_workers)
 
 
 # ==================== 计算核心 ====================
@@ -103,6 +119,7 @@ def compute_parallel(
     max_cpu_workers: Optional[int] = None,
     compute_errors=None,
     logger=None,
+    runtime_state: ComputeRuntimeState | None = None,
 ) -> Dict[str, list]:
     """并行计算"""
     worker_count = max_workers or max(1, min(cpu_count(), 8))
@@ -128,7 +145,7 @@ def compute_parallel(
                     if logger:
                         logger.error("计算失败: %s", exc)
     elif backend == "process":
-        executor = _get_executor(max_cpu_workers)
+        executor = _get_executor(max_cpu_workers, runtime_state=runtime_state)
         futures = [executor.submit(compute_batch, batch) for batch in batches]
         for future in as_completed(futures):
             try:
@@ -154,6 +171,7 @@ def compute_parallel(
                 max_cpu_workers=max_cpu_workers,
                 compute_errors=compute_errors,
                 logger=logger,
+                runtime_state=runtime_state,
             )
         return compute_parallel(
             task_list,
@@ -166,6 +184,7 @@ def compute_parallel(
             max_cpu_workers=max_cpu_workers,
             compute_errors=compute_errors,
             logger=logger,
+            runtime_state=runtime_state,
         )
 
     return all_results
@@ -182,6 +201,7 @@ def compute_all(
     max_cpu_workers: Optional[int] = None,
     compute_errors=None,
     logger=None,
+    runtime_state: ComputeRuntimeState | None = None,
 ) -> Dict[str, list]:
     """按任务规模选择单批或并行计算"""
     if len(task_list) <= 20:
@@ -197,4 +217,5 @@ def compute_all(
         max_cpu_workers=max_cpu_workers,
         compute_errors=compute_errors,
         logger=logger,
+        runtime_state=runtime_state,
     )

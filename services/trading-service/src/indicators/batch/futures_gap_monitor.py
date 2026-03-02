@@ -18,9 +18,11 @@ class GapInfo(TypedDict):
     首缺口止: Optional[str]
 
 # 期货时间序列缓存（按周期、按币种）
-_TIMES_CACHE: Dict[str, Dict[str, List[datetime]]] = {}
-_CACHE_TS: Dict[str, float] = {}
-_CACHE_SYMBOLS: Dict[str, set] = {}
+_CACHE_STATE: dict[str, object] = {
+    "times": {},
+    "ts": {},
+    "symbols": {},
+}
 _CACHE_TTL_SECONDS = 60
 
 def _fetch_metrics_times_batch(symbols: List[str], limit: int, interval: str = "5m") -> Dict[str, List[datetime]]:
@@ -66,48 +68,53 @@ def _fetch_metrics_times_batch(symbols: List[str], limit: int, interval: str = "
 def _ensure_times_cache(symbols: List[str], interval: str, limit: int):
     """确保时间序列缓存可用"""
     import time
+    times_cache: Dict[str, Dict[str, List[datetime]]] = _CACHE_STATE["times"]  # type: ignore[assignment]
+    ts_cache: Dict[str, float] = _CACHE_STATE["ts"]  # type: ignore[assignment]
+    symbols_cache: Dict[str, set] = _CACHE_STATE["symbols"]  # type: ignore[assignment]
 
     symbols = [s for s in symbols if s]
     if not symbols:
         return
 
     now = time.time()
-    stale = (now - _CACHE_TS.get(interval, 0)) >= _CACHE_TTL_SECONDS
+    stale = (now - ts_cache.get(interval, 0)) >= _CACHE_TTL_SECONDS
     if stale:
-        _TIMES_CACHE[interval] = {}
-        _CACHE_SYMBOLS[interval] = set()
+        times_cache[interval] = {}
+        symbols_cache[interval] = set()
 
-    cached_symbols = _CACHE_SYMBOLS.get(interval, set())
+    cached_symbols = symbols_cache.get(interval, set())
     missing_symbols = [s for s in symbols if s not in cached_symbols]
 
     if stale or missing_symbols:
         batch = _fetch_metrics_times_batch(missing_symbols or symbols, limit, interval)
         if batch:
-            _TIMES_CACHE.setdefault(interval, {}).update(batch)
-            _CACHE_SYMBOLS[interval] = cached_symbols.union(batch.keys())
-            _CACHE_TS[interval] = now
+            times_cache.setdefault(interval, {}).update(batch)
+            symbols_cache[interval] = cached_symbols.union(batch.keys())
+            ts_cache[interval] = now
 
 
 def get_times_cache(symbols: List[str], interval: str = "5m", limit: int = 240) -> Dict[str, Dict[str, List[datetime]]]:
     """预取时间序列缓存（供引擎使用）"""
     _ensure_times_cache(symbols, interval, limit)
-    interval_cache = _TIMES_CACHE.get(interval, {})
+    times_cache: Dict[str, Dict[str, List[datetime]]] = _CACHE_STATE["times"]  # type: ignore[assignment]
+    interval_cache = times_cache.get(interval, {})
     return {interval: {s: interval_cache.get(s, []) for s in symbols}}
 
 
 def set_times_cache(cache: Dict[str, Dict[str, List[datetime]]]):
     """设置时间序列缓存（用于跨进程传递）"""
     import time
-    global _TIMES_CACHE, _CACHE_TS, _CACHE_SYMBOLS
-    _TIMES_CACHE = cache or {}
-    _CACHE_TS = {iv: time.time() for iv in _TIMES_CACHE}
-    _CACHE_SYMBOLS = {iv: set(_TIMES_CACHE[iv].keys()) for iv in _TIMES_CACHE}
+    normalized = cache or {}
+    _CACHE_STATE["times"] = normalized
+    _CACHE_STATE["ts"] = {iv: time.time() for iv in normalized}
+    _CACHE_STATE["symbols"] = {iv: set(normalized[iv].keys()) for iv in normalized}
 
 
 def get_metrics_times(symbol: str, limit: int = 240, interval: str = "5m") -> List[datetime]:
     """从 PostgreSQL 获取时间戳列表"""
     _ensure_times_cache([symbol], interval, limit)
-    times = _TIMES_CACHE.get(interval, {}).get(symbol, [])
+    times_cache: Dict[str, Dict[str, List[datetime]]] = _CACHE_STATE["times"]  # type: ignore[assignment]
+    times = times_cache.get(interval, {}).get(symbol, [])
     if limit and len(times) > limit:
         return times[-limit:]
     return times

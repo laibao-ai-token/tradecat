@@ -8,6 +8,7 @@
 """
 import logging
 import time
+from dataclasses import dataclass, field
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from threading import Thread, Event, RLock
@@ -294,50 +295,57 @@ class CacheUpdater(Thread):
         LOG.info("缓存更新线程停止")
 
 
-# 全局缓存实例
-_global_cache: Optional[DataCache] = None
-_cache_updater: Optional[CacheUpdater] = None
+@dataclass
+class CacheRuntimeState:
+    global_cache: Optional[DataCache] = None
+    cache_updater: Optional[CacheUpdater] = None
+    lock: RLock = field(default_factory=RLock, repr=False)
+
+
+_RUNTIME_STATE = CacheRuntimeState()
 
 
 def get_cache() -> DataCache:
     """获取全局缓存"""
-    global _global_cache
-    if _global_cache is None:
-        _global_cache = DataCache()
-    return _global_cache
+    if _RUNTIME_STATE.global_cache is None:
+        with _RUNTIME_STATE.lock:
+            if _RUNTIME_STATE.global_cache is None:
+                _RUNTIME_STATE.global_cache = DataCache()
+    return _RUNTIME_STATE.global_cache
 
 
 def init_cache(symbols: List[str], intervals: List[str], lookback: int = 300):
     """初始化全局缓存 - 多周期并行"""
-    global _global_cache, _cache_updater
-
-    _global_cache = DataCache(lookback=lookback)
+    with _RUNTIME_STATE.lock:
+        _RUNTIME_STATE.global_cache = DataCache(lookback=lookback)
+        if _RUNTIME_STATE.cache_updater:
+            _RUNTIME_STATE.cache_updater.stop()
+            _RUNTIME_STATE.cache_updater = None
 
     # 并行初始化所有周期
     workers = min(len(intervals), 7)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_global_cache.init_interval, symbols, iv) for iv in intervals]
+        futures = [executor.submit(_RUNTIME_STATE.global_cache.init_interval, symbols, iv) for iv in intervals]
         for f in as_completed(futures):
             try:
                 f.result()
             except Exception as e:
                 LOG.error(f"初始化失败: {e}")
 
-    with _global_cache._lock:
+    with _RUNTIME_STATE.global_cache._lock:
         # 保留每个周期真实的初始化状态，不用全量强制置为 True。
         for iv in intervals:
-            _global_cache._initialized.setdefault(iv, False)
+            _RUNTIME_STATE.global_cache._initialized.setdefault(iv, False)
 
     # 启动更新线程
-    _cache_updater = CacheUpdater(_global_cache, symbols, intervals)
-    _cache_updater.start()
+    _RUNTIME_STATE.cache_updater = CacheUpdater(_RUNTIME_STATE.global_cache, symbols, intervals)
+    _RUNTIME_STATE.cache_updater.start()
 
-    return _global_cache
+    return _RUNTIME_STATE.global_cache
 
 
 def stop_cache():
     """停止缓存更新"""
-    global _cache_updater
-    if _cache_updater:
-        _cache_updater.stop()
-        _cache_updater = None
+    if _RUNTIME_STATE.cache_updater:
+        _RUNTIME_STATE.cache_updater.stop()
+        _RUNTIME_STATE.cache_updater = None

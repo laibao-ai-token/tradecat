@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import threading
+from dataclasses import dataclass, field
 from contextlib import contextmanager, suppress
 
 try:
@@ -147,16 +148,19 @@ class SubscriptionManager:
         return result
 
 
-# 单例
-_manager: SubscriptionManager | None = None
-_manager_lock = threading.Lock()
+@dataclass
+class SubscriptionRuntimeState:
+    manager: SubscriptionManager | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+_RUNTIME_STATE = SubscriptionRuntimeState()
 
 
 def get_subscription_manager() -> SubscriptionManager:
     """获取订阅管理器单例"""
-    global _manager
-    if _manager is None:
-        with _manager_lock:
-            if _manager is None:
-                _manager = SubscriptionManager()
-    return _manager
+    if _RUNTIME_STATE.manager is None:
+        with _RUNTIME_STATE.lock:
+            if _RUNTIME_STATE.manager is None:
+                _RUNTIME_STATE.manager = SubscriptionManager()
+    return _RUNTIME_STATE.manager

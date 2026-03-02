@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import time
 import atexit
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -50,29 +51,31 @@ INTERVALS = [i.strip() for i in os.environ.get("INTERVALS", "1m,5m,15m,1h,4h,1d,
 INDICATORS_ENABLED = [i.strip().lower() for i in os.environ.get("INDICATORS_ENABLED", "").split(",") if i.strip()]
 INDICATORS_DISABLED = [i.strip().lower() for i in os.environ.get("INDICATORS_DISABLED", "").split(",") if i.strip()]
 
-last_computed = {i: None for i in INTERVALS}
-last_priority_update = None
-high_priority_symbols = []
 
-# SQLite 连接复用（避免频繁开关连接）
-_sqlite_conn = None
+@dataclass
+class SchedulerRuntimeState:
+    intervals: list[str]
+    sqlite_path: str
+    last_priority_update: float | None = None
+    high_priority_symbols: list[str] = field(default_factory=list)
+    last_computed: dict[str, datetime | None] = field(init=False)
+    _sqlite_conn: sqlite3.Connection | None = field(default=None, init=False, repr=False)
 
-def _get_sqlite_conn():
-    """获取 SQLite 连接（单例复用）"""
-    global _sqlite_conn
-    if _sqlite_conn is None:
-        _sqlite_conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False)
-        _sqlite_conn.execute("PRAGMA journal_mode=WAL")
-    return _sqlite_conn
+    def __post_init__(self) -> None:
+        self.last_computed = {interval: None for interval in self.intervals}
 
-def _close_sqlite_conn():
-    """关闭 SQLite 连接"""
-    global _sqlite_conn
-    if _sqlite_conn:
-        _sqlite_conn.close()
-        _sqlite_conn = None
+    def get_sqlite_conn(self) -> sqlite3.Connection:
+        """获取 SQLite 连接（运行时复用）"""
+        if self._sqlite_conn is None:
+            self._sqlite_conn = sqlite3.connect(self.sqlite_path, check_same_thread=False)
+            self._sqlite_conn.execute("PRAGMA journal_mode=WAL")
+        return self._sqlite_conn
 
-atexit.register(_close_sqlite_conn)
+    def close_sqlite_conn(self) -> None:
+        """关闭 SQLite 连接"""
+        if self._sqlite_conn:
+            self._sqlite_conn.close()
+            self._sqlite_conn = None
 
 
 from src.db.reader import shared_pg_conn
@@ -238,10 +241,10 @@ def get_source_latest(interval: str) -> datetime:
         return None
 
 
-def get_indicator_latest(interval: str) -> datetime:
+def get_indicator_latest(interval: str, runtime_state: SchedulerRuntimeState) -> datetime:
     """查询 SQLite 指标该周期最新数据时间"""
     try:
-        conn = _get_sqlite_conn()
+        conn = runtime_state.get_sqlite_conn()
         row = conn.execute("""
             SELECT MAX(数据时间) as latest FROM [MACD柱状扫描器.py] WHERE 周期 = ?
         """, (interval,)).fetchone()
@@ -254,14 +257,14 @@ def get_indicator_latest(interval: str) -> datetime:
         return None
 
 
-def check_need_calc() -> list:
+def check_need_calc(runtime_state: SchedulerRuntimeState) -> list:
     """对比数据源和指标库，返回需要计算的周期"""
     need_calc = []
 
     for interval in INTERVALS:
         try:
             source_ts = get_source_latest(interval)
-            indicator_ts = get_indicator_latest(interval)
+            indicator_ts = get_indicator_latest(interval, runtime_state)
 
             if source_ts is None:
                 continue
@@ -269,7 +272,7 @@ def check_need_calc() -> list:
             if indicator_ts is None or source_ts > indicator_ts:
                 need_calc.append(interval)
 
-            last_computed[interval] = source_ts
+            runtime_state.last_computed[interval] = source_ts
         except Exception as e:
             log(f"检查 {interval} 需要计算失败: {e}")
             need_calc.append(interval)
@@ -307,10 +310,8 @@ def run_calculation(intervals: list, symbols: list):
         log(f"错误: {result.stderr[:200]}")
 
 
-def update_priority():
+def update_priority(runtime_state: SchedulerRuntimeState):
     """更新币种列表"""
-    global high_priority_symbols, last_priority_update
-
     t0 = time.time()
     configured = get_configured_symbols()
     groups_str = os.environ.get("SYMBOLS_GROUPS", "auto")
@@ -342,53 +343,56 @@ def update_priority():
         symbols = sorted((set(symbols) | set(extra)) - exclude)
         log(f"自动高优先级: {len(symbols)} 币种")
 
-    high_priority_symbols = symbols
-    last_priority_update = time.time()
+    runtime_state.high_priority_symbols = symbols
+    runtime_state.last_priority_update = time.time()
     log(f"币种更新完成, 耗时 {time.time()-t0:.1f}s")
 
-    if high_priority_symbols:
-        log(f"前10: {high_priority_symbols[:10]}")
+    if runtime_state.high_priority_symbols:
+        log(f"前10: {runtime_state.high_priority_symbols[:10]}")
 
 
 def main():
-    global last_priority_update
+    runtime_state = SchedulerRuntimeState(intervals=INTERVALS, sqlite_path=SQLITE_PATH)
+    atexit.register(runtime_state.close_sqlite_conn)
 
     log("=" * 50)
     log("简单定时计算服务启动")
     log("=" * 50)
 
     # 1. 识别高优先级币种
-    update_priority()
+    update_priority(runtime_state)
 
-    if not high_priority_symbols:
+    if not runtime_state.high_priority_symbols:
         log("无高优先级币种，退出")
         return
 
     # 2. 启动时强制计算全部周期（确保表里有全周期数据）
     log(f"首次启动，计算全部周期: {INTERVALS}")
-    run_calculation(INTERVALS, high_priority_symbols)
+    run_calculation(INTERVALS, runtime_state.high_priority_symbols)
 
     log("-" * 50)
     log("进入轮询检查 (每10秒检查新数据, 每小时更新优先级)...")
 
     while True:
         # 每小时更新优先级
+        last_priority_update = runtime_state.last_priority_update or 0.0
         if time.time() - last_priority_update > 3600:
-            update_priority()
+            update_priority(runtime_state)
 
         # 检查新数据
         to_calc = []
         for interval in INTERVALS:
             try:
                 latest = get_source_latest(interval)
-                if latest and (last_computed[interval] is None or latest > last_computed[interval]):
+                cached = runtime_state.last_computed.get(interval)
+                if latest and (cached is None or latest > cached):
                     to_calc.append(interval)
-                    last_computed[interval] = latest
+                    runtime_state.last_computed[interval] = latest
             except Exception as e:
                 log(f"检查 {interval} 失败: {e}")
 
         if to_calc:
-            run_calculation(to_calc, high_priority_symbols)
+            run_calculation(to_calc, runtime_state.high_priority_symbols)
 
         time.sleep(10)
 

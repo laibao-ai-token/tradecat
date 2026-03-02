@@ -6,10 +6,11 @@
 import logging
 import os
 import sqlite3
+import stat
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-import stat
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,16 @@ class CooldownStorage:
             conn.execute("DELETE FROM cooldown WHERE timestamp < ?", (cutoff,))
 
 
-# 单例
-_storage: CooldownStorage | None = None
+@dataclass
+class CooldownRuntimeState:
+    storage: CooldownStorage | None = None
+
+
+_RUNTIME_STATE = CooldownRuntimeState()
 
 
 def get_cooldown_storage() -> CooldownStorage:
-    global _storage
-    if _storage is None:
-        _storage = CooldownStorage()
-    return _storage
+    if _RUNTIME_STATE.storage is None:
+        # CooldownStorage 初始化幂等且轻量；这里仅做一次惰性创建。
+        _RUNTIME_STATE.storage = CooldownStorage()
+    return _RUNTIME_STATE.storage

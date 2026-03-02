@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator, Sequence
 
@@ -11,23 +12,27 @@ from config import settings
 from models.candle import Candle
 
 
-_SHARED_POOL: ConnectionPool | None = None
-_SHARED_POOL_LOCK = Lock()
+@dataclass
+class _TimescaleRuntimeState:
+    shared_pool: ConnectionPool | None = None
+    shared_pool_lock: Lock = field(default_factory=Lock, repr=False)
+
+
+_RUNTIME_STATE = _TimescaleRuntimeState()
 
 
 def get_shared_pool() -> ConnectionPool:
     """获取共享连接池（全服务复用）"""
-    global _SHARED_POOL
-    if _SHARED_POOL is None:
-        with _SHARED_POOL_LOCK:
-            if _SHARED_POOL is None:
-                _SHARED_POOL = ConnectionPool(
+    if _RUNTIME_STATE.shared_pool is None:
+        with _RUNTIME_STATE.shared_pool_lock:
+            if _RUNTIME_STATE.shared_pool is None:
+                _RUNTIME_STATE.shared_pool = ConnectionPool(
                     settings.database_url,
                     min_size=2,
                     max_size=10,
                     timeout=30.0,
                 )
-    return _SHARED_POOL
+    return _RUNTIME_STATE.shared_pool
 
 
 class TimescaleStorage:

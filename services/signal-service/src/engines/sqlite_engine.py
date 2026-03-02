@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 try:
     from ..config import DATA_MAX_AGE_SECONDS, get_sqlite_path
@@ -462,16 +463,20 @@ class SQLiteSignalEngine(BaseEngine):
         }
 
 
-# 单例
-_engine: SQLiteSignalEngine | None = None
-_engine_lock = threading.Lock()
+@dataclass
+class SQLiteEngineRuntimeState:
+    engine: SQLiteSignalEngine | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
-def get_sqlite_engine() -> SQLiteSignalEngine:
+_SQLITE_ENGINE_RUNTIME = SQLiteEngineRuntimeState()
+
+
+def get_sqlite_engine(runtime_state: SQLiteEngineRuntimeState | None = None) -> SQLiteSignalEngine:
     """获取 SQLite 引擎单例"""
-    global _engine
-    if _engine is None:
-        with _engine_lock:
-            if _engine is None:
-                _engine = SQLiteSignalEngine()
-    return _engine
+    state = runtime_state or _SQLITE_ENGINE_RUNTIME
+    if state.engine is None:
+        with state.lock:
+            if state.engine is None:
+                state.engine = SQLiteSignalEngine()
+    return state.engine

@@ -9,6 +9,7 @@ import os
 import sqlite3
 import stat
 import threading
+from dataclasses import dataclass, field
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 
@@ -328,18 +329,21 @@ class SignalHistory:
         return "\n".join(lines)
 
 
-# 单例
-_history: SignalHistory | None = None
-_history_lock = threading.Lock()
+@dataclass
+class HistoryRuntimeState:
+    history: SignalHistory | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+_RUNTIME_STATE = HistoryRuntimeState()
 
 
 def get_history() -> SignalHistory:
     """获取历史记录管理器单例"""
-    global _history
-    if _history is None:
-        with _history_lock:
-            if _history is None:
-                _history = SignalHistory()
+    if _RUNTIME_STATE.history is None:
+        with _RUNTIME_STATE.lock:
+            if _RUNTIME_STATE.history is None:
+                _RUNTIME_STATE.history = SignalHistory()
                 # 启动时清理旧记录
-                _history.cleanup()
-    return _history
+                _RUNTIME_STATE.history.cleanup()
+    return _RUNTIME_STATE.history

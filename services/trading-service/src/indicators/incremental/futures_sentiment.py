@@ -20,16 +20,19 @@ class FuturesLatestMetrics(TypedDict, total=False):
     tlsvr: Optional[float]
 
 # 缓存 {interval: {symbol: data}}
-_METRICS_CACHE: Dict[str, Dict[str, FuturesLatestMetrics]] = {}
-_CACHE_TS: Dict[str, float] = {}
+_CACHE_STATE: dict[str, object] = {
+    "metrics": {},
+    "ts": {},
+}
 
 def _load_all_metrics(interval: str = "5m"):
     """批量加载所有币种的最新期货数据"""
-    global _METRICS_CACHE, _CACHE_TS
     import time
+    metrics_cache: Dict[str, Dict[str, FuturesLatestMetrics]] = _CACHE_STATE["metrics"]  # type: ignore[assignment]
+    ts_cache: Dict[str, float] = _CACHE_STATE["ts"]  # type: ignore[assignment]
 
     # 缓存 60 秒
-    if time.time() - _CACHE_TS.get(interval, 0) < 60 and interval in _METRICS_CACHE:
+    if time.time() - ts_cache.get(interval, 0) < 60 and interval in metrics_cache:
         return
 
     # 根据周期选择表和列名
@@ -53,14 +56,14 @@ def _load_all_metrics(interval: str = "5m"):
                     WHERE {time_col} > NOW() - INTERVAL '30 days'
                     ORDER BY symbol, {time_col} DESC
                 """)
-                _METRICS_CACHE[interval] = {}
+                metrics_cache[interval] = {}
                 for row in cur.fetchall():
-                    _METRICS_CACHE[interval][row[0]] = {
+                    metrics_cache[interval][row[0]] = {
                         "datetime": row[1].replace(tzinfo=timezone.utc) if row[1] else None,
                         "oi": row[2], "oiv": row[3], "ctlsr": row[4],
                         "tlsr": row[5], "lsr": row[6], "tlsvr": row[7],
                     }
-                _CACHE_TS[interval] = time.time()
+                ts_cache[interval] = time.time()
     except Exception:
         pass
 
@@ -68,21 +71,24 @@ def _load_all_metrics(interval: str = "5m"):
 def get_latest_metrics(symbol: str, interval: str = "5m") -> Optional[FuturesLatestMetrics]:
     """获取单个币种的最新期货数据"""
     _load_all_metrics(interval)
-    return _METRICS_CACHE.get(interval, {}).get(symbol)
+    metrics_cache: Dict[str, Dict[str, FuturesLatestMetrics]] = _CACHE_STATE["metrics"]  # type: ignore[assignment]
+    return metrics_cache.get(interval, {}).get(symbol)
 
 
 def set_metrics_cache(cache: Dict[str, FuturesLatestMetrics], interval: str = "5m"):
     """设置期货数据缓存（用于跨进程传递）"""
-    global _METRICS_CACHE, _CACHE_TS
     import time
-    _METRICS_CACHE[interval] = cache
-    _CACHE_TS[interval] = time.time()
+    metrics_cache: Dict[str, Dict[str, FuturesLatestMetrics]] = _CACHE_STATE["metrics"]  # type: ignore[assignment]
+    ts_cache: Dict[str, float] = _CACHE_STATE["ts"]  # type: ignore[assignment]
+    metrics_cache[interval] = cache
+    ts_cache[interval] = time.time()
 
 
 def get_metrics_cache(interval: str = "5m") -> Dict[str, FuturesLatestMetrics]:
     """获取期货数据缓存"""
     _load_all_metrics(interval)
-    return _METRICS_CACHE.get(interval, {}).copy()
+    metrics_cache: Dict[str, Dict[str, FuturesLatestMetrics]] = _CACHE_STATE["metrics"]  # type: ignore[assignment]
+    return metrics_cache.get(interval, {}).copy()
 
 
 @register

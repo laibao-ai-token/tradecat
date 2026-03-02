@@ -110,6 +110,37 @@ class MasterPaneState:
     focus: str = "left"
 
 
+@dataclass
+class FundDomainRuntimeState:
+    keys: list[str] = field(default_factory=get_all_domain_keys)
+    selected_idx: int = 0
+    selected_key: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.selected_key:
+            self.selected_key = self.keys[0] if self.keys else "auto_driving_cn"
+        if self.keys:
+            try:
+                self.selected_idx = self.keys.index(self.selected_key)
+            except ValueError:
+                self.selected_idx = 0
+                self.selected_key = self.keys[0]
+        else:
+            self.selected_idx = 0
+
+    def cycle(self, step: int) -> str | None:
+        if not self.keys:
+            return None
+        self.selected_idx = (self.selected_idx + int(step)) % len(self.keys)
+        self.selected_key = self.keys[self.selected_idx]
+        return self.selected_key
+
+
+@dataclass
+class RuntimeState:
+    fund_domain: FundDomainRuntimeState = field(default_factory=FundDomainRuntimeState)
+
+
 @dataclass(frozen=True)
 class ServiceStatus:
     data_running: int = 0
@@ -305,12 +336,6 @@ _BACKTEST_SHOW_COMPARE = str(os.environ.get("TUI_BACKTEST_SHOW_COMPARE", "")).st
     "yes",
     "on",
 }
-_FUND_CN_ETF_PROFILE = get_etf_domain_profile("auto_driving_cn")
-
-# 领域选择状态（模块级全局变量）
-_fund_cn_domain_keys: list[str] = get_all_domain_keys()
-_fund_cn_domain_selected_idx: int = 0
-_fund_cn_domain_selected: str = _fund_cn_domain_keys[0] if _fund_cn_domain_keys else "auto_driving_cn"
 
 
 def _backtest_mode_text(mode: str) -> str:
@@ -2135,6 +2160,7 @@ def _main(
     service_status = _collect_service_status()
     service_status_refresh_s = 1.0
     render_state = RenderState()
+    runtime_state = RuntimeState()
     next_frame_at = time.time()
     pending_force_redraw = True
 
@@ -2458,6 +2484,8 @@ def _main(
             tuple(s.strip().upper() for s in (quote_cfgs.crypto.symbols or [])),
             tuple(s.strip().upper() for s in (quote_cfgs.metals.symbols or [])),
             (micro_symbol_current or "").strip().upper(),
+            runtime_state.fund_domain.selected_key,
+            int(runtime_state.fund_domain.selected_idx),
         )
 
     def _maybe_apply_switch_debounce(now_ts: float) -> bool:
@@ -2934,6 +2962,7 @@ def _main(
                         view,
                         qscroll.get(view, 0),
                         master_panes.get(view),
+                        runtime_state,
                     )
                 render_state.last_draw_at = now
                 next_frame_at = now + _RENDER_FRAME_INTERVAL_S
@@ -3005,38 +3034,35 @@ def _main(
                 elif view in {"market_us", "market_cn", "market_hk", "market_fund_cn"}:
                     _cycle_master_symbol(view, 1)
             elif key == ord(","):  # 切换领域（上一个）
-                global _fund_cn_domain_keys, _fund_cn_domain_selected_idx, _fund_cn_domain_selected
-                if view == "market_fund_cn" and _fund_cn_domain_keys:
-                    new_idx = (_fund_cn_domain_selected_idx - 1) % len(_fund_cn_domain_keys)
-                    _fund_cn_domain_selected_idx = new_idx
-                    _fund_cn_domain_selected = _fund_cn_domain_keys[new_idx]
-                    # 更新候选池 symbols
-                    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
-                    new_symbols = [s.upper() for s in domain_profile.symbols]
-                    quote_cfgs.fund_cn.symbols = new_symbols
-                    poll_fund_cn.set_symbols(new_symbols)
-                    # 重置候选池选中状态
-                    pane = master_panes.get(view)
-                    if pane:
-                        pane.selected = 0
-                        pane.left_scroll = 0
-                    master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
+                if view == "market_fund_cn":
+                    selected_key = runtime_state.fund_domain.cycle(-1)
+                    if selected_key:
+                        # 更新候选池 symbols
+                        domain_profile = get_etf_domain_profile(selected_key)
+                        new_symbols = [s.upper() for s in domain_profile.symbols]
+                        quote_cfgs.fund_cn.symbols = new_symbols
+                        poll_fund_cn.set_symbols(new_symbols)
+                        # 重置候选池选中状态
+                        pane = master_panes.get(view)
+                        if pane:
+                            pane.selected = 0
+                            pane.left_scroll = 0
+                        master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
             elif key == ord("."):  # 切换领域（下一个）
-                if view == "market_fund_cn" and _fund_cn_domain_keys:
-                    new_idx = (_fund_cn_domain_selected_idx + 1) % len(_fund_cn_domain_keys)
-                    _fund_cn_domain_selected_idx = new_idx
-                    _fund_cn_domain_selected = _fund_cn_domain_keys[new_idx]
-                    # 更新候选池 symbols
-                    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
-                    new_symbols = [s.upper() for s in domain_profile.symbols]
-                    quote_cfgs.fund_cn.symbols = new_symbols
-                    poll_fund_cn.set_symbols(new_symbols)
-                    # 重置候选池选中状态
-                    pane = master_panes.get(view)
-                    if pane:
-                        pane.selected = 0
-                        pane.left_scroll = 0
-                    master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
+                if view == "market_fund_cn":
+                    selected_key = runtime_state.fund_domain.cycle(1)
+                    if selected_key:
+                        # 更新候选池 symbols
+                        domain_profile = get_etf_domain_profile(selected_key)
+                        new_symbols = [s.upper() for s in domain_profile.symbols]
+                        quote_cfgs.fund_cn.symbols = new_symbols
+                        poll_fund_cn.set_symbols(new_symbols)
+                        # 重置候选池选中状态
+                        pane = master_panes.get(view)
+                        if pane:
+                            pane.selected = 0
+                            pane.left_scroll = 0
+                        master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
             elif key == ord("0"):
                 # Keep a stable home key, now pointing to micro page by default.
                 view = "market_micro"
@@ -3299,6 +3325,7 @@ def _draw(
     view: str,
     qscroll: int,
     master_pane: MasterPaneState | None,
+    runtime_state: RuntimeState,
 ) -> None:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -3368,6 +3395,7 @@ def _draw(
             w=w,
             h=h,
             refresh_s=refresh_s,
+            runtime_state=runtime_state,
         )
     elif view in {"quotes_crypto", "market_crypto"}:
         # Back-compat: old crypto quote pages are folded into market_micro.
@@ -4675,13 +4703,14 @@ def _draw_market_fund_two_panel(
     w: int,
     h: int,
     refresh_s: float,
+    runtime_state: RuntimeState,
 ) -> None:
-    global _fund_cn_domain_selected, _fund_cn_domain_selected_idx
     key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | [/]切换标的 | ,.切换领域 | +/-加减自选 | r刷新"
+    fund_domain = runtime_state.fund_domain
 
     # 获取当前选中领域
-    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
-    domain_label = domain_profile.label or _fund_cn_domain_selected
+    domain_profile = get_etf_domain_profile(fund_domain.selected_key)
+    domain_label = domain_profile.label or fund_domain.selected_key
 
     symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
     if not (quote_cfg.enabled and symbols):
@@ -4761,12 +4790,12 @@ def _draw_market_fund_two_panel(
     _safe_addstr(stdscr, panel_top, domain_x + 1, _truncate("领域", domain_col_w - 2), curses.A_UNDERLINE)
 
     # 绘制领域选项
-    for i, dkey in enumerate(_fund_cn_domain_keys):
+    for i, dkey in enumerate(fund_domain.keys):
         y = panel_top + 1 + i
         if y >= panel_top + panel_h - 1:
             break
         dlabel = get_domain_label(dkey)
-        is_selected = dkey == _fund_cn_domain_selected
+        is_selected = dkey == fund_domain.selected_key
         display = _truncate(dlabel, domain_col_w - 2)
         if is_selected:
             _safe_addstr(stdscr, y, domain_x + 1, display, curses.A_REVERSE | curses.color_pair(colors.get("HIGHLIGHT", 0)))
