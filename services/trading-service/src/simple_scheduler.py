@@ -83,11 +83,6 @@ def log(msg: str):
 
 
 # 使用共享币种模块
-import sys as _sys
-from pathlib import Path as _Path
-_libs_path = str(_Path(__file__).parents[3] / "libs")
-if _libs_path not in _sys.path:
-    _sys.path.insert(0, _libs_path)
 from common.symbols import get_configured_symbols
 
 

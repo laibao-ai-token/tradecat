@@ -77,6 +77,11 @@ init_service() {
             warn "pyproject.toml 安装失败"
         }
     fi
+
+    # 安装共享 common 包（editable），避免各服务依赖 sys.path hack
+    pip install -q -e "$ROOT/libs" 2>/dev/null || {
+        warn "共享包安装失败: $ROOT/libs"
+    }
     
     # 3. 创建运行时目录
     mkdir -p pids logs data/cache 2>/dev/null || true

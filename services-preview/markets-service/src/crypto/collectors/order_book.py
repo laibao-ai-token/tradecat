@@ -17,22 +17,18 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from common.symbols import get_configured_symbols
 
 from ..adapters.ccxt import load_symbols, normalize_symbol
 from ..adapters.cryptofeed import preload_symbols
 from ..adapters.metrics import metrics
 from ..adapters.timescale import TimescaleAdapter
 from ..config import settings
-
-_libs_path = Path(__file__).parent.parent.parent.parent.parent.parent / "libs" / "common"
-if str(_libs_path) not in sys.path:
-    sys.path.insert(0, str(_libs_path))
 
 logger = logging.getLogger("ws.order_book")
 
@@ -92,8 +88,6 @@ class OrderBookCollector:
 
     def _load_symbols(self) -> Dict[str, str]:
         """加载交易对映射"""
-        from symbols import get_configured_symbols
-
         if self._cfg["symbols"]:
             raw = [s.strip().upper() for s in self._cfg["symbols"].split(",") if s.strip()]
             raw = [s if s.endswith("USDT") else f"{s}USDT" for s in raw]

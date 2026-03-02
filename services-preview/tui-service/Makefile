@@ -15,7 +15,7 @@ venv:
 	python3 -m venv .venv
 
 install:
-	. .venv/bin/activate && pip install -q --upgrade pip && pip install -q -r requirements.txt
+	. .venv/bin/activate && pip install -q --upgrade pip && pip install -q -r requirements.txt && pip install -q -e ../../libs
 
 clean:
 	rm -rf .venv __pycache__ src/__pycache__ tests/__pycache__ .pytest_cache

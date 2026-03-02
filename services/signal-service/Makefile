@@ -49,6 +49,7 @@ venv:
 install: venv
 	@echo "安装依赖..."
 	$(PIP) install -q -r requirements.txt
+	$(PIP) install -q -e ../../libs
 	@echo "✅ 依赖安装完成"
 
 # 安装开发依赖

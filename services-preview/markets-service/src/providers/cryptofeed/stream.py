@@ -1,21 +1,13 @@
 """Cryptofeed WebSocket 流处理器"""
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, List
 
+from common import symbols as symbol_config
 from cryptofeed import FeedHandler
 from cryptofeed.defines import CANDLES
 from cryptofeed.exchanges import Binance
-
-# 将项目根目录加入 sys.path，以便复用 libs.common.symbols 的分组解析
-PROJECT_ROOT = Path(__file__).resolve().parents[6]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from libs.common import symbols as symbol_config  # noqa: E402
 
 
 @dataclass

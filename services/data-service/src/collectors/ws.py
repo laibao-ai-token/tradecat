@@ -34,10 +34,7 @@ from config import settings
 
 logger = logging.getLogger("ws.collector")
 
-# Optional: configured symbol groups live in libs/common.
-_libs_path = str(Path(__file__).resolve().parents[5] / "libs")
-if _libs_path not in sys.path:
-    sys.path.insert(0, _libs_path)
+# Optional: configured symbol groups live in shared common package.
 try:
     from common.symbols import get_configured_symbols
 except Exception:  # pragma: no cover
