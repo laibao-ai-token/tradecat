@@ -12,8 +12,10 @@ import os
 import re
 import threading
 import time
+import importlib.util
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 try:
     from ..config import COOLDOWN_SECONDS, DATA_MAX_AGE_SECONDS, get_database_url
@@ -113,23 +115,19 @@ def _get_us_symbols() -> list[str]:
 
 
 def _load_env_file() -> dict:
-    """加载 config/.env 文件"""
-    from pathlib import Path
-
-    # 查找 config/.env
-    current = Path(__file__).resolve()
-    for _ in range(6):  # 最多向上查找 6 层
-        current = current.parent
-        env_file = current / "config" / ".env"
-        if env_file.exists():
-            result = {}
-            for line in env_file.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    result[k.strip()] = v.strip().strip("\"'")
-            return result
-    return {}
+    """通过共享配置加载器读取 config/.env（不污染当前进程环境变量）。"""
+    repo_root = Path(__file__).resolve().parents[4]
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = repo_root / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return {}
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    return load_repo_env(repo_root=repo_root, set_os_env=False, override=False)
 
 
 def _get_default_symbols() -> list[str]:

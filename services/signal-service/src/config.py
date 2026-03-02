@@ -2,6 +2,7 @@
 Signal Service 配置
 """
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -11,18 +12,27 @@ PROJECT_ROOT = SRC_DIR.parent
 REPO_ROOT = PROJECT_ROOT.parent.parent
 
 
+def _load_repo_env() -> None:
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = REPO_ROOT / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    load_repo_env(repo_root=REPO_ROOT, set_os_env=True, override=False)
+
+
+_load_repo_env()
+
+
 # 数据库配置
 def get_database_url() -> str:
     """获取 TimescaleDB 连接 URL"""
-    url = os.environ.get("DATABASE_URL")
-    if url:
-        return url
-    env_file = REPO_ROOT / "config" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("DATABASE_URL="):
-                return line.strip().split("=", 1)[1].strip("\"'")
-    return "postgresql://postgres:postgres@localhost:5433/market_data"
+    return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/market_data")
 
 
 def get_sqlite_path() -> Path:

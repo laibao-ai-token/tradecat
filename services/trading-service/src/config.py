@@ -9,6 +9,7 @@
     KLINE_INTERVALS: K线指标计算周期
     FUTURES_INTERVALS: 期货情绪计算周期
 """
+import importlib.util
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -18,18 +19,22 @@ SERVICE_ROOT = Path(__file__).parents[1]  # src/config.py -> src -> trading-serv
 # Repo root: .../tradecat-origin
 REPO_ROOT = SERVICE_ROOT.parents[1]
 
-# 加载 config/.env
-_env_file = REPO_ROOT / "config" / ".env"
-if _env_file.exists():
-    parsed_env: dict[str, str] = {}
-    for line in _env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            # Keep the last value when duplicated keys exist in .env.
-            parsed_env[k.strip()] = v.strip()
-    for k, v in parsed_env.items():
-        os.environ.setdefault(k, v)
+
+def _load_repo_env() -> None:
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = REPO_ROOT / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    load_repo_env(repo_root=REPO_ROOT, set_os_env=True, override=False)
+
+
+_load_repo_env()
 
 
 def _parse_intervals(env_key: str, default: str) -> List[str]:

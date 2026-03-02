@@ -1,6 +1,7 @@
 """配置管理"""
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,31 +10,22 @@ from typing import Optional
 SERVICE_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = SERVICE_ROOT.parent.parent
 
-def _parse_env_value(raw: str) -> str:
-    value = raw.strip()
-    if not value:
-        return ""
 
-    # quoted values keep inner content as-is
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
+def _load_repo_env() -> None:
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
 
-    # unquoted values: drop trailing inline comments like `foo # comment`
-    hash_pos = value.find("#")
-    if hash_pos > 0 and value[hash_pos - 1].isspace():
-        value = value[:hash_pos].rstrip()
-    return value
 
-
-# 加载 config/.env
-_env_file = PROJECT_ROOT / "config" / ".env"
-if _env_file.exists():
-    for raw_line in _env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), _parse_env_value(value))
+_load_repo_env()
 
 # 可选：本地代理（用于部分网络环境访问外部数据源）。
 # 默认不强制，避免在无代理环境下导致所有请求失败。

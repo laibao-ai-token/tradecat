@@ -1,6 +1,7 @@
 """配置与数据模型"""
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,14 +12,22 @@ from typing import Optional
 SERVICE_ROOT = Path(__file__).parent.parent  # src/config.py -> data-service
 PROJECT_ROOT = SERVICE_ROOT.parent.parent    # tradecat/
 
-# 加载 config/.env
-_env_file = PROJECT_ROOT / "config" / ".env"
-if _env_file.exists():
-    for line in _env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+
+def _load_repo_env() -> None:
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
+
+
+_load_repo_env()
 
 
 def _int_env(name: str, default: int) -> int:

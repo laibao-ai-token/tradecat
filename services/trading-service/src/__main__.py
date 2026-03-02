@@ -8,6 +8,7 @@
     python -m indicator_service --symbols BTCUSDT,ETHUSDT --intervals 5m,15m
 """
 import argparse
+import importlib.util
 import os
 import warnings
 from pathlib import Path
@@ -15,14 +16,23 @@ from pathlib import Path
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# 加载 config/.env
-_env_file = Path(__file__).parents[1] / "config" / ".env"
-if _env_file.exists():
-    for line in _env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+
+def _load_repo_env() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        from libs.common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        loader_path = repo_root / "libs" / "common" / "config_loader.py"
+        spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        load_repo_env = module.load_repo_env
+    load_repo_env(repo_root=repo_root, set_os_env=True, override=False)
+
+
+_load_repo_env()
 
 
 def main():
