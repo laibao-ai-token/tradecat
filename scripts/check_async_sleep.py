@@ -12,7 +12,10 @@ SCAN_PREFIXES = ("services/", "services-preview/", "scripts/", "libs/")
 
 
 def iter_python_files() -> list[Path]:
-    files = subprocess.check_output(["git", "ls-files", "*.py"], text=True).splitlines()
+    raw = subprocess.check_output(
+        ["git", "-c", "core.quotePath=false", "ls-files", "-z", "*.py"],
+    )
+    files = [x for x in raw.decode("utf-8", errors="ignore").split("\0") if x]
     return [Path(f) for f in files if f.startswith(SCAN_PREFIXES)]
 
 
