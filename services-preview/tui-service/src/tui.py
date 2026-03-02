@@ -4697,8 +4697,8 @@ def _draw_market_fund_two_panel(
     selected_live_curve = curve_map.get(selected_symbol, [])
     selected_curve = daily_curve_map.get(selected_symbol) or selected_live_curve
 
-    top_n_limit = max(1, int(_FUND_CN_ETF_PROFILE.top_n))
-    ranking_profile = replace(_FUND_CN_ETF_PROFILE, top_n=max(top_n_limit, len(symbols)))
+    top_n_limit = max(1, int(domain_profile.top_n))
+    ranking_profile = replace(domain_profile, top_n=max(top_n_limit, len(symbols)))
     ranking_snapshot = select_etf_candidates(
         profile=ranking_profile,
         symbols=symbols,
@@ -4761,8 +4761,6 @@ def _draw_market_fund_two_panel(
     _safe_addstr(stdscr, panel_top, domain_x + 1, _truncate("领域", domain_col_w - 2), curses.A_UNDERLINE)
 
     # 绘制领域选项
-    domain_inner_h = max(0, panel_h - 2)
-    domain_pane_scroll = min(max(0, _fund_cn_domain_selected_idx), max(0, len(_fund_cn_domain_keys) - 1))
     for i, dkey in enumerate(_fund_cn_domain_keys):
         y = panel_top + 1 + i
         if y >= panel_top + panel_h - 1:
@@ -4928,23 +4926,22 @@ def _draw_market_fund_two_panel(
     details: list[str] = []
     details.append("口径说明: cnd=领域相关序 | MRank=模型排名 | sRank=模型总分")
     details.append("结论清单(编号+代码+名称+角色):")
-    conclusion_rows = (
-        ("516520.SH", "智能驾驶ETF", "主选"),
-        ("515250.SH", "智能汽车ETF", "备选"),
-        ("024389", "中航智选领航混合发起C（场外）", "观察"),
-    )
-    for idx, (code, name, role_name) in enumerate(conclusion_rows, start=1):
+    role_names = ("主选", "备选", "观察")
+    conclusion_role_map: dict[str, str] = {}
+    for idx, sym in enumerate(domain_top_symbols[: len(role_names)], start=1):
+        role_name = role_names[idx - 1]
+        conclusion_role_map[sym] = role_name
+        rank_state = quote_state.entries.get(sym)
+        code = _display_symbol(sym, quote_cfg.market)
+        name = _display_name(sym, rank_state.quote if rank_state else None, quote_cfg.market)
         details.append(f"{idx}. {code} {name} | 角色={role_name}")
-    conclusion_role_map = {
-        "SH516520": "主选",
-        "SH515250": "备选",
-        "024389": "观察",
-    }
+    if not conclusion_role_map:
+        details.append("当前领域暂无可用结论清单")
     role = conclusion_role_map.get(selected_symbol)
     if role is not None:
-        details.append(f"当前票定位: {role}（自动驾驶结论清单）")
+        details.append(f"当前票定位: {role}（{domain_label}结论清单）")
     else:
-        details.append("当前票定位: 非结论清单（自动驾驶候选池）")
+        details.append(f"当前票定位: 非结论清单（{domain_label}候选池）")
 
     if selected_item is None:
         details.append("当前状态: 暂无模型评分（数据缺失/过期）")
@@ -4974,7 +4971,7 @@ def _draw_market_fund_two_panel(
     else:
         details.append("近期信号: 0（基金页以选票为主，信号仅作参考）")
 
-    details.append(f"Top{top_n_limit}(领域相关序):")
+    details.append(f"Top{top_n_limit}({domain_label}相关序):")
     for idx, sym in enumerate(domain_top_symbols, start=1):
         rank_state = quote_state.entries.get(sym)
         rank_name = _display_name(sym, rank_state.quote if rank_state else None, quote_cfg.market)

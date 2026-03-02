@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).parent.parent.resolve()
 _TUI_ROOT = _REPO_ROOT / "services-preview" / "tui-service"
 sys.path.insert(0, str(_TUI_ROOT))
 
-from src.etf_profiles import AUTO_DRIVING_CN_PROFILE
+from src.etf_profiles import ETFDomainProfile, get_etf_domain_profile
 from src.quote import fetch_daily_curve_1d
 
 
@@ -94,6 +94,23 @@ def _curve_volatility(closes: list[float]) -> float:
         return 0.0
     sq = sum(v * v for v in rets) / float(len(rets))
     return math.sqrt(max(0.0, sq)) * math.sqrt(252)  # Annualized
+
+
+def _compound_total_return(returns: list[float]) -> float:
+    """Compound periodic returns into a total return."""
+    equity = 1.0
+    for ret in returns:
+        equity *= 1.0 + float(ret)
+    return equity - 1.0
+
+
+def _returns_std(returns: list[float]) -> float:
+    """Population standard deviation of periodic returns."""
+    if len(returns) < 2:
+        return 0.0
+    mean = sum(returns) / len(returns)
+    var = sum((ret - mean) ** 2 for ret in returns) / len(returns)
+    return math.sqrt(max(0.0, var))
 
 
 def _normalize_scores(raw_map: dict[str, float]) -> dict[str, float]:
@@ -213,6 +230,7 @@ def run_backtest(
     symbols: list[str],
     days: int = 30,
     top_n: int = 5,
+    profile: ETFDomainProfile | None = None,
 ) -> BacktestResult:
     """Run the backtest."""
     # Fetch history for all symbols
@@ -246,12 +264,14 @@ def run_backtest(
     
     print(f"Backtest period: {start_date} to {end_date} ({len(trading_days)} days)")
     
-    # Weights from profile
+    active_profile = profile or get_etf_domain_profile("auto_driving_cn")
+
+    # Weights from active profile
     weights = {
-        "trend": AUTO_DRIVING_CN_PROFILE.weights.trend,
-        "momentum": AUTO_DRIVING_CN_PROFILE.weights.momentum,
-        "liquidity": AUTO_DRIVING_CN_PROFILE.weights.liquidity,
-        "risk_adjusted": AUTO_DRIVING_CN_PROFILE.weights.risk_adjusted,
+        "trend": active_profile.weights.trend,
+        "momentum": active_profile.weights.momentum,
+        "liquidity": active_profile.weights.liquidity,
+        "risk_adjusted": active_profile.weights.risk_adjusted,
     }
     
     # Daily results
@@ -334,21 +354,23 @@ def run_backtest(
         print("No valid returns calculated!")
         return BacktestResult()
     
-    # Total returns
-    strat_total = (1 + sum(strategy_returns)) - 1
-    bench_total = (1 + sum(benchmark_returns)) - 1
+    # Total returns (compound, not sum)
+    strat_total = _compound_total_return(strategy_returns)
+    bench_total = _compound_total_return(benchmark_returns)
     
     # Average daily returns
     strat_avg = sum(strategy_returns) / len(strategy_returns)
     bench_avg = sum(benchmark_returns) / len(benchmark_returns)
     
-    # Volatility
-    strat_vol = _curve_volatility([1 + r for r in strategy_returns]) / math.sqrt(252)
-    bench_vol = _curve_volatility([1 + r for r in benchmark_returns]) / math.sqrt(252)
-    
+    # Volatility (annualized from return distribution)
+    strat_daily_std = _returns_std(strategy_returns)
+    bench_daily_std = _returns_std(benchmark_returns)
+    strat_vol = strat_daily_std * math.sqrt(252)
+    bench_vol = bench_daily_std * math.sqrt(252)
+
     # Sharpe (assuming 0% risk-free rate)
-    strat_sharpe = strat_avg / strat_vol if strat_vol > 0 else 0.0
-    bench_sharpe = bench_avg / bench_vol if bench_vol > 0 else 0.0
+    strat_sharpe = (strat_avg / strat_daily_std) * math.sqrt(252) if strat_daily_std > 0 else 0.0
+    bench_sharpe = (bench_avg / bench_daily_std) * math.sqrt(252) if bench_daily_std > 0 else 0.0
     
     # Top holdings count
     holding_counts: dict[str, int] = {}
@@ -362,7 +384,7 @@ def run_backtest(
     result = BacktestResult(
         strategy_label="ETF-AUTO-V1",
         strategy_version="v1.0.0",
-        domain_key=AUTO_DRIVING_CN_PROFILE.key,
+        domain_key=active_profile.key,
         start_date=start_date,
         end_date=end_date,
         days=len(valid_days),
@@ -421,7 +443,7 @@ Top 10 持仓天数:
     md += """
 ## 每日明细
 
-| 日期 | Top5 持仓 | 策略收益 | 基准收益 |
+| 日期 | TopN 持仓 | 策略收益 | 基准收益 |
 |------|-----------|----------|----------|
 """
     for dr in result.daily_results[-15:]:  # Last 15 days
@@ -437,16 +459,21 @@ Top 10 持仓天数:
 
 def main():
     parser = argparse.ArgumentParser(description="ETF 自动驾驶选基 30天离线评估")
+    parser.add_argument("--domain", type=str, default="auto_driving_cn", help="领域key（默认 auto_driving_cn）")
     parser.add_argument("--days", type=int, default=30, help="评估天数")
-    parser.add_argument("--top-n", type=int, default=5, help="选基数量")
+    parser.add_argument("--top-n", type=int, default=0, help="选基数量（0=使用领域配置）")
     args = parser.parse_args()
-    
-    # Get symbols from profile
-    symbols = list(AUTO_DRIVING_CN_PROFILE.symbols)
+
+    profile = get_etf_domain_profile(str(args.domain).strip().lower())
+    symbols = list(profile.symbols)
+    top_n = args.top_n if int(args.top_n) > 0 else max(1, int(profile.top_n))
+
+    print(f"领域: {profile.key} ({profile.label})")
     print(f"候选池: {symbols}")
-    
+    print(f"TopN: {top_n}")
+
     # Run backtest
-    result = run_backtest(symbols, days=args.days, top_n=args.top_n)
+    result = run_backtest(symbols, days=args.days, top_n=top_n, profile=profile)
     
     if not result.daily_results:
         print("评估失败：无有效数据")
