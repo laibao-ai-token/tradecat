@@ -54,6 +54,7 @@ artifacts/
 .idea/
 .vscode/
 *.swp
+.agents/
 
 # ====================
 # 备份与导出
