@@ -6,7 +6,7 @@ import logging
 import signal
 import subprocess
 import sys
-import time
+from threading import Event
 from pathlib import Path
 from typing import Dict, List
 
@@ -26,14 +26,20 @@ class Scheduler:
     def __init__(self):
         self._procs: Dict[str, dict] = {}
         self._running = False
+        self._stop_event = Event()
 
     def add(self, name: str, cmd: List[str]) -> None:
         self._procs[name] = {"cmd": cmd, "proc": None, "restarts": 0}
 
+    def _request_stop(self, *_):
+        self._running = False
+        self._stop_event.set()
+
     def run(self) -> None:
         self._running = True
-        signal.signal(signal.SIGTERM, lambda *_: setattr(self, "_running", False))
-        signal.signal(signal.SIGINT, lambda *_: setattr(self, "_running", False))
+        self._stop_event.clear()
+        signal.signal(signal.SIGTERM, self._request_stop)
+        signal.signal(signal.SIGINT, self._request_stop)
 
         for name, info in self._procs.items():
             self._start(name, info)
@@ -44,9 +50,14 @@ class Scheduler:
                     if info["restarts"] < 10:
                         logger.warning("%s 退出，重启", name)
                         info["restarts"] += 1
-                        time.sleep(min(5 * info["restarts"], 60))
+                        if self._stop_event.wait(min(5 * info["restarts"], 60)):
+                            self._running = False
+                            break
                         self._start(name, info)
-            time.sleep(5)
+            if not self._running:
+                break
+            if self._stop_event.wait(5):
+                break
 
         for info in self._procs.values():
             if info["proc"]:

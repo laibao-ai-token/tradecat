@@ -290,7 +290,7 @@ class CacheUpdater(Thread):
                         if updated > 0:
                             LOG.debug(f"[{interval}] 更新 {updated} 币种")
 
-            time.sleep(0.5)
+            self._stop_event.wait(timeout=0.5)
 
         LOG.info("缓存更新线程停止")
 

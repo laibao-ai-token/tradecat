@@ -22,6 +22,7 @@ import psycopg
 import select
 
 from ..config import config
+from .scheduler import wait_for_next_cycle
 
 LOG = logging.getLogger("indicator_service.event")
 
@@ -66,6 +67,7 @@ class EventEngine:
         self._listen_conn = None
         self._listen_backoff = 1
         self._listen_last_ping = 0.0
+        self._stop_event = threading.Event()
 
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -76,6 +78,7 @@ class EventEngine:
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
         self._close_listener()
 
     def _close_listener(self):
@@ -104,7 +107,8 @@ class EventEngine:
                 return conn
             except Exception as e:
                 LOG.warning("LISTEN 连接失败: %s", e)
-                time.sleep(self._listen_backoff)
+                if not wait_for_next_cycle(self._stop_event, self._listen_backoff):
+                    break
                 self._listen_backoff = min(self._listen_backoff * 2, 30)
         return None
 
@@ -115,6 +119,7 @@ class EventEngine:
         LOG.info("=" * 60)
 
         self._running = True
+        self._stop_event.clear()
 
         # 计算线程池先启动，保证可并行消费
         calc_thread = threading.Thread(target=self._calculation_loop, daemon=True)
@@ -276,7 +281,8 @@ class EventEngine:
             now = datetime.now(timezone.utc)
             wait_seconds = (event.trigger_time - now).total_seconds()
             if wait_seconds > 0:
-                time.sleep(wait_seconds)
+                if not wait_for_next_cycle(self._stop_event, wait_seconds):
+                    return
             self._do_compute(event.interval)
         except Exception as e:
             LOG.error(f"计算错误: {e}")

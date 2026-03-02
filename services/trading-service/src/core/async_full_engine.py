@@ -28,6 +28,7 @@ import pandas as pd
 from ..config import config
 from ..db.reader import shared_pg_conn
 from ..indicators.base import get_all_indicators
+from .scheduler import wait_for_next_cycle
 
 LOG = logging.getLogger("indicator_service.async_full")
 
@@ -422,6 +423,7 @@ class FullAsyncEngine:
         self._write_queue = queue.Queue(maxsize=2000)
         self._writer: Optional[AsyncWriter] = None
         self._cache = None
+        self._loop_stop_event = Event()
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -513,6 +515,7 @@ class FullAsyncEngine:
         self._slow_executor = ProcessPoolExecutor(max_workers=1)
 
         self._running = True
+        self._loop_stop_event.clear()
 
         # === 首次计算 ===
         LOG.info("=== 首次计算 ===")
@@ -602,13 +605,8 @@ class FullAsyncEngine:
                 LOG.info(f"状态: 队列={self._write_queue.qsize()}, 写入={self._writer.write_count}")
                 last_report = time.time()
 
-            time.sleep(1)
-
-            if time.time() - last_report > 60:
-                LOG.info(f"状态: 队列={self._write_queue.qsize()}, 写入={self._writer.write_count}")
-                last_report = time.time()
-
-            time.sleep(1)
+            if not wait_for_next_cycle(self._loop_stop_event, 1.0):
+                break
 
     def _compute_interval(self, symbols: List[str], interval: str,
                           fast_indicators: List[str], slow_indicators: List[str]):
@@ -645,6 +643,7 @@ class FullAsyncEngine:
 
     def stop(self):
         self._running = False
+        self._loop_stop_event.set()
 
     def _cleanup(self):
         if self._writer:

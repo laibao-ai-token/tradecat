@@ -15,9 +15,11 @@ import sqlite3
 import sys
 import time
 import atexit
+import signal
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Event
 
 from psycopg.rows import dict_row
 
@@ -87,6 +89,7 @@ def log(msg: str):
 
 # 使用共享币种模块
 from common.symbols import get_configured_symbols
+from src.core.scheduler import wait_for_next_cycle
 
 
 # ============ 高优先级币种识别（复用 async_full_engine 完整逻辑）============
@@ -354,6 +357,13 @@ def update_priority(runtime_state: SchedulerRuntimeState):
 def main():
     runtime_state = SchedulerRuntimeState(intervals=INTERVALS, sqlite_path=SQLITE_PATH)
     atexit.register(runtime_state.close_sqlite_conn)
+    stop_event = Event()
+
+    def _request_stop(*_):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _request_stop)
+    signal.signal(signal.SIGTERM, _request_stop)
 
     log("=" * 50)
     log("简单定时计算服务启动")
@@ -373,7 +383,7 @@ def main():
     log("-" * 50)
     log("进入轮询检查 (每10秒检查新数据, 每小时更新优先级)...")
 
-    while True:
+    while not stop_event.is_set():
         # 每小时更新优先级
         last_priority_update = runtime_state.last_priority_update or 0.0
         if time.time() - last_priority_update > 3600:
@@ -394,7 +404,8 @@ def main():
         if to_calc:
             run_calculation(to_calc, runtime_state.high_priority_symbols)
 
-        time.sleep(10)
+        if not wait_for_next_cycle(stop_event, 10):
+            break
 
 
 if __name__ == "__main__":

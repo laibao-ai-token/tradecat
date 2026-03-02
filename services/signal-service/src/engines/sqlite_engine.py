@@ -17,12 +17,14 @@ try:
     from ..rules import ALL_RULES, RULES_BY_TABLE, SignalRule
     from ..storage.cooldown import get_cooldown_storage
     from ..storage.history import get_history
+    from .scheduler import wait_for_next_cycle
 except ImportError:
     from config import DATA_MAX_AGE_SECONDS, get_sqlite_path
     from events import SignalEvent, SignalPublisher
     from rules import ALL_RULES, RULES_BY_TABLE, SignalRule
     from storage.cooldown import get_cooldown_storage
     from storage.history import get_history
+    from engines.scheduler import wait_for_next_cycle
 
 from .base import BaseEngine, Signal
 from .pg_engine import _get_default_symbols  # 复用统一符号选择
@@ -63,6 +65,7 @@ class SQLiteSignalEngine(BaseEngine):
         formatter: Callable = None,
     ):
         super().__init__()
+        self._loop_stop_event = threading.Event()
         self.db_path = db_path or str(get_sqlite_path())
         self.formatter = formatter  # 可选的格式化器
         self._missing_tables: set[str] = set()  # log "no such table" only once per table
@@ -438,6 +441,7 @@ class SQLiteSignalEngine(BaseEngine):
     def run_loop(self, interval: int = 60):
         """持续运行"""
         self._running = True
+        self._loop_stop_event.clear()
         logger.info(f"SQLite 信号引擎启动，间隔: {interval}秒，规则数: {len(self.enabled_rules)}")
 
         while self._running:
@@ -450,7 +454,13 @@ class SQLiteSignalEngine(BaseEngine):
             except Exception as e:
                 logger.error(f"检查循环异常: {e}")
 
-            time.sleep(interval)
+            if not wait_for_next_cycle(self._loop_stop_event, interval):
+                break
+
+    def stop(self):
+        """停止循环"""
+        super().stop()
+        self._loop_stop_event.set()
 
     def get_stats(self) -> dict:
         """获取统计"""

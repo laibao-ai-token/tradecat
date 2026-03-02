@@ -22,11 +22,13 @@ try:
     from ..events import SignalEvent, SignalPublisher
     from ..storage.cooldown import get_cooldown_storage
     from ..storage.history import get_history
+    from .scheduler import wait_for_next_cycle
 except ImportError:
     from config import COOLDOWN_SECONDS, DATA_MAX_AGE_SECONDS, get_database_url
     from events import SignalEvent, SignalPublisher
     from storage.cooldown import get_cooldown_storage
     from storage.history import get_history
+    from engines.scheduler import wait_for_next_cycle
 
 from .base import BaseEngine
 
@@ -1006,6 +1008,7 @@ class PGSignalEngine(BaseEngine):
     def __init__(self, db_url: str = None, symbols: list[str] = None):
         super().__init__()
         self.db_url = db_url or get_database_url()
+        self._loop_stop_event = threading.Event()
         raw_symbols = symbols or _get_default_symbols()
         self.symbols = _validate_symbols(raw_symbols) if symbols else raw_symbols
         # 美股分钟信号（独立配置，不影响 crypto 主链路）
@@ -1459,6 +1462,7 @@ class PGSignalEngine(BaseEngine):
     def run_loop(self, interval: int = 60):
         """持续运行"""
         self._running = True
+        self._loop_stop_event.clear()
         logger.info(f"PG Signal Engine started, interval: {interval}s, symbols: {self.symbols}")
 
         while self._running:
@@ -1470,7 +1474,13 @@ class PGSignalEngine(BaseEngine):
                     logger.info(f"Found {len(signals)} PG signals")
             except Exception as e:
                 logger.error(f"Run loop error: {e}")
-            time.sleep(interval)
+            if not wait_for_next_cycle(self._loop_stop_event, interval):
+                break
+
+    def stop(self):
+        """停止循环"""
+        super().stop()
+        self._loop_stop_event.set()
 
     def get_stats(self) -> dict:
         return {

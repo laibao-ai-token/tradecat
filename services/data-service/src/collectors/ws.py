@@ -143,7 +143,12 @@ class WSCollector:
     def run(self) -> None:
         """运行采集器"""
         if settings.candle_provider == "gate_spot_poll":
-            self._run_gate_spot_poll()
+            self._gap_stop.clear()
+            try:
+                self._run_gate_spot_poll()
+            finally:
+                self._gap_stop.set()
+                self._ts.close()
             return
 
         # 启动时补齐 - 后台线程，不阻塞 WebSocket
@@ -179,7 +184,7 @@ class WSCollector:
 
         logger.info("启动 Gate spot polling: symbols=%d interval=%.1fs", len(self._symbols), poll_interval)
 
-        while True:
+        while not self._gap_stop.is_set():
             rows: List[dict] = []
 
             def _fetch_one(sym: str) -> List[dict]:
@@ -206,7 +211,8 @@ class WSCollector:
                     logger.debug("gate spot upsert %d rows", n)
                 except Exception as e:
                     logger.error("gate spot upsert failed: %s", e)
-            time.sleep(max(1.0, poll_interval))
+            if self._gap_stop.wait(max(1.0, poll_interval)):
+                break
 
     def _on_candle_sync(self, e: CandleEvent) -> None:
         """同步回调包装器（cryptofeed 可能用同步回调）"""
