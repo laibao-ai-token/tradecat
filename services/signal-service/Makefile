@@ -76,6 +76,7 @@ reset: clean
 	python3 -m venv .venv
 	$(PIP) install -q --upgrade pip
 	$(PIP) install -q -r requirements.txt
+	$(PIP) install -q -e ../../libs
 	@echo "✅ 虚拟环境重建完成"
 
 # 导出当前依赖（生成 lock 文件）

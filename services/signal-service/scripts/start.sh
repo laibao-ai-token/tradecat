@@ -53,6 +53,16 @@ if [[ ! -d "$VENV_DIR" ]]; then
     if [[ -f "$PROJECT_DIR/requirements.txt" ]]; then
         "$VENV_DIR/bin/pip" install -q -r "$PROJECT_DIR/requirements.txt"
     fi
+    if [[ -f "$REPO_ROOT/libs/pyproject.toml" ]]; then
+        "$VENV_DIR/bin/pip" install -q -e "$REPO_ROOT/libs"
+    fi
+fi
+
+# 兼容旧虚拟环境：若缺少共享包则补装，避免 symbols 读取逻辑退化到默认值。
+if ! "$VENV_DIR/bin/python" -c "import common.symbols" >/dev/null 2>&1; then
+    if [[ -f "$REPO_ROOT/libs/pyproject.toml" ]]; then
+        "$VENV_DIR/bin/pip" install -q -e "$REPO_ROOT/libs"
+    fi
 fi
 
 PYTHON="$VENV_DIR/bin/python"

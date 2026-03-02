@@ -140,6 +140,28 @@ def _load_env_file() -> dict:
     return load_repo_env(repo_root=repo_root, set_os_env=False, override=False)
 
 
+def _load_configured_symbols_func():
+    """加载 get_configured_symbols，优先标准导入，失败时回退到仓库文件。"""
+    try:
+        from common.symbols import get_configured_symbols
+
+        return get_configured_symbols
+    except Exception:
+        repo_root = Path(__file__).resolve().parents[4]
+        symbols_path = repo_root / "libs" / "common" / "symbols.py"
+        if not symbols_path.exists():
+            return None
+        spec = importlib.util.spec_from_file_location("tradecat_common_symbols", symbols_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except OSError:
+            return None
+        return getattr(module, "get_configured_symbols", None)
+
+
 def _get_default_symbols() -> list[str]:
     """
     从全局配置获取监控币种
@@ -166,10 +188,7 @@ def _get_default_symbols() -> list[str]:
             os.environ[key] = val
 
     # 与全局符号选择逻辑保持一致（支持 all/auto）
-    try:
-        from common.symbols import get_configured_symbols
-    except Exception:
-        get_configured_symbols = None
+    get_configured_symbols = _load_configured_symbols_func()
 
     if get_configured_symbols:
         configured = get_configured_symbols()
