@@ -70,8 +70,7 @@ def import_to_db(rows: list[dict], ts: TimescaleAdapter) -> int:
 
 
 def main():
-    # 使用 5434 数据库
-    db_url = "postgresql://postgres:postgres@localhost:5434/market_data"
+    db_url = settings.database_url
     ts = TimescaleAdapter(db_url=db_url)
 
     files = sorted(DATA_DIR.glob("*.zip"))
@@ -91,9 +90,9 @@ def main():
     # 验证
     import subprocess
     result = subprocess.run([
-        "psql", "-h", "localhost", "-p", "5434", "-U", "postgres", "-d", "market_data",
+        "psql", db_url,
         "-c", "SELECT symbol, COUNT(*), MIN(timestamp), MAX(timestamp) FROM raw.crypto_book_depth GROUP BY symbol ORDER BY symbol;"
-    ], env={"PGPASSWORD": "postgres"}, capture_output=True, text=True)
+    ], capture_output=True, text=True)
     print("\n=== 导入结果 ===")
     print(result.stdout)
 

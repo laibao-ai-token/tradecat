@@ -99,7 +99,7 @@ echo -e "\n${YELLOW}[6/6] 检查数据库...${NC}"
 if command -v psql &>/dev/null; then
     echo -e "  ✅ PostgreSQL 客户端已安装"
     echo -e "  ${YELLOW}⚠️ 请确保 TimescaleDB 已运行并导入 schema:${NC}"
-    echo -e "     psql -h localhost -p 5433 -U opentd -d market_data -f libs/database/db/schema/001_timescaledb.sql"
+    echo -e "     psql \"\$DATABASE_URL\" -f libs/database/db/schema/001_timescaledb.sql"
 else
     echo -e "  ${YELLOW}⚠️ 未检测到 psql，请手动安装 TimescaleDB${NC}"
 fi
@@ -113,7 +113,7 @@ echo "     - config/.env"
 echo ""
 echo "  2. 导入数据库 schema (如果是新数据库):"
 echo "     cd libs/database/db/schema"
-echo "     for f in *.sql; do psql -h localhost -p 5433 -U opentd -d market_data -f \$f; done"
+echo "     for f in *.sql; do psql \"\$DATABASE_URL\" -f \$f; done"
 echo ""
 echo "  3. 启动服务:"
 echo "     source .venv/bin/activate"

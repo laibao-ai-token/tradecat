@@ -6,13 +6,39 @@
 
 set -e
 
-HOST=${1:-localhost}
-PORT=${2:-5434}
-DATABASE=${3:-market_data}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SERVICE_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SERVICE_DIR")")"
+source "$PROJECT_ROOT/scripts/lib/db_url.sh"
+
+DB_URL="$(
+    tc_resolve_db_url \
+        "$PROJECT_ROOT" \
+        "postgresql://postgres:postgres@localhost:5434/market_data" \
+        "MARKETS_SERVICE_DATABASE_URL" \
+        "DATABASE_URL"
+)"
+
+read -r DEFAULT_HOST DEFAULT_PORT DEFAULT_DATABASE <<< "$(python3 - "$DB_URL" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+p = urlparse(url)
+host = p.hostname or "localhost"
+port = p.port or 5432
+database = (p.path or "/market_data").lstrip("/") or "market_data"
+print(f"{host} {port} {database}")
+PY
+)"
+
+HOST=${1:-$DEFAULT_HOST}
+PORT=${2:-$DEFAULT_PORT}
+DATABASE=${3:-$DEFAULT_DATABASE}
 USER=${PGUSER:-postgres}
 PASSWORD=${PGPASSWORD:-postgres}
 
-DDL_DIR="$(dirname "$0")/ddl"
+DDL_DIR="$SCRIPT_DIR/ddl"
 
 echo "=============================================="
 echo "TradeCat 数据库初始化"

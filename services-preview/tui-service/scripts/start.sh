@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$(dirname "$SERVICE_DIR")")"
+source "$REPO_ROOT/scripts/lib/db_url.sh"
 
 # NOTE: tui-service does not require config/.env.
 # Do NOT source it here, because template values may include spaces/parentheses and break bash parsing.
@@ -302,8 +303,16 @@ run_equity() {
   fi
 
   if [[ -z "${MARKETS_SERVICE_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
-    echo "⚠️ 未设置 MARKETS_SERVICE_DATABASE_URL/DATABASE_URL，将由 markets-service 使用默认 localhost:5433"
-    echo "   建议导出: export MARKETS_SERVICE_DATABASE_URL='postgresql://postgres:postgres@localhost:5434/market_data'"
+    local resolved_db_url
+    resolved_db_url="$(
+      tc_resolve_db_url \
+        "$REPO_ROOT" \
+        "postgresql://postgres:postgres@localhost:5434/market_data" \
+        "MARKETS_SERVICE_DATABASE_URL" \
+        "DATABASE_URL"
+    )"
+    echo "⚠️ 未显式设置 MARKETS_SERVICE_DATABASE_URL/DATABASE_URL，markets-service 将使用:"
+    echo "   ${resolved_db_url}"
   fi
 
   echo "启动采集: market=$market provider=$provider symbols=$symbols sleep=$sleep_s limit=$limit"

@@ -52,7 +52,7 @@ class Settings:
     # 数据库
     database_url: str = field(default_factory=lambda: os.getenv(
         "MARKETS_SERVICE_DATABASE_URL",
-        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/market_data"),
+        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data"),
     ))
     db_schema: str = field(default_factory=lambda: os.getenv("MARKET_DB_SCHEMA", "market_data"))
     raw_schema: str = field(default_factory=lambda: os.getenv("RAW_DB_SCHEMA", "raw"))

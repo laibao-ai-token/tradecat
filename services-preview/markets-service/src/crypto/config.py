@@ -96,7 +96,7 @@ class Settings:
     # 数据库 - 优先使用 MARKETS_SERVICE_DATABASE_URL
     database_url: str = field(default_factory=lambda: os.getenv(
         "MARKETS_SERVICE_DATABASE_URL",
-        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/market_data")
+        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data")
     ))
 
     # 写入模式: "raw" = raw.*, "legacy" = market_data.*

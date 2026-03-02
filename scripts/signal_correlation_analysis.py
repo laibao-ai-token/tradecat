@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
 import sqlite3
@@ -31,9 +32,37 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COOLDOWN_DB = PROJECT_ROOT / "libs/database/services/signal-service/cooldown.db"
 DEFAULT_HISTORY_DB = PROJECT_ROOT / "libs/database/services/signal-service/signal_history.db"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "artifacts/analysis/signal_correlation"
+
+
+def _load_repo_env() -> None:
+    try:
+        from common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        try:
+            from libs.common.config_loader import load_repo_env
+        except ModuleNotFoundError:
+            loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
+            if not loader_path.exists():
+                return
+            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
+            if spec is None or spec.loader is None:
+                return
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+            except OSError:
+                return
+            load_repo_env = getattr(module, "load_repo_env", None)
+            if load_repo_env is None:
+                return
+    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
+
+
+_load_repo_env()
+
 DEFAULT_DB_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5433/market_data",
+    "postgresql://postgres:postgres@localhost:5434/market_data",
 )
 DEFAULT_HORIZONS = [5, 15, 60, 240, 1440]
 

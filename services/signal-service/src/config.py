@@ -42,7 +42,7 @@ _load_repo_env()
 # 数据库配置
 def get_database_url() -> str:
     """获取 TimescaleDB 连接 URL"""
-    return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/market_data")
+    return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data")
 
 
 def get_sqlite_path() -> Path:

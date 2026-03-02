@@ -45,10 +45,17 @@ safe_load_env() {
 
 # 加载统一配置 (含代理)
 safe_load_env "$PROJECT_ROOT/config/.env"
+source "$PROJECT_ROOT/scripts/lib/db_url.sh"
 
 # 默认 legacy 模式，可通过环境变量覆盖
 export CRYPTO_WRITE_MODE="${CRYPTO_WRITE_MODE:-legacy}"
-export MARKETS_SERVICE_DATABASE_URL="${MARKETS_SERVICE_DATABASE_URL:-postgresql://postgres:postgres@localhost:5433/market_data}"
+export MARKETS_SERVICE_DATABASE_URL="$(
+    tc_resolve_db_url \
+        "$PROJECT_ROOT" \
+        "postgresql://postgres:postgres@localhost:5434/market_data" \
+        "MARKETS_SERVICE_DATABASE_URL" \
+        "DATABASE_URL"
+)"
 
 cd "$SERVICE_DIR"
 
@@ -112,7 +119,8 @@ start_metrics() {
 # 健康检查: 检测数据是否超过 10 分钟未更新
 health_check() {
     local max_stale_minutes=${1:-10}
-    local result=$(PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -d market_data -t -c "
+    local result
+    result=$(psql "$MARKETS_SERVICE_DATABASE_URL" -t -c "
         SELECT CASE WHEN MAX(bucket_ts) < NOW() - INTERVAL '${max_stale_minutes} minutes' THEN 'STALE' ELSE 'OK' END
         FROM market_data.candles_1m WHERE bucket_ts > NOW() - INTERVAL '1 day';
     " 2>/dev/null | tr -d ' ')
