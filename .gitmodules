@@ -1,0 +1,4 @@
+[submodule "repository/openclaw"]
+	path = repository/openclaw
+	url = https://github.com/openclaw/openclaw.git
+	shallow = true

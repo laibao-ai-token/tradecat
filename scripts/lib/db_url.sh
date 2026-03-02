@@ -17,8 +17,12 @@ value = ""
 
 for raw in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
     line = raw.strip()
-    if not line or line.startswith("#") or line.startswith("export "):
+    if not line or line.startswith("#"):
         continue
+    if line.startswith("export "):
+        line = line[7:].lstrip()
+        if not line:
+            continue
     if "=" not in line:
         continue
     key, val = line.split("=", 1)
@@ -66,4 +70,26 @@ tc_resolve_db_url() {
     done
 
     echo "$default_url"
+}
+
+tc_db_url_target() {
+    local db_url="$1"
+    python3 - "$db_url" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+raw = (sys.argv[1] or "").strip()
+if not raw:
+    print("localhost:5432/market_data", end="")
+    raise SystemExit(0)
+
+p = urlparse(raw)
+host = p.hostname or "localhost"
+try:
+    port = p.port or 5432
+except ValueError:
+    port = 5432
+database = (p.path or "/market_data").lstrip("/") or "market_data"
+print(f"{host}:{port}/{database}", end="")
+PY
 }

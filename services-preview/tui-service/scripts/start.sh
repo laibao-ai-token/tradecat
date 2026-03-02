@@ -304,6 +304,7 @@ run_equity() {
 
   if [[ -z "${MARKETS_SERVICE_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
     local resolved_db_url
+    local resolved_db_target
     resolved_db_url="$(
       tc_resolve_db_url \
         "$REPO_ROOT" \
@@ -311,8 +312,9 @@ run_equity() {
         "MARKETS_SERVICE_DATABASE_URL" \
         "DATABASE_URL"
     )"
+    resolved_db_target="$(tc_db_url_target "$resolved_db_url")"
     echo "⚠️ 未显式设置 MARKETS_SERVICE_DATABASE_URL/DATABASE_URL，markets-service 将使用:"
-    echo "   ${resolved_db_url}"
+    echo "   ${resolved_db_target}"
   fi
 
   echo "启动采集: market=$market provider=$provider symbols=$symbols sleep=$sleep_s limit=$limit"
