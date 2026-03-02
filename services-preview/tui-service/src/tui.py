@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .db import SignalRow, fetch_recent, parse_ts, probe
-from .etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
+from .etf_profiles import get_etf_domain_profile, get_all_domain_keys, get_domain_label, load_dynamic_auto_driving_symbols
 from .etf_selector import select_etf_candidates
 from .micro import Candle, MicroConfig, MicroEngine, MicroSnapshot
 from .quote import Quote, fetch_daily_curve_1d, fetch_intraday_curve_1m, fetch_quote, fetch_quotes
@@ -306,6 +306,11 @@ _BACKTEST_SHOW_COMPARE = str(os.environ.get("TUI_BACKTEST_SHOW_COMPARE", "")).st
     "on",
 }
 _FUND_CN_ETF_PROFILE = get_etf_domain_profile("auto_driving_cn")
+
+# 领域选择状态（模块级全局变量）
+_fund_cn_domain_keys: list[str] = get_all_domain_keys()
+_fund_cn_domain_selected_idx: int = 0
+_fund_cn_domain_selected: str = _fund_cn_domain_keys[0] if _fund_cn_domain_keys else "auto_driving_cn"
 
 
 def _backtest_mode_text(mode: str) -> str:
@@ -2999,6 +3004,39 @@ def _main(
                     _switch_micro_symbol(1)
                 elif view in {"market_us", "market_cn", "market_hk", "market_fund_cn"}:
                     _cycle_master_symbol(view, 1)
+            elif key == ord(","):  # 切换领域（上一个）
+                global _fund_cn_domain_keys, _fund_cn_domain_selected_idx, _fund_cn_domain_selected
+                if view == "market_fund_cn" and _fund_cn_domain_keys:
+                    new_idx = (_fund_cn_domain_selected_idx - 1) % len(_fund_cn_domain_keys)
+                    _fund_cn_domain_selected_idx = new_idx
+                    _fund_cn_domain_selected = _fund_cn_domain_keys[new_idx]
+                    # 更新候选池 symbols
+                    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
+                    new_symbols = [s.upper() for s in domain_profile.symbols]
+                    quote_cfgs.fund_cn.symbols = new_symbols
+                    poll_fund_cn.set_symbols(new_symbols)
+                    # 重置候选池选中状态
+                    pane = master_panes.get(view)
+                    if pane:
+                        pane.selected = 0
+                        pane.left_scroll = 0
+                    master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
+            elif key == ord("."):  # 切换领域（下一个）
+                if view == "market_fund_cn" and _fund_cn_domain_keys:
+                    new_idx = (_fund_cn_domain_selected_idx + 1) % len(_fund_cn_domain_keys)
+                    _fund_cn_domain_selected_idx = new_idx
+                    _fund_cn_domain_selected = _fund_cn_domain_keys[new_idx]
+                    # 更新候选池 symbols
+                    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
+                    new_symbols = [s.upper() for s in domain_profile.symbols]
+                    quote_cfgs.fund_cn.symbols = new_symbols
+                    poll_fund_cn.set_symbols(new_symbols)
+                    # 重置候选池选中状态
+                    pane = master_panes.get(view)
+                    if pane:
+                        pane.selected = 0
+                        pane.left_scroll = 0
+                    master_switches["market_fund_cn"].bump(now, _SWITCH_DEBOUNCE_S)
             elif key == ord("0"):
                 # Keep a stable home key, now pointing to micro page by default.
                 view = "market_micro"
@@ -4638,7 +4676,12 @@ def _draw_market_fund_two_panel(
     h: int,
     refresh_s: float,
 ) -> None:
-    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | [/]切换 | +/-加减自选 | r刷新"
+    global _fund_cn_domain_selected, _fund_cn_domain_selected_idx
+    key_hint = "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | [/]切换标的 | ,.切换领域 | +/-加减自选 | r刷新"
+
+    # 获取当前选中领域
+    domain_profile = get_etf_domain_profile(_fund_cn_domain_selected)
+    domain_label = domain_profile.label or _fund_cn_domain_selected
 
     symbols = [s.strip().upper() for s in (quote_cfg.symbols or []) if (s or "").strip()]
     if not (quote_cfg.enabled and symbols):
@@ -4665,15 +4708,20 @@ def _draw_market_fund_two_panel(
         now_ts=time.time(),
         stale_seconds=120,
     )
-    top_items = tuple(ranking_snapshot.items[:top_n_limit])
-    topn_by_symbol = {item.symbol: (idx + 1, item) for idx, item in enumerate(ranking_snapshot.items)}
+    model_items = tuple(ranking_snapshot.items)
+    top_items = tuple(model_items[:top_n_limit])
+    model_rank_map = {item.symbol: idx + 1 for idx, item in enumerate(model_items)}
+    model_item_map = {item.symbol: item for item in model_items}
+    domain_top_symbols = tuple(symbols[:top_n_limit])
     candidate_rank_map = {sym: idx + 1 for idx, sym in enumerate(symbols)}
-    selected_rank, selected_item = topn_by_symbol.get(selected_symbol, (None, None))
+    selected_rank = model_rank_map.get(selected_symbol)
+    selected_item = model_item_map.get(selected_symbol)
     risk_map = {"LOW": "低", "MED": "中", "HIGH": "高"}
 
     line2 = (
-        f"策略={ranking_snapshot.strategy_label} {ranking_snapshot.strategy_version} | 领域=自动驾驶 | 覆盖={ranking_snapshot.valid_candidates}/"
-        f"{ranking_snapshot.total_candidates} 过期={ranking_snapshot.skipped_stale} | 候序=相关序 评序=评分序 | 更新时间={ranking_snapshot.as_of}"
+        f"策略={ranking_snapshot.strategy_label} {ranking_snapshot.strategy_version} | 领域={domain_label} | 覆盖={ranking_snapshot.valid_candidates}/"
+        f"{ranking_snapshot.total_candidates} 过期={ranking_snapshot.skipped_stale} | "
+        f"口径: cnd=领域相关序 MRank=模型排名 sRank=模型总分 | 更新时间={ranking_snapshot.as_of}"
     )
     _safe_addstr(stdscr, 1, 0, _truncate(line2, w), curses.color_pair(colors.get("SRC", 0)))
     _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))
@@ -4683,11 +4731,15 @@ def _draw_market_fund_two_panel(
     if panel_h < 10:
         return
 
+    # 领域列宽度
+    domain_col_w = 10
+    domain_x = 0
+
     split_x = max(30, int(w * 0.38))
-    if split_x >= w - 28:
-        split_x = max(24, w - 28)
-    left_w = max(24, split_x)
-    right_x = min(w - 1, split_x + 1)
+    if split_x >= w - 28 - domain_col_w:
+        split_x = max(24, w - 28 - domain_col_w)
+    left_w = max(24, split_x - domain_col_w)
+    right_x = min(w - 1, split_x + domain_col_w + 1)
     right_w = max(18, w - right_x)
 
     right_top_h = int(round(panel_h * 0.58))
@@ -4698,12 +4750,33 @@ def _draw_market_fund_two_panel(
         return
 
     box_attr = curses.color_pair(colors.get("SRC", 0))
-    _draw_box(stdscr, 0, panel_top, left_w, panel_h, box_attr)
+    # 领域列盒子
+    _draw_box(stdscr, domain_x, panel_top, domain_col_w, panel_h, box_attr)
+    # 候选池盒子（右移）
+    _draw_box(stdscr, domain_col_w, panel_top, left_w, panel_h, box_attr)
     _draw_box(stdscr, right_x, panel_top, right_w, right_top_h, box_attr)
     _draw_box(stdscr, right_x, right_bottom_y, right_w, right_bottom_h, box_attr)
 
+    # 绘制领域列标题
+    _safe_addstr(stdscr, panel_top, domain_x + 1, _truncate("领域", domain_col_w - 2), curses.A_UNDERLINE)
+
+    # 绘制领域选项
+    domain_inner_h = max(0, panel_h - 2)
+    domain_pane_scroll = min(max(0, _fund_cn_domain_selected_idx), max(0, len(_fund_cn_domain_keys) - 1))
+    for i, dkey in enumerate(_fund_cn_domain_keys):
+        y = panel_top + 1 + i
+        if y >= panel_top + panel_h - 1:
+            break
+        dlabel = get_domain_label(dkey)
+        is_selected = dkey == _fund_cn_domain_selected
+        display = _truncate(dlabel, domain_col_w - 2)
+        if is_selected:
+            _safe_addstr(stdscr, y, domain_x + 1, display, curses.A_REVERSE | curses.color_pair(colors.get("HIGHLIGHT", 0)))
+        else:
+            _safe_addstr(stdscr, y, domain_x + 1, display)
+
     left_inner_w = max(0, left_w - 2)
-    _safe_addstr(stdscr, panel_top, 2, _truncate(f"候选池({len(symbols)})", max(0, left_w - 4)), curses.A_UNDERLINE)
+    _safe_addstr(stdscr, panel_top, domain_col_w + 2, _truncate(f"候选池({len(symbols)})", max(0, left_w - 4)), curses.A_UNDERLINE)
 
     if left_inner_w >= 55:
         table_cols: list[tuple[str, str, int, str]] = [
@@ -4712,31 +4785,31 @@ def _draw_market_fund_two_panel(
             ("name", "名称", 1, "left"),  # width is resolved dynamically
             ("last", "最新", 7, "right"),
             ("pct", "涨跌", 7, "right"),
-            ("rank", "评序", 5, "right"),
-            ("score", "评分", 6, "right"),
+            ("rank", "MRank", 5, "right"),
+            ("score", "sRank", 6, "right"),
         ]
     elif left_inner_w >= 38:
         table_cols = [
             ("cand", "候序", 4, "right"),
             ("code", "代码", 10, "left"),
             ("name", "名称", 1, "left"),
-            ("rank", "评序", 5, "right"),
-            ("score", "评分", 6, "right"),
+            ("rank", "MRank", 5, "right"),
+            ("score", "sRank", 6, "right"),
         ]
     elif left_inner_w >= 30:
         table_cols = [
             ("cand", "候", 3, "right"),
             ("code", "代码", 8, "left"),
             ("name", "名称", 1, "left"),
-            ("rank", "评", 4, "right"),
-            ("score", "分", 5, "right"),
+            ("rank", "MRk", 4, "right"),
+            ("score", "sRk", 5, "right"),
         ]
     else:
         table_cols = [
             ("cand", "候", 3, "right"),
             ("name", "名称", 1, "left"),
-            ("rank", "评", 4, "right"),
-            ("score", "分", 5, "right"),
+            ("rank", "MRk", 4, "right"),
+            ("score", "sRk", 5, "right"),
         ]
 
     fixed_w = sum(width for key, _, width, _ in table_cols if key != "name")
@@ -4757,7 +4830,7 @@ def _draw_market_fund_two_panel(
         return _fit_cell(f"{prefix} {body}", left_inner_w)
 
     header_values = {key: header for key, header, _, _ in resolved_cols}
-    _safe_addstr(stdscr, panel_top + 1, 1, _render_left_row(" ", header_values), curses.A_UNDERLINE)
+    _safe_addstr(stdscr, panel_top + 1, domain_col_w + 1, _render_left_row(" ", header_values), curses.A_UNDERLINE)
 
     left_body_top = panel_top + 2
     left_body_h = max(0, panel_h - 3)
@@ -4776,7 +4849,8 @@ def _draw_market_fund_two_panel(
         name = _display_name(sym, q, quote_cfg.market)
         code = _display_symbol(sym, quote_cfg.market)
         prefix = ">" if (pane.left_scroll + i) == pane.selected else " "
-        rank, item = topn_by_symbol.get(sym, (None, None))
+        rank = model_rank_map.get(sym)
+        item = model_item_map.get(sym)
         rank_txt = f"#{rank}" if rank is not None else "--"
         score_txt = f"{item.total_score:.1f}" if item is not None else "--"
         cand_txt = str(candidate_rank) if candidate_rank is not None else "--"
@@ -4797,7 +4871,7 @@ def _draw_market_fund_two_panel(
             "rank": rank_txt,
             "score": score_txt,
         }
-        _safe_addstr(stdscr, y, 1, _render_left_row(prefix, row_values))
+        _safe_addstr(stdscr, y, domain_col_w + 1, _render_left_row(prefix, row_values))
 
     selected_label = _display_name(selected_symbol, selected_quote, quote_cfg.market)
     selected_disp_symbol = _display_symbol(selected_symbol, quote_cfg.market)
@@ -4850,15 +4924,17 @@ def _draw_market_fund_two_panel(
         marker_rows=selected_rows,
     )
 
-    _safe_addstr(stdscr, right_bottom_y, right_x + 2, _truncate("选票信息 / 前N(模型评分)", max(0, right_w - 4)), curses.A_UNDERLINE)
+    _safe_addstr(stdscr, right_bottom_y, right_x + 2, _truncate("选票信息 / TopN(领域优先+模型)", max(0, right_w - 4)), curses.A_UNDERLINE)
     details: list[str] = []
-    details.extend(
-        [
-            "结论主选: 516520.SH 智能驾驶ETF",
-            "结论备选: 515250.SH 智能汽车ETF",
-            "结论观察: 024389 中航智选领航混合发起C（场外）",
-        ]
+    details.append("口径说明: cnd=领域相关序 | MRank=模型排名 | sRank=模型总分")
+    details.append("结论清单(编号+代码+名称+角色):")
+    conclusion_rows = (
+        ("516520.SH", "智能驾驶ETF", "主选"),
+        ("515250.SH", "智能汽车ETF", "备选"),
+        ("024389", "中航智选领航混合发起C（场外）", "观察"),
     )
+    for idx, (code, name, role_name) in enumerate(conclusion_rows, start=1):
+        details.append(f"{idx}. {code} {name} | 角色={role_name}")
     conclusion_role_map = {
         "SH516520": "主选",
         "SH515250": "备选",
@@ -4871,15 +4947,18 @@ def _draw_market_fund_two_panel(
         details.append("当前票定位: 非结论清单（自动驾驶候选池）")
 
     if selected_item is None:
-        details.append("当前状态: 暂无模型评分（数据缺失或过期）")
+        details.append("当前状态: 暂无模型评分（数据缺失/过期）")
         details.append("提示: 可按 r 刷新，或等待行情更新")
     else:
         risk_txt = risk_map.get(selected_item.risk_level, selected_item.risk_level)
         cand_rank_txt = candidate_rank_map.get(selected_symbol)
         cand_rank_disp = str(cand_rank_txt) if cand_rank_txt is not None else "--"
+        model_rank_disp = f"#{selected_rank}/{ranking_snapshot.valid_candidates}" if selected_rank is not None else "--"
         details.append(
-            f"候选序: {cand_rank_disp}  模型排名: #{selected_rank}/{ranking_snapshot.valid_candidates}  总分={selected_item.total_score:.1f}  风险={risk_txt}"
+            f"当前票: cnd={cand_rank_disp}  MRank={model_rank_disp}  sRank={selected_item.total_score:.1f}  风险={risk_txt}"
         )
+        if cand_rank_txt is not None and selected_rank is not None and cand_rank_txt != selected_rank:
+            details.append("提示: cnd 与 MRank 不必一致（相关度 vs 交易评分）")
         if selected_rank is not None and selected_rank > top_n_limit:
             details.append(f"前{top_n_limit}: 未入选（当前模型排名偏后）")
         details.append(
@@ -4895,13 +4974,24 @@ def _draw_market_fund_two_panel(
     else:
         details.append("近期信号: 0（基金页以选票为主，信号仅作参考）")
 
-    details.append(f"前{top_n_limit}(模型评分):")
+    details.append(f"Top{top_n_limit}(领域相关序):")
+    for idx, sym in enumerate(domain_top_symbols, start=1):
+        rank_state = quote_state.entries.get(sym)
+        rank_name = _display_name(sym, rank_state.quote if rank_state else None, quote_cfg.market)
+        rank_symbol = _display_symbol(sym, quote_cfg.market)
+        item = model_item_map.get(sym)
+        rank = model_rank_map.get(sym)
+        rank_txt = f"#{rank}" if rank is not None else "--"
+        score_txt = f"{item.total_score:.1f}" if item is not None else "--"
+        details.append(f"{idx}. {rank_symbol:<10} {rank_name:<12} MRank={rank_txt} sRank={score_txt}")
+
+    details.append(f"Top{top_n_limit}(模型评分,全池):")
     for idx, item in enumerate(top_items, start=1):
         rank_symbol = _display_symbol(item.symbol, quote_cfg.market)
         rank_state = quote_state.entries.get(item.symbol)
         rank_name = _display_name(item.symbol, rank_state.quote if rank_state else None, quote_cfg.market)
         risk_txt = risk_map.get(item.risk_level, item.risk_level)
-        details.append(f"{idx}. {rank_symbol:<10} {rank_name:<12} {item.total_score:>5.1f} 风险={risk_txt}")
+        details.append(f"{idx}. {rank_symbol:<10} {rank_name:<12} sRank={item.total_score:>5.1f} 风险={risk_txt}")
 
     right_body_h = max(0, right_bottom_h - 2)
     for i, line in enumerate(details[: max(1, right_body_h)]):

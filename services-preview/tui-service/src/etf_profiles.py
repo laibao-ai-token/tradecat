@@ -1,8 +1,54 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+def _load_json_config() -> dict[str, Any]:
+    """Load ETF profiles from JSON config file."""
+    import os
+    
+    # Get repo root - try multiple methods
+    repo_root = None
+    # Method 1: from environment
+    env_root = os.environ.get("REPO_ROOT") or os.environ.get("PROJECT_ROOT")
+    if env_root:
+        repo_root = Path(env_root)
+    # Method 2: walk up from current dir
+    if not repo_root or not repo_root.exists():
+        cwd = Path.cwd()
+        # Check if we're in tui-service or repo root
+        for parent in [cwd] + list(cwd.parents):
+            if (parent / "config").exists():
+                repo_root = parent
+                break
+    # Method 3: default to typical location
+    if not repo_root or not repo_root.exists():
+        repo_root = Path(__file__).resolve().parent.parent.parent
+    
+    # Try multiple paths for the config file
+    possible_paths = [
+        repo_root / "config" / "etf_profiles.json",
+        Path.cwd() / "config" / "etf_profiles.json",
+        Path("config/etf_profiles.json"),
+    ]
+    
+    for config_path in possible_paths:
+        if config_path.exists():
+            try:
+                with config_path.open("r", encoding="utf-8") as f:
+                    return json.load(f) or {}
+            except Exception:
+                # If parse error, continue with defaults
+                pass
+    return {}
+
+
+# Try to load JSON config once at module import
+_JSON_CONFIG: dict[str, Any] = _load_json_config()
 
 
 @dataclass(frozen=True)
@@ -131,6 +177,53 @@ def load_dynamic_auto_driving_symbols(repo_root: Path, top_n: int = 35) -> list[
 
 def get_etf_domain_profile(key: str) -> ETFDomainProfile:
     profile_key = (key or "").strip().lower()
+    
+    # Try to load from JSON config first
+    if profile_key in _JSON_CONFIG:
+        json_profile = _JSON_CONFIG[profile_key]
+        if isinstance(json_profile, dict):
+            weights_data = json_profile.get("weights", {})
+            weights = ETFWeights(
+                trend=weights_data.get("trend", 0.35),
+                momentum=weights_data.get("momentum", 0.25),
+                liquidity=weights_data.get("liquidity", 0.20),
+                risk_adjusted=weights_data.get("risk_adjusted", 0.20),
+            )
+            symbols_data = json_profile.get("symbols", [])
+            return ETFDomainProfile(
+                key=profile_key,
+                label=json_profile.get("label", ""),
+                symbols=tuple(str(s) for s in symbols_data) if symbols_data else (),
+                top_n=json_profile.get("top_n", 5),
+                rebalance=json_profile.get("rebalance", "daily"),
+                risk_profile=json_profile.get("risk_profile", "conservative"),
+                weights=weights,
+            )
+    
+    # Fallback to hardcoded profiles
     if profile_key in ETF_DOMAIN_PROFILES:
         return ETF_DOMAIN_PROFILES[profile_key]
     return AUTO_DRIVING_CN_PROFILE
+
+
+def get_all_domain_keys() -> list[str]:
+    """Get all available domain keys from JSON config."""
+    # Keys from JSON config
+    keys = list(_JSON_CONFIG.keys())
+    # Add hardcoded profiles not in JSON
+    for key in ETF_DOMAIN_PROFILES:
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def get_all_domain_profiles() -> list[ETFDomainProfile]:
+    """Get all available domain profiles."""
+    keys = get_all_domain_keys()
+    return [get_etf_domain_profile(key) for key in keys]
+
+
+def get_domain_label(key: str) -> str:
+    """Get display label for a domain key."""
+    profile = get_etf_domain_profile(key)
+    return profile.label or key

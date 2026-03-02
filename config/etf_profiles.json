@@ -1,0 +1,122 @@
+{
+  "auto_driving_cn": {
+    "label": "自动驾驶",
+    "symbols": [
+      "SZ159889",
+      "SH516520", 
+      "SH515700",
+      "SZ159806",
+      "SH512480",
+      "SZ159995",
+      "SH588000",
+      "SH515000",
+      "SZ159819",
+      "SH516110"
+    ],
+    "top_n": 5,
+    "rebalance": "daily",
+    "risk_profile": "conservative",
+    "weights": {
+      "trend": 0.35,
+      "momentum": 0.25,
+      "liquidity": 0.20,
+      "risk_adjusted": 0.20
+    }
+  },
+  "chip_cn": {
+    "label": "半导体",
+    "symbols": [
+      "SZ159995",
+      "SZ159813",
+      "SZ159801",
+      "SH512480",
+      "SH588810",
+      "SH588890",
+      "SH588920",
+      "SZ159872",
+      "SH512760",
+      "SZ159560"
+    ],
+    "top_n": 5,
+    "rebalance": "daily",
+    "risk_profile": "moderate",
+    "weights": {
+      "trend": 0.30,
+      "momentum": 0.30,
+      "liquidity": 0.20,
+      "risk_adjusted": 0.20
+    }
+  },
+  "new_energy_cn": {
+    "label": "新能源",
+    "symbols": [
+      "SH516160",
+      "SZ159875",
+      "SH515790",
+      "SZ159611",
+      "SH515980",
+      "SZ159766",
+      "SH516850",
+      "SZ159871",
+      "SH515830",
+      "SZ159612"
+    ],
+    "top_n": 5,
+    "rebalance": "daily",
+    "risk_profile": "moderate",
+    "weights": {
+      "trend": 0.35,
+      "momentum": 0.25,
+      "liquidity": 0.20,
+      "risk_adjusted": 0.20
+    }
+  },
+  "medicine_cn": {
+    "label": "医药",
+    "symbols": [
+      "SZ159929",
+      "SH512010",
+      "SZ159881",
+      "SH512170",
+      "SZ159992",
+      "SH512290",
+      "SZ159882",
+      "SH512120",
+      "SZ159883",
+      "SH512300"
+    ],
+    "top_n": 5,
+    "rebalance": "daily",
+    "risk_profile": "conservative",
+    "weights": {
+      "trend": 0.30,
+      "momentum": 0.25,
+      "liquidity": 0.25,
+      "risk_adjusted": 0.20
+    }
+  },
+  "ai_cn": {
+    "label": "AI算力",
+    "symbols": [
+      "SZ159819",
+      "SH515000",
+      "SZ159813",
+      "SH512980",
+      "SZ159995",
+      "SH515050",
+      "SZ159872",
+      "SH515980",
+      "SZ159560",
+      "SH512760"
+    ],
+    "top_n": 5,
+    "rebalance": "daily",
+    "risk_profile": "aggressive",
+    "weights": {
+      "trend": 0.40,
+      "momentum": 0.30,
+      "liquidity": 0.15,
+      "risk_adjusted": 0.15
+    }
+  }
+}
