@@ -4,6 +4,7 @@ import os
 import time
 import logging
 import requests
+from dataclasses import dataclass
 from typing import Optional
 
 LOGGER = logging.getLogger(__name__)
@@ -13,32 +14,36 @@ PROXY_COOLDOWN_SECONDS = 3600  # 代理失败后冷却1小时
 PROXY_RETRY_COUNT = 3          # 重试次数
 PROXY_RETRY_DELAY = 2          # 重试间隔（秒）
 
-# 状态
-_proxy_disabled_until: float = 0
-_original_proxy: Optional[str] = None
+@dataclass
+class ProxyRuntimeState:
+    """代理运行时状态。"""
+
+    proxy_disabled_until: float = 0.0
+    original_proxy: Optional[str] = None
+
+
+_RUNTIME_STATE = ProxyRuntimeState()
 
 
 def get_proxy() -> Optional[str]:
     """获取代理，如果在冷却期则返回 None"""
-    global _proxy_disabled_until, _original_proxy
-    
     # 首次调用保存原始代理
-    if _original_proxy is None:
-        _original_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
-    
+    if _RUNTIME_STATE.original_proxy is None:
+        _RUNTIME_STATE.original_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+
     # 检查冷却期
-    if time.time() < _proxy_disabled_until:
-        remaining = int(_proxy_disabled_until - time.time())
+    now = time.time()
+    if now < _RUNTIME_STATE.proxy_disabled_until:
+        remaining = int(_RUNTIME_STATE.proxy_disabled_until - now)
         LOGGER.debug(f"代理冷却中，剩余 {remaining}s")
         return None
-    
-    return _original_proxy
+
+    return _RUNTIME_STATE.original_proxy
 
 
 def disable_proxy(duration: int = PROXY_COOLDOWN_SECONDS):
     """禁用代理一段时间"""
-    global _proxy_disabled_until
-    _proxy_disabled_until = time.time() + duration
+    _RUNTIME_STATE.proxy_disabled_until = time.time() + duration
     LOGGER.warning(f"代理已禁用 {duration}s（{duration//3600}小时）")
 
 

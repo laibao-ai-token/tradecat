@@ -8,12 +8,21 @@ import logging
 import os
 import time
 import urllib.request
+from dataclasses import dataclass, field
 from typing import List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-_ALL_SYMBOLS_CACHE: List[str] = []
-_ALL_SYMBOLS_TS: float = 0.0
+
+@dataclass
+class SymbolsRuntimeState:
+    """全量币种缓存状态。"""
+
+    all_symbols_cache: List[str] = field(default_factory=list)
+    all_symbols_ts: float = 0.0
+
+
+_RUNTIME_STATE = SymbolsRuntimeState()
 
 
 def _now_ts() -> float:
@@ -87,11 +96,10 @@ def _fetch_all_symbols_rest() -> List[str]:
 
 def _get_all_symbols_cached() -> List[str]:
     """获取全量符号（带缓存），失败时返回空列表。"""
-    global _ALL_SYMBOLS_CACHE, _ALL_SYMBOLS_TS
     ttl = int(os.getenv("SYMBOLS_ALL_TTL", "3600"))
     now = _now_ts()
-    if _ALL_SYMBOLS_CACHE and (now - _ALL_SYMBOLS_TS) < ttl:
-        return list(_ALL_SYMBOLS_CACHE)
+    if _RUNTIME_STATE.all_symbols_cache and (now - _RUNTIME_STATE.all_symbols_ts) < ttl:
+        return list(_RUNTIME_STATE.all_symbols_cache)
 
     source = os.getenv("SYMBOLS_ALL_SOURCE", "rest").lower()
     errors = []
@@ -112,13 +120,13 @@ def _get_all_symbols_cached() -> List[str]:
             errors.append(f"rest: {exc}")
 
     if symbols:
-        _ALL_SYMBOLS_CACHE = symbols
-        _ALL_SYMBOLS_TS = now
+        _RUNTIME_STATE.all_symbols_cache = symbols
+        _RUNTIME_STATE.all_symbols_ts = now
         return list(symbols)
 
     if errors:
         logger.warning("获取全量币种失败: %s", "; ".join(errors))
-    return list(_ALL_SYMBOLS_CACHE)
+    return list(_RUNTIME_STATE.all_symbols_cache)
 
 
 def _parse_list(val: str) -> List[str]:
