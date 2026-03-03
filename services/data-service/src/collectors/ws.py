@@ -15,15 +15,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Dict, List, Optional, Set
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from adapters.ccxt import load_symbols, normalize_symbol
 from adapters.cryptofeed import BinanceWSAdapter, CandleEvent, preload_symbols

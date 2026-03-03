@@ -13,6 +13,8 @@ ETF 自动驾驶选基策略 30天离线评估脚本
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
 import math
 import sys
@@ -24,10 +26,34 @@ from typing import Any
 # Add src to path for imports
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
 _TUI_ROOT = _REPO_ROOT / "services-preview" / "tui-service"
-sys.path.insert(0, str(_TUI_ROOT))
+_TUI_SRC_ROOT = _TUI_ROOT / "src"
 
-from src.etf_profiles import ETFDomainProfile, get_etf_domain_profile
-from src.quote import fetch_daily_curve_1d
+
+def _load_tui_modules():
+    pkg_name = "tradecat_tui_src"
+    if pkg_name not in sys.modules:
+        init_file = _TUI_SRC_ROOT / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            pkg_name,
+            init_file,
+            submodule_search_locations=[str(_TUI_SRC_ROOT)],
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载 TUI 包: {_TUI_SRC_ROOT}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[pkg_name] = module
+        spec.loader.exec_module(module)
+
+    etf_module = importlib.import_module(f"{pkg_name}.etf_profiles")
+    quote_module = importlib.import_module(f"{pkg_name}.quote")
+    return (
+        getattr(etf_module, "ETFDomainProfile"),
+        getattr(etf_module, "get_etf_domain_profile"),
+        getattr(quote_module, "fetch_daily_curve_1d"),
+    )
+
+
+ETFDomainProfile, get_etf_domain_profile, fetch_daily_curve_1d = _load_tui_modules()
 
 
 @dataclass(frozen=True)

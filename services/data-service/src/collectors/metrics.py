@@ -2,17 +2,13 @@
 from __future__ import annotations
 
 import logging
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from typing import List, Optional, Sequence
 
 import requests
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from adapters.ccxt import load_symbols
 from adapters.metrics import Timer, metrics

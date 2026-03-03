@@ -2,6 +2,7 @@
 历史指标回填脚本
 根据 RETENTION 配置，为每个币种每个周期计算并写入历史指标数据
 """
+import importlib.util
 import os
 import sys
 import time
@@ -10,7 +11,26 @@ from pathlib import Path
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+SRC_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _bootstrap_src_package() -> None:
+    if "src" in sys.modules:
+        return
+    init_file = SRC_ROOT / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        "src",
+        init_file,
+        submodule_search_locations=[str(SRC_ROOT)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 trading-service src 包: {SRC_ROOT}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["src"] = module
+    spec.loader.exec_module(module)
+
+
+_bootstrap_src_package()
 
 import pandas as pd
 import numpy as np

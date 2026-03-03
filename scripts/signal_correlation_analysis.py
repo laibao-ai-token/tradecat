@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import os
 import re
@@ -123,15 +124,27 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 def _load_rule_meta() -> dict[str, dict]:
     """加载 sqlite 规则元数据（方向/分类等）。"""
-    rules_path = PROJECT_ROOT / "services/signal-service/src"
-    if str(rules_path) not in sys.path:
-        sys.path.insert(0, str(rules_path))
-
     rule_meta: dict[str, dict] = {}
     try:
-        from rules import ALL_RULES  # type: ignore
+        src_root = PROJECT_ROOT / "services/signal-service/src"
+        pkg_name = "tradecat_signal_src"
+        if pkg_name not in sys.modules:
+            init_file = src_root / "__init__.py"
+            spec = importlib.util.spec_from_file_location(
+                pkg_name,
+                init_file,
+                submodule_search_locations=[str(src_root)],
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"无法加载信号服务包: {src_root}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[pkg_name] = module
+            spec.loader.exec_module(module)
 
-        for r in ALL_RULES:
+        rules_module = importlib.import_module(f"{pkg_name}.rules")
+        all_rules = getattr(rules_module, "ALL_RULES", [])
+
+        for r in all_rules:
             rule_meta[r.name] = {
                 "direction": r.direction,
                 "category": r.category,

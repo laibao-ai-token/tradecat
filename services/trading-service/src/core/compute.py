@@ -40,14 +40,6 @@ def _get_executor(max_workers: int, runtime_state: ComputeRuntimeState | None = 
 
 def compute_batch(args: Tuple) -> Dict[str, List[dict]]:
     """计算一批 (symbol, interval, df_bytes) 的所有指标"""
-    import sys
-    import os
-
-    # 确保能找到模块
-    service_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    if service_root not in sys.path:
-        sys.path.insert(0, service_root)
-
     from src.indicators.base import get_all_indicators
 
     batch, indicator_names, futures_cache = args

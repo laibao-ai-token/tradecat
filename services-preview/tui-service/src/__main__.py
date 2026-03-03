@@ -2,39 +2,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
-try:
-    from .etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
-    from .micro import MicroConfig
-    from .tui import QuoteConfig, QuoteConfigs, run
-    from .watchlists import (
-        Watchlists,
-        normalize_cn_fund_symbols,
-        load_watchlists,
-        normalize_cn_symbols,
-        normalize_crypto_symbols,
-        normalize_hk_symbols,
-        normalize_metals_symbols,
-        normalize_us_symbols,
-    )
-except ImportError:
-    pkg_root = Path(__file__).resolve().parent.parent
-    if str(pkg_root) not in sys.path:
-        sys.path.insert(0, str(pkg_root))
-    from src.etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
-    from src.micro import MicroConfig
-    from src.tui import QuoteConfig, QuoteConfigs, run
-    from src.watchlists import (
-        Watchlists,
-        normalize_cn_fund_symbols,
-        load_watchlists,
-        normalize_cn_symbols,
-        normalize_crypto_symbols,
-        normalize_hk_symbols,
-        normalize_metals_symbols,
-        normalize_us_symbols,
-    )
+from .etf_profiles import get_etf_domain_profile, load_dynamic_auto_driving_symbols
+from .micro import MicroConfig
+from .tui import QuoteConfig, QuoteConfigs, run
+from .watchlists import (
+    Watchlists,
+    normalize_cn_fund_symbols,
+    load_watchlists,
+    normalize_cn_symbols,
+    normalize_crypto_symbols,
+    normalize_hk_symbols,
+    normalize_metals_symbols,
+    normalize_us_symbols,
+)
 
 
 def _find_repo_root(start: Path) -> Path:

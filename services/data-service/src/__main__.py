@@ -1,4 +1,4 @@
-"""入口: python -m src 或 python src/__main__.py"""
+"""入口: python -m src"""
 from __future__ import annotations
 
 import argparse
@@ -6,16 +6,13 @@ import logging
 import signal
 import subprocess
 import sys
-from threading import Event
 from pathlib import Path
+from threading import Event
 from typing import Dict, List
 
-# 确保 src 在路径中
-SRC_DIR = Path(__file__).parent
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+from .config import settings
 
-from config import settings
+SERVICE_SRC_DIR = Path(__file__).parent
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +63,7 @@ class Scheduler:
     def _start(self, name: str, info: dict) -> None:
         log = settings.log_dir / f"{name}.log"
         with open(log, "a") as f:
-            info["proc"] = subprocess.Popen(info["cmd"], stdout=f, stderr=subprocess.STDOUT, cwd=str(SRC_DIR))
+            info["proc"] = subprocess.Popen(info["cmd"], stdout=f, stderr=subprocess.STDOUT, cwd=str(SERVICE_SRC_DIR))
         logger.info("启动 %s (PID=%d)", name, info["proc"].pid)
 
 
@@ -84,11 +81,11 @@ def main() -> None:
     sched = Scheduler()
 
     if args.all or args.ws:
-        sched.add("ws", [py, "collectors/ws.py"])
+        sched.add("ws", [py, "-m", "collectors.ws"])
     if args.all or args.metrics:
-        sched.add("metrics", [py, "collectors/metrics.py"])
+        sched.add("metrics", [py, "-m", "collectors.metrics"])
     if args.backfill:
-        sched.add("backfill", [py, "collectors/backfill.py"])
+        sched.add("backfill", [py, "-m", "collectors.backfill"])
 
     if not sched._procs:
         print("用法: python src/__main__.py --ws|--metrics|--backfill|--all")

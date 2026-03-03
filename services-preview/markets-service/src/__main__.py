@@ -2,11 +2,6 @@
 import argparse
 import logging
 import os
-import sys
-from pathlib import Path
-
-# 添加 src 到路径
-sys.path.insert(0, str(Path(__file__).parent))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +15,8 @@ def _ensure_provider_loaded(provider: str) -> bool:
     import importlib
 
     try:
-        importlib.import_module(f"providers.{provider}")
+        package = __package__ or "src"
+        importlib.import_module(f"{package}.providers.{provider}")
         return True
     except Exception as e:
         logger.error("加载 provider 失败: %s (%s)", provider, e, exc_info=True)
@@ -51,7 +47,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "test":
-        from core.registry import ProviderRegistry
+        from .core.registry import ProviderRegistry
 
         _ensure_provider_loaded(args.provider)
         logger.info("已注册的 Providers: %s", ProviderRegistry.list_providers())
@@ -66,7 +62,7 @@ def main():
             logger.error("未找到 Provider: %s", args.provider)
 
     elif args.command == "equity-test":
-        from core.registry import ProviderRegistry
+        from .core.registry import ProviderRegistry
 
         if not _ensure_provider_loaded(args.provider):
             return
@@ -85,9 +81,9 @@ def main():
         import asyncio
         from datetime import datetime, timezone, timedelta
 
-        from core.registry import ProviderRegistry
-        from storage import batch as batch_mgr
-        from storage.raw_writer import TimescaleRawWriter
+        from .core.registry import ProviderRegistry
+        from .storage import batch as batch_mgr
+        from .storage.raw_writer import TimescaleRawWriter
 
         if not _ensure_provider_loaded(args.provider):
             return
@@ -162,7 +158,7 @@ def main():
     elif args.command == "pricing":
         from datetime import date, timedelta
 
-        from providers.quantlib import OptionPricer
+        from .providers.quantlib import OptionPricer
 
         pricer = OptionPricer(risk_free_rate=0.05)
         greeks = pricer.price_european(
@@ -181,15 +177,15 @@ def main():
 
         from cryptofeed.defines import CANDLES
 
-        from providers.cryptofeed.stream import (
+        from .providers.cryptofeed.stream import (
             CandleEvent,
             CryptoFeedStream,
             _from_binance_perp,
             _to_binance_perp,
             load_symbols_from_env,
         )
-        from storage import batch as batch_mgr
-        from storage.raw_writer import TimescaleRawWriter
+        from .storage import batch as batch_mgr
+        from .storage.raw_writer import TimescaleRawWriter
 
         symbols = load_symbols_from_env()
         if not symbols:
@@ -230,7 +226,7 @@ def main():
 
     elif args.command == "crypto-test":
         # 测试配置
-        from crypto.config import settings
+        from .crypto.config import settings
         logger.info("=== Crypto 模块配置 ===")
         logger.info("  write_mode: %s", settings.write_mode)
         logger.info("  database_url: %s", settings.database_url[:50] + "...")
@@ -242,10 +238,10 @@ def main():
         # 仅扫描缺口
         from datetime import date, timedelta
 
-        from crypto.adapters.ccxt import load_symbols
-        from crypto.adapters.timescale import TimescaleAdapter
-        from crypto.collectors.backfill import GapScanner
-        from crypto.config import settings
+        from .crypto.adapters.ccxt import load_symbols
+        from .crypto.adapters.timescale import TimescaleAdapter
+        from .crypto.collectors.backfill import GapScanner
+        from .crypto.config import settings
 
         symbols = args.symbols.split(",") if args.symbols else load_symbols(settings.ccxt_exchange)
         ts = TimescaleAdapter()
@@ -272,8 +268,8 @@ def main():
 
     elif args.command == "crypto-backfill":
         # K线 + 期货指标补齐
-        from crypto.collectors.backfill import DataBackfiller
-        from crypto.config import settings
+        from .crypto.collectors.backfill import DataBackfiller
+        from .crypto.config import settings
 
         symbols = args.symbols.split(",") if args.symbols else None
         lookback = args.days or int(os.getenv("BACKFILL_DAYS", "30"))
@@ -296,8 +292,8 @@ def main():
 
     elif args.command == "crypto-metrics":
         # 期货指标采集 (单次)
-        from crypto.collectors.metrics import MetricsCollector
-        from crypto.config import settings
+        from .crypto.collectors.metrics import MetricsCollector
+        from .crypto.config import settings
 
         symbols = args.symbols.split(",") if args.symbols else None
         logger.info("采集期货指标 (模式: %s)", settings.write_mode)
@@ -310,24 +306,24 @@ def main():
 
     elif args.command == "crypto-ws":
         # WebSocket 实时采集
-        from crypto.collectors.ws import WSCollector
-        from crypto.config import settings
+        from .crypto.collectors.ws import WSCollector
+        from .crypto.config import settings
 
         logger.info("启动 WebSocket 采集 (模式: %s)", settings.write_mode)
         WSCollector().run()
 
     elif args.command == "crypto-book-depth":
         # WebSocket 订单簿采集 (百分比聚合)
-        from crypto.collectors.book_depth import BookDepthCollector
-        from crypto.config import settings
+        from .crypto.collectors.book_depth import BookDepthCollector
+        from .crypto.config import settings
 
         logger.info("启动 BookDepth WebSocket 采集 (模式: %s)", settings.write_mode)
         BookDepthCollector().run()
 
     elif args.command == "crypto-order-book":
         # WebSocket 原始逐档盘口采集
-        from crypto.collectors.order_book import OrderBookCollector
-        from crypto.config import settings
+        from .crypto.collectors.order_book import OrderBookCollector
+        from .crypto.config import settings
 
         logger.info("启动 OrderBook WebSocket 采集 (模式: %s)", settings.write_mode)
         OrderBookCollector().run()

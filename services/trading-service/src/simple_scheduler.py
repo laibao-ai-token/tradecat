@@ -12,7 +12,6 @@
 """
 import os
 import sqlite3
-import sys
 import time
 import atexit
 import signal
@@ -24,9 +23,6 @@ from threading import Event
 from psycopg.rows import dict_row
 
 TRADING_SERVICE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 将服务根目录加入路径，保证以包方式导入 src.*
-if TRADING_SERVICE_DIR not in sys.path:
-    sys.path.insert(0, TRADING_SERVICE_DIR)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(TRADING_SERVICE_DIR))  # tradecat/
 
 def _resolve_sqlite_path(env_path: str | None, default_path: str) -> str:
@@ -80,7 +76,7 @@ class SchedulerRuntimeState:
             self._sqlite_conn = None
 
 
-from src.db.reader import shared_pg_conn
+from .db.reader import shared_pg_conn
 
 
 def log(msg: str):
@@ -89,7 +85,7 @@ def log(msg: str):
 
 # 使用共享币种模块
 from common.symbols import get_configured_symbols
-from src.core.scheduler import wait_for_next_cycle
+from .core.scheduler import wait_for_next_cycle
 
 
 # ============ 高优先级币种识别（复用 async_full_engine 完整逻辑）============

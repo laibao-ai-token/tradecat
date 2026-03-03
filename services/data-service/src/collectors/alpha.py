@@ -4,15 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import aiohttp
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from adapters.rate_limiter import acquire, parse_ban, release, set_ban
 from config import settings
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import sys
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,8 +22,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import requests
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from adapters.ccxt import fetch_ohlcv, load_symbols, to_rows
 from adapters.metrics import Timer, metrics

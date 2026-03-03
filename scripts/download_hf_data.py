@@ -16,9 +16,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 添加项目路径
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
 
 try:
     import pandas as pd

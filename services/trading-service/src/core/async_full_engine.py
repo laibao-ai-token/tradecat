@@ -317,14 +317,6 @@ def _get_futures_priority(top_n: int = 15) -> tuple[set, dict]:
 
 def _compute_indicator(indicator_name: str, klines_data: Dict[str, bytes], interval: str) -> tuple:
     """计算单个指标（子进程）- 使用 pickle 反序列化"""
-    import sys
-    import os
-
-    # 确保能找到模块
-    service_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    if service_root not in sys.path:
-        sys.path.insert(0, service_root)
-
     from src.indicators.base import get_all_indicators
     from src.utils.precision import trim_dataframe
 
