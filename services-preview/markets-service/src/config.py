@@ -11,6 +11,21 @@ SERVICE_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = SERVICE_ROOT.parent.parent
 
 
+def _parse_env_value(raw: str) -> str:
+    """解析 dotenv 值，兼容引号与行尾注释。"""
+    value = (raw or "").strip()
+    if not value:
+        return ""
+
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+
+    comment_pos = value.find(" #")
+    if comment_pos >= 0:
+        value = value[:comment_pos].rstrip()
+    return value
+
+
 def _load_repo_env() -> None:
     try:
         from common.config_loader import load_repo_env
