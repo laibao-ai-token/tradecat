@@ -8,41 +8,17 @@
     python -m indicator_service --symbols BTCUSDT,ETHUSDT --intervals 5m,15m
 """
 import argparse
-import importlib.util
 import os
 import warnings
 from pathlib import Path
+
+from common.config_loader import load_repo_env
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
-def _load_repo_env() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = repo_root / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return
-    load_repo_env(repo_root=repo_root, set_os_env=True, override=False)
-
-
-_load_repo_env()
+load_repo_env(repo_root=Path(__file__).resolve().parents[3], set_os_env=True, override=False)
 
 
 def main():

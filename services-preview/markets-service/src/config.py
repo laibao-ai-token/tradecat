@@ -1,11 +1,12 @@
 """配置管理"""
 from __future__ import annotations
 
-import importlib.util
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from common.config_loader import load_repo_env
 
 SERVICE_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = SERVICE_ROOT.parent.parent
@@ -25,32 +26,7 @@ def _parse_env_value(raw: str) -> str:
         value = value[:comment_pos].rstrip()
     return value
 
-
-def _load_repo_env() -> None:
-    try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return
-    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
-
-
-_load_repo_env()
+load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
 
 # 可选：本地代理（用于部分网络环境访问外部数据源）。
 # 默认不强制，避免在无代理环境下导致所有请求失败。

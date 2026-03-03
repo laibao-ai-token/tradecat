@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,35 +13,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from common.config_loader import load_repo_env
+
 SERVICE_ROOT = Path(__file__).parent.parent.parent  # markets-service/
 PROJECT_ROOT = SERVICE_ROOT.parent.parent           # tradecat/
 
 
-def _load_repo_env() -> None:
-    try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return
-    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
-
-
-_load_repo_env()
+load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
 
 # 强制代理为 9910（与外部采集测试保持一致）
 os.environ["http_proxy"] = "http://127.0.0.1:9910"

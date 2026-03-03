@@ -119,26 +119,8 @@ def _get_us_symbols() -> list[str]:
 def _load_env_file() -> dict:
     """通过共享配置加载器读取 config/.env（不污染当前进程环境变量）。"""
     repo_root = Path(__file__).resolve().parents[4]
-    try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = repo_root / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return {}
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return {}
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return {}
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return {}
+    from common.config_loader import load_repo_env
+
     return load_repo_env(repo_root=repo_root, set_os_env=False, override=False)
 
 
