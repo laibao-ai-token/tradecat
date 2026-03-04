@@ -11,6 +11,7 @@
 import argparse
 import logging
 import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -25,7 +26,17 @@ LOG = logging.getLogger(__name__)
 _EXPERIMENTAL_ENGINES = {"event", "full_async"}
 
 
-def _resolve_engine(args: argparse.Namespace) -> tuple[str, str | None]:
+def _is_engine_arg_explicit(argv: list[str] | None = None) -> bool:
+    """Return whether --engine was explicitly provided in argv."""
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    for arg in args:
+        if arg == "--engine" or arg.startswith("--engine="):
+            return True
+    return False
+
+
+def _resolve_engine(args: argparse.Namespace, *, engine_explicit: bool = False) -> tuple[str, str | None]:
     """Resolve engine selection with legacy flag compatibility."""
 
     legacy_engine: str | None = None
@@ -38,6 +49,8 @@ def _resolve_engine(args: argparse.Namespace) -> tuple[str, str | None]:
 
     selected = args.engine
     if legacy_engine:
+        if engine_explicit:
+            raise ValueError("请勿混用 --engine 与遗留参数 --event/--full-async，请仅保留 --engine")
         if selected != "core" and selected != legacy_engine:
             raise ValueError(f"--engine={selected} 与遗留参数冲突（期望 {legacy_engine}）")
         selected = legacy_engine
@@ -74,7 +87,9 @@ def main():
 
     args = parser.parse_args()
     try:
-        selected_engine, legacy_engine = _resolve_engine(args)
+        selected_engine, legacy_engine = _resolve_engine(
+            args, engine_explicit=_is_engine_arg_explicit()
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
