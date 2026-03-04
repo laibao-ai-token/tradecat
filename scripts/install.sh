@@ -23,7 +23,7 @@ check_cmd python3 || { echo "请先安装 Python 3.10+"; exit 1; }
 check_cmd pip3 || { echo "请先安装 pip"; exit 1; }
 
 # 检查 Python 版本
-PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_VER=$(python3 -c "import sys; sys.stdout.write(f'{sys.version_info.major}.{sys.version_info.minor}')")
 if [[ $(echo "$PY_VER < 3.10" | bc -l) -eq 1 ]]; then
     echo -e "${RED}❌ Python 版本需要 3.10+，当前: $PY_VER${NC}"
     exit 1

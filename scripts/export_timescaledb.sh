@@ -17,7 +17,7 @@ p = urlparse(sys.argv[1])
 host = p.hostname or "localhost"
 port = p.port or 5432
 db = (p.path or "/market_data").lstrip("/") or "market_data"
-print(f"{host}:{port}/{db}")
+sys.stdout.write(f"{host}:{port}/{db}")
 PY
 )"
 OUTPUT_DIR="${PROJECT_ROOT}/backups/timescaledb"

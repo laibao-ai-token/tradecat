@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import ast
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 SCAN_PREFIXES = ("services/", "services-preview/", "scripts/", "libs/")
+logger = logging.getLogger(__name__)
 
 
 def iter_python_files() -> list[Path]:
@@ -56,18 +58,19 @@ def find_async_time_sleep(path: Path) -> list[tuple[int, str]]:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     violations: list[str] = []
     for path in iter_python_files():
         for lineno, func_name in find_async_time_sleep(path):
             violations.append(f"{path}:{lineno} (async {func_name})")
 
     if violations:
-        print("发现 async def 中使用 time.sleep（请改为 await asyncio.sleep）:")
+        logger.error("发现 async def 中使用 time.sleep（请改为 await asyncio.sleep）:")
         for item in violations:
-            print(f"  - {item}")
+            logger.error("  - %s", item)
         return 1
 
-    print("OK: 未发现 async def 中的 time.sleep")
+    logger.info("OK: 未发现 async def 中的 time.sleep")
     return 0
 
 

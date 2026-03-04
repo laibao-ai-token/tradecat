@@ -1,5 +1,6 @@
 import os
 import statistics
+import sys
 import time
 
 import pytest
@@ -36,5 +37,5 @@ def test_engine_benchmark_smoke():
         rss_samples.append(_read_rss_mb())
 
     median_s = statistics.median(durations)
-    print(f"benchmark_median_s={median_s:.3f} durations={durations} rss_mb={rss_samples}")
+    sys.stderr.write(f"benchmark_median_s={median_s:.3f} durations={durations} rss_mb={rss_samples}\n")
     assert median_s > 0

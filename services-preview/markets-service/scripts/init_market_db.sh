@@ -28,7 +28,7 @@ p = urlparse(url)
 host = p.hostname or "localhost"
 port = p.port or 5432
 database = (p.path or "/market_data").lstrip("/") or "market_data"
-print(f"{host} {port} {database}")
+sys.stdout.write(f"{host} {port} {database}")
 PY
 )"
 

@@ -30,9 +30,9 @@ check_python() {
     
     # Python 版本
     if command -v python3 &>/dev/null; then
-        local py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
-        local py_major=$(python3 -c "import sys; print(sys.version_info.major)")
-        local py_minor=$(python3 -c "import sys; print(sys.version_info.minor)")
+        local py_ver=$(python3 -c "import sys; sys.stdout.write(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
+        local py_major=$(python3 -c "import sys; sys.stdout.write(str(sys.version_info.major))")
+        local py_minor=$(python3 -c "import sys; sys.stdout.write(str(sys.version_info.minor))")
         
         if [ "$py_major" -ge 3 ] && [ "$py_minor" -ge 10 ]; then
             success "Python: $py_ver"

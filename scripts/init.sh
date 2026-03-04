@@ -99,7 +99,7 @@ check_system() {
     
     # Python 版本检查
     if command -v python3 &>/dev/null; then
-        local py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        local py_ver=$(python3 -c "import sys; sys.stdout.write(f'{sys.version_info.major}.{sys.version_info.minor}')")
         if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
             success "Python3: $py_ver"
         else

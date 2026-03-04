@@ -282,25 +282,26 @@ def analyze(content: str, instruction: str, model: str = DEFAULT_MODEL) -> str:
 if __name__ == "__main__":
     import sys
     
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    test_logger = logging.getLogger("gemini_client_test")
     
     # 简单测试
-    print("=" * 50)
-    print("测试 Gemini CLI 调用")
-    print("=" * 50)
+    test_logger.info("%s", "=" * 50)
+    test_logger.info("测试 Gemini CLI 调用")
+    test_logger.info("%s", "=" * 50)
     
     success, result = call_gemini("你好，请用一句话介绍自己")
     
     if success:
-        print(f"\n✅ 成功:\n{result}")
+        test_logger.info("✅ 成功:\n%s", result)
     else:
-        print(f"\n❌ 失败: {result}")
+        test_logger.error("❌ 失败: %s", result)
         sys.exit(1)
     
     # 带系统提示词测试
-    print("\n" + "=" * 50)
-    print("测试带系统提示词")
-    print("=" * 50)
+    test_logger.info("%s%s", "\n", "=" * 50)
+    test_logger.info("测试带系统提示词")
+    test_logger.info("%s", "=" * 50)
     
     success, result = call_gemini_with_system(
         system_prompt="你是一个专业的翻译助手，将用户输入翻译成英文，只输出翻译结果",
@@ -308,7 +309,7 @@ if __name__ == "__main__":
     )
     
     if success:
-        print(f"\n✅ 成功:\n{result}")
+        test_logger.info("✅ 成功:\n%s", result)
     else:
-        print(f"\n❌ 失败: {result}")
+        test_logger.error("❌ 失败: %s", result)
         sys.exit(1)

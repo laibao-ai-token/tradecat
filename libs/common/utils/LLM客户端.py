@@ -7,8 +7,11 @@
 
 import json
 import requests
+import logging
 from typing import Dict, List, Optional, Any
 from libs.common.utils.路径助手 import 获取仓库根目录
+
+logger = logging.getLogger(__name__)
 
 
 class LLM客户端:
@@ -22,7 +25,7 @@ class LLM客户端:
             messages=[{"role": "user", "content": "Hello!"}],
             model="gemini-2.5-flash"
         )
-        print(response["choices"][0]["message"]["content"])
+        content = response["choices"][0]["message"]["content"]
     """
 
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
@@ -169,7 +172,7 @@ class LLM客户端:
         try:
             response = requests.get(url, headers=self.headers, timeout=5)
             return response.status_code == 200
-        except:
+        except requests.exceptions.RequestException:
             return False
 
 
@@ -179,7 +182,7 @@ def 创建LLM客户端() -> LLM客户端:
     示例:
         client = 创建LLM客户端()
         response = client.聊天([{"role": "user", "content": "Hello!"}])
-        print(response)
+        content = response["choices"][0]["message"]["content"]
     """
     return LLM客户端()
 
@@ -194,8 +197,12 @@ def 创建LLM客户端() -> LLM客户端:
 
 
 if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     # 简单的测试
-    print("🧪 测试LLM客户端...")
+    logger.info("🧪 测试LLM客户端...")
 
     try:
         # 创建客户端
@@ -203,34 +210,34 @@ if __name__ == "__main__":
 
         # 执行健康检查
         if client.健康检查():
-            print("✅ LLM API服务正常运行")
+            logger.info("✅ LLM API服务正常运行")
         else:
-            print("❌ LLM API服务不可用")
-            exit(1)
+            logger.error("❌ LLM API服务不可用")
+            sys.exit(1)
 
         # 获取模型列表
         models = client.获取模型列表()
-        print(f"✅ 可用模型数量: {len(models)}")
+        logger.info("✅ 可用模型数量: %d", len(models))
         for model in models[:3]:  # 显示前3个
-            print(f"   - {model['id']} ({model['owned_by']})")
+            logger.info("   - %s (%s)", model["id"], model["owned_by"])
 
         # 获取统计信息
         stats = client.获取统计信息()
-        print(f"✅ 活跃密钥数: {stats['active_keys']}/{stats['total_keys']}")
+        logger.info("✅ 活跃密钥数: %s/%s", stats["active_keys"], stats["total_keys"])
 
         # 测试聊天（可选）
         # response = client.聊天(
         #     messages=[{"role": "user", "content": "Hello, are you working?"}],
         #     max_tokens=50
         # )
-        # print(f"✅ 测试响应: {response['choices'][0]['message']['content'][:50]}...")
+        # logger.info("✅ 测试响应: %s", response["choices"][0]["message"]["content"][:50])
 
-        print("\n🎉 LLM客户端测试完成！")
+        logger.info("\n🎉 LLM客户端测试完成！")
 
     except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        print("\n请确保：")
-        print("1. LLM API服务已启动 (python services/llm-service/src/api/llm_api.py)")
-        print("2. 根目录的.env文件配置了正确的EXTERNAL_API_KEY")
-        print("3. 网络连接正常")
-        exit(1)
+        logger.error("\n❌ 测试失败: %s", e)
+        logger.error("\n请确保：")
+        logger.error("1. LLM API服务已启动 (python services/llm-service/src/api/llm_api.py)")
+        logger.error("2. 根目录的.env文件配置了正确的EXTERNAL_API_KEY")
+        logger.error("3. 网络连接正常")
+        sys.exit(1)

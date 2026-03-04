@@ -41,7 +41,7 @@ for raw in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
             val = val[:comment_pos].rstrip()
     value = val
 
-print(value, end="")
+sys.stdout.write(value)
 PY
 }
 
@@ -80,7 +80,7 @@ from urllib.parse import urlparse
 
 raw = (sys.argv[1] or "").strip()
 if not raw:
-    print("localhost:5432/market_data", end="")
+    sys.stdout.write("localhost:5432/market_data")
     raise SystemExit(0)
 
 p = urlparse(raw)
@@ -90,6 +90,6 @@ try:
 except ValueError:
     port = 5432
 database = (p.path or "/market_data").lstrip("/") or "market_data"
-print(f"{host}:{port}/{database}", end="")
+sys.stdout.write(f"{host}:{port}/{database}")
 PY
 }

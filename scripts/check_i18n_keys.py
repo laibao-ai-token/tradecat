@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import re
+import logging
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "services" / "telegram-service" / "src"
+logger = logging.getLogger(__name__)
 
 
 def _discover_locale_dir() -> Path:
@@ -115,26 +117,27 @@ def collect_code_keys() -> set[str]:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     code_keys = collect_code_keys()
     po_keys = set().union(*(collect_po_keys(p) for p in PO_FILES if p.exists()))
 
     missing = sorted(code_keys - po_keys)
     extra = sorted(po_keys - code_keys)
 
-    print(f"[i18n] 代码键数量: {len(code_keys)}, 词条数量: {len(po_keys)}")
+    logger.info("[i18n] 代码键数量: %d, 词条数量: %d", len(code_keys), len(po_keys))
     if missing:
-        print("❌ 缺失键 (代码中存在，po 中不存在):")
+        logger.error("❌ 缺失键 (代码中存在，po 中不存在):")
         for k in missing:
-            print(f"  - {k}")
+            logger.error("  - %s", k)
     else:
-        print("✅ 未发现缺失键")
+        logger.info("✅ 未发现缺失键")
 
     if extra:
-        print("ℹ️  冗余键 (po 中存在，代码未使用) - 仅提示:")
+        logger.info("ℹ️  冗余键 (po 中存在，代码未使用) - 仅提示:")
         for k in extra[:50]:
-            print(f"  - {k}")
+            logger.info("  - %s", k)
         if len(extra) > 50:
-            print(f"  ... 共 {len(extra)} 项")
+            logger.info("  ... 共 %d 项", len(extra))
 
     return 1 if missing else 0
 
