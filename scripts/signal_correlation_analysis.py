@@ -36,32 +36,14 @@ DEFAULT_HISTORY_DB = PROJECT_ROOT / "libs/database/services/signal-service/signa
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "artifacts/analysis/signal_correlation"
 logger = logging.getLogger(__name__)
 
+try:
+    # Running as file path: `python scripts/signal_correlation_analysis.py`
+    from lib.repo_env_loader import load_repo_env_compat
+except ModuleNotFoundError:
+    # Running as module: `python -m scripts.signal_correlation_analysis`
+    from scripts.lib.repo_env_loader import load_repo_env_compat
 
-def _load_repo_env() -> None:
-    try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return
-    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
-
-
-_load_repo_env()
+load_repo_env_compat(PROJECT_ROOT, set_os_env=True, override=False)
 
 DEFAULT_DB_URL = os.environ.get(
     "DATABASE_URL",

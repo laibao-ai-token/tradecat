@@ -13,6 +13,14 @@ from libs.common.utils.路径助手 import 获取仓库根目录
 
 logger = logging.getLogger(__name__)
 
+try:
+    from ..config_loader import load_repo_env
+except (ImportError, ValueError):
+    try:
+        from common.config_loader import load_repo_env
+    except ModuleNotFoundError:
+        from libs.common.config_loader import load_repo_env
+
 
 class LLM客户端:
     """LLM API网关客户端
@@ -35,12 +43,11 @@ class LLM客户端:
             base_url: LLM API网关地址，默认从.env读取或使用localhost:8000
             api_key: 外部访问密钥，默认从.env读取
         """
-        from dotenv import load_dotenv
         import os
 
-        # 加载.env文件（统一读取 config/.env）
-        env_path = 获取仓库根目录() / "config" / ".env"
-        load_dotenv(env_path)
+        repo_root = 获取仓库根目录()
+        env_path = repo_root / "config" / ".env"
+        load_repo_env(repo_root=repo_root, set_os_env=True, override=False)
 
         # 设置API地址
         self.base_url = base_url or os.getenv("LLM_API_BASE_URL", "http://localhost:8000")

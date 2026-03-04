@@ -21,27 +21,21 @@ PROJECT_ROOT = SERVICE_ROOT.parent.parent
 
 
 def _load_repo_env() -> None:
+    helper_path = PROJECT_ROOT / "scripts" / "lib" / "repo_env_loader.py"
+    if not helper_path.exists():
+        return
+    spec = importlib.util.spec_from_file_location("tradecat_repo_env_loader", helper_path)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
     try:
-        from common.config_loader import load_repo_env
-    except ModuleNotFoundError:
-        try:
-            from libs.common.config_loader import load_repo_env
-        except ModuleNotFoundError:
-            loader_path = PROJECT_ROOT / "libs" / "common" / "config_loader.py"
-            if not loader_path.exists():
-                return
-            spec = importlib.util.spec_from_file_location("tradecat_config_loader", loader_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except OSError:
-                return
-            load_repo_env = getattr(module, "load_repo_env", None)
-            if load_repo_env is None:
-                return
-    load_repo_env(repo_root=PROJECT_ROOT, set_os_env=True, override=False)
+        spec.loader.exec_module(module)
+    except (OSError, FileNotFoundError):
+        return
+    load_repo_env_compat = getattr(module, "load_repo_env_compat", None)
+    if not callable(load_repo_env_compat):
+        return
+    load_repo_env_compat(PROJECT_ROOT, set_os_env=True, override=False)
 
 
 _load_repo_env()

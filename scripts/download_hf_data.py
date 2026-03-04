@@ -21,6 +21,13 @@ ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
 
 try:
+    # Running as file path: `python scripts/download_hf_data.py`
+    from lib.repo_env_loader import load_repo_env_compat
+except ModuleNotFoundError:
+    # Running as module: `python -m scripts.download_hf_data`
+    from scripts.lib.repo_env_loader import load_repo_env_compat
+
+try:
     import pandas as pd
     import psycopg2
     from psycopg2.extras import execute_values
@@ -39,16 +46,8 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
 
 
 def load_env():
-    """加载 .env 配置"""
-    env_file = ROOT / "config" / ".env"
-    if env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    value = value.strip().strip('"').strip("'")
-                    os.environ.setdefault(key, value)
+    """加载 config/.env（统一共享加载器）。"""
+    load_repo_env_compat(ROOT, set_os_env=True, override=False)
 
 
 def get_db_connection():
