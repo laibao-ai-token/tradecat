@@ -13,6 +13,8 @@ import json
 import time
 from typing import Callable, Iterable, Optional
 
+from common.scheduler import wait_seconds
+
 
 @dataclass(frozen=True)
 class Quote:
@@ -90,7 +92,7 @@ class _TokenBucket:
 
             if time.monotonic() + wait_s > deadline:
                 return False
-            time.sleep(min(0.05, max(0.001, wait_s)))
+            wait_seconds(min(0.05, max(0.001, wait_s)))
 
 
 _TOKEN_BUCKETS: dict[str, _TokenBucket] = {}
@@ -160,7 +162,7 @@ def _request_with_policy(
             last_exc = TimeoutError(f"rate limited: {req_policy.key}")
             if attempt >= attempts - 1:
                 break
-            time.sleep(min(0.05, req_policy.backoff_base_s))
+            wait_seconds(min(0.05, req_policy.backoff_base_s))
             continue
 
         try:
@@ -173,7 +175,7 @@ def _request_with_policy(
                 float(req_policy.backoff_max_s),
                 float(req_policy.backoff_base_s) * float(2**attempt),
             )
-            time.sleep(max(0.01, delay))
+            wait_seconds(max(0.01, delay))
 
     if last_exc is not None:
         raise last_exc

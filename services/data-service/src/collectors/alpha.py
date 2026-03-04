@@ -121,9 +121,9 @@ def main():
 
     async def run():
         tokens = await refresh_alpha_tokens(force=True)
-        print(f"\nAlpha 代币: {len(tokens)} 个")
+        logger.info("Alpha 代币: %d 个", len(tokens))
         for sym in list(tokens.keys())[:10]:
-            print(f"  {sym}: {tokens[sym]['name']}")
+            logger.info("  %s: %s", sym, tokens[sym]["name"])
 
     asyncio.run(run())
 

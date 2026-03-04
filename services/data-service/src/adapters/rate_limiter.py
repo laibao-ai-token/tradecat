@@ -10,6 +10,8 @@ import threading
 import time
 from pathlib import Path
 
+from common.scheduler import wait_seconds
+
 logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).parent.parent.parent / "logs"
@@ -72,7 +74,7 @@ class GlobalLimiter:
             if self._ban_until > time.time():
                 wait = self._ban_until - time.time() + 5
                 logger.warning("等待 ban 解除 %.0fs", wait)
-                time.sleep(wait)
+                wait_seconds(wait)
 
     def _acquire_tokens(self, weight: int):
         while True:
@@ -89,7 +91,7 @@ class GlobalLimiter:
                     wait = (weight - tokens) / self.rate
                 finally:
                     fcntl.flock(f, fcntl.LOCK_UN)
-            time.sleep(max(0.05, wait))
+            wait_seconds(max(0.05, wait))
 
     def _read_state(self):
         try:

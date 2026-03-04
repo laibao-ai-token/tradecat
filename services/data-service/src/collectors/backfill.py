@@ -819,28 +819,28 @@ def main() -> None:
 
             if args.klines or args.all or not args.metrics:
                 gaps = bf._scanner.scan_klines(symbols, start, end)
-                print(f"\nK线缺口: {sum(len(g) for g in gaps.values())} 个")
+                logger.info("K线缺口: %d 个", sum(len(g) for g in gaps.values()))
                 for sym, sym_gaps in list(gaps.items())[:5]:
-                    print(f"  {sym}: {[str(g.date) for g in sym_gaps[:3]]}")
+                    logger.info("  %s: %s", sym, [str(g.date) for g in sym_gaps[:3]])
 
             if args.metrics or args.all:
                 gaps = bf._scanner.scan_metrics(symbols, start, end)
-                print(f"\nMetrics缺口: {sum(len(g) for g in gaps.values())} 个")
+                logger.info("Metrics缺口: %d 个", sum(len(g) for g in gaps.values()))
                 for sym, sym_gaps in list(gaps.items())[:5]:
-                    print(f"  {sym}: {[str(g.date) for g in sym_gaps[:3]]}")
+                    logger.info("  %s: %s", sym, [str(g.date) for g in sym_gaps[:3]])
         else:
             # 补齐
             if args.all:
                 result = bf.run_all(symbols)
-                print(f"\n结果: {result}")
+                logger.info("结果: %s", result)
             elif args.klines:
                 result = bf.run_klines(symbols)
-                print(f"\nK线结果: {result}")
+                logger.info("K线结果: %s", result)
             elif args.metrics:
                 result = bf.run_metrics(symbols)
-                print(f"\nMetrics结果: {result}")
+                logger.info("Metrics结果: %s", result)
             else:
-                print("用法: python backfill.py --klines|--metrics|--all [--scan-only]")
+                logger.info("用法: python backfill.py --klines|--metrics|--all [--scan-only]")
     finally:
         bf.close()
 

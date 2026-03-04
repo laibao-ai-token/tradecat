@@ -11,20 +11,22 @@ Main4 数据集约 415MB，包含 1150 万条记录（2020-2026）
 
 import argparse
 import gzip
+import logging
 import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+logger = logging.getLogger(__name__)
 
 try:
     import pandas as pd
     import psycopg2
     from psycopg2.extras import execute_values
 except ImportError as e:
-    print(f"缺少依赖: {e}")
-    print("请安装: pip install pandas psycopg2-binary huggingface_hub")
+    sys.stderr.write(f"缺少依赖: {e}\n")
+    sys.stderr.write("请安装: pip install pandas psycopg2-binary huggingface_hub\n")
     sys.exit(1)
 
 # HuggingFace 数据集 URL
@@ -62,17 +64,17 @@ def download_from_hf(filename: str, output_dir: Path) -> Path:
     try:
         from huggingface_hub import hf_hub_download
     except ImportError:
-        print("请安装: pip install huggingface_hub")
-        sys.exit(1)
+        logger.error("请安装: pip install huggingface_hub")
+        raise SystemExit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / filename
 
     if output_path.exists():
-        print(f"  文件已存在: {output_path}")
+        logger.info("文件已存在: %s", output_path)
         return output_path
 
-    print(f"  下载中: {filename} (可能需要较长时间...)")
+    logger.info("下载中: %s (可能需要较长时间...)", filename)
     downloaded = hf_hub_download(
         repo_id=HF_DATASET,
         filename=filename,
@@ -88,9 +90,9 @@ def stream_csv_gz(filepath: Path, symbols: list, days: int = None, chunksize: in
     if days:
         cutoff_date = datetime.utcnow() - timedelta(days=days)
 
-    print(f"  过滤币种: {symbols}")
+    logger.info("过滤币种: %s", symbols)
     if cutoff_date:
-        print(f"  过滤时间: {cutoff_date.strftime('%Y-%m-%d')} 之后")
+        logger.info("过滤时间: %s 之后", cutoff_date.strftime("%Y-%m-%d"))
 
     total_rows = 0
     for chunk in pd.read_csv(filepath, compression="gzip", chunksize=chunksize):
@@ -109,12 +111,12 @@ def stream_csv_gz(filepath: Path, symbols: list, days: int = None, chunksize: in
             total_rows += len(chunk)
             yield chunk
 
-    print(f"  总计读取: {total_rows:,} 行")
+    logger.info("总计读取: %s 行", f"{total_rows:,}")
 
 
 def import_candles(conn, filepath: Path, symbols: list, days: int = None):
     """导入 K 线数据到 candles_1m 表"""
-    print("\n=== 导入 K 线数据 ===")
+    logger.info("=== 导入 K 线数据 ===")
 
     cursor = conn.cursor()
 
@@ -126,7 +128,7 @@ def import_candles(conn, filepath: Path, symbols: list, days: int = None):
         )
     """)
     if not cursor.fetchone()[0]:
-        print("  ✗ 表 market_data.candles_1m 不存在，请先导入 schema")
+        logger.error("表 market_data.candles_1m 不存在，请先导入 schema")
         return
 
     insert_sql = """
@@ -174,15 +176,15 @@ def import_candles(conn, filepath: Path, symbols: list, days: int = None):
         if rows:
             execute_values(cursor, insert_sql, rows, page_size=1000)
             total_inserted += len(rows)
-            print(f"  已导入: {total_inserted:,} 行", end="\r")
+            logger.info("K线累计导入: %s 行", f"{total_inserted:,}")
 
     conn.commit()
-    print(f"\n  ✓ K 线数据导入完成: {total_inserted:,} 行")
+    logger.info("K线数据导入完成: %s 行", f"{total_inserted:,}")
 
 
 def import_metrics(conn, filepath: Path, symbols: list, days: int = None):
     """导入期货指标数据"""
-    print("\n=== 导入期货指标 ===")
+    logger.info("=== 导入期货指标 ===")
 
     cursor = conn.cursor()
 
@@ -194,7 +196,7 @@ def import_metrics(conn, filepath: Path, symbols: list, days: int = None):
         )
     """)
     if not cursor.fetchone()[0]:
-        print("  ✗ 表 market_data.binance_futures_metrics_5m 不存在，跳过")
+        logger.warning("表 market_data.binance_futures_metrics_5m 不存在，跳过")
         return
 
     insert_sql = """
@@ -227,13 +229,14 @@ def import_metrics(conn, filepath: Path, symbols: list, days: int = None):
         if rows:
             execute_values(cursor, insert_sql, rows, page_size=1000)
             total_inserted += len(rows)
-            print(f"  已导入: {total_inserted:,} 行", end="\r")
+            logger.info("期货指标累计导入: %s 行", f"{total_inserted:,}")
 
     conn.commit()
-    print(f"\n  ✓ 期货指标导入完成: {total_inserted:,} 行")
+    logger.info("期货指标导入完成: %s 行", f"{total_inserted:,}")
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="从 HuggingFace 下载并导入历史数据")
     parser.add_argument(
         "--symbols",
@@ -266,13 +269,12 @@ def main():
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")]
 
-    print("=" * 50)
-    print("  HuggingFace 历史数据下载工具")
-    print("=" * 50)
-    print(f"  数据集: {HF_DATASET}")
-    print(f"  币种: {symbols}")
-    print(f"  天数: {'全部' if not args.days else args.days}")
-    print()
+    logger.info("=" * 50)
+    logger.info("HuggingFace 历史数据下载工具")
+    logger.info("=" * 50)
+    logger.info("数据集: %s", HF_DATASET)
+    logger.info("币种: %s", symbols)
+    logger.info("天数: %s", "全部" if not args.days else args.days)
 
     # 加载配置
     load_env()
@@ -285,24 +287,24 @@ def main():
     metrics_path = None
 
     if not args.skip_candles:
-        print("下载 K 线数据...")
+        logger.info("下载 K 线数据...")
         candles_path = download_from_hf(CANDLES_FILE, download_dir)
 
     if not args.skip_metrics:
-        print("下载期货指标...")
+        logger.info("下载期货指标...")
         metrics_path = download_from_hf(METRICS_FILE, download_dir)
 
     if args.download_only:
-        print("\n✓ 下载完成 (--download-only)")
+        logger.info("下载完成 (--download-only)")
         return
 
     # 连接数据库
-    print("\n连接数据库...")
+    logger.info("连接数据库...")
     try:
         conn = get_db_connection()
-        print("  ✓ 数据库连接成功")
+        logger.info("数据库连接成功")
     except Exception as e:
-        print(f"  ✗ 数据库连接失败: {e}")
+        logger.error("数据库连接失败: %s", e)
         sys.exit(1)
 
     # 导入数据
@@ -316,9 +318,9 @@ def main():
     finally:
         conn.close()
 
-    print("\n" + "=" * 50)
-    print("  ✓ 数据导入完成")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("数据导入完成")
+    logger.info("=" * 50)
 
 
 if __name__ == "__main__":

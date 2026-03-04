@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 import ccxt
 
+from common.scheduler import wait_with_backoff
 from .rate_limiter import acquire, parse_ban, release, set_ban
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ def fetch_ohlcv(exchange: str, symbol: str, interval: str = "1m",
             if attempt == 2:
                 logger.warning("fetch_ohlcv 网络错误: %s", e)
                 return []
-            time.sleep(1 * (2 ** attempt))
+            wait_with_backoff(attempt, base_seconds=1.0, factor=2.0)
         finally:
             release()
 

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 
+from common.scheduler import wait_seconds
+
 try:
     from ..config import get_history_db_path
 except ImportError:
@@ -173,9 +175,8 @@ class SignalHistory:
             except sqlite3.OperationalError as e:
                 if attempt < max_retries:
                     logger.warning(f"保存信号历史失败(重试{attempt + 1}): {e}")
-                    import time
 
-                    time.sleep(0.1 * (attempt + 1))
+                    wait_seconds(0.1 * (attempt + 1))
                 else:
                     logger.error(f"保存信号历史失败(已重试{max_retries}次): {e}")
                     return -1

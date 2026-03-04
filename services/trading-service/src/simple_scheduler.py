@@ -15,6 +15,7 @@ import sqlite3
 import time
 import atexit
 import signal
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +25,7 @@ from psycopg.rows import dict_row
 
 TRADING_SERVICE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(TRADING_SERVICE_DIR))  # tradecat/
+logger = logging.getLogger(__name__)
 
 def _resolve_sqlite_path(env_path: str | None, default_path: str) -> str:
     """支持相对路径，统一基于项目根目录解析为绝对路径。"""
@@ -80,7 +82,7 @@ from .db.reader import shared_pg_conn
 
 
 def log(msg: str):
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+    logger.info(msg)
 
 
 # 使用共享币种模块
@@ -351,6 +353,7 @@ def update_priority(runtime_state: SchedulerRuntimeState):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     runtime_state = SchedulerRuntimeState(intervals=INTERVALS, sqlite_path=SQLITE_PATH)
     atexit.register(runtime_state.close_sqlite_conn)
     stop_event = Event()

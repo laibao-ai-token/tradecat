@@ -7,6 +7,8 @@ import requests
 from dataclasses import dataclass
 from typing import Optional
 
+from .scheduler import wait_seconds
+
 LOGGER = logging.getLogger(__name__)
 
 # 冷却配置
@@ -66,7 +68,7 @@ def check_proxy() -> bool:
             pass
         
         if i < PROXY_RETRY_COUNT - 1:
-            time.sleep(PROXY_RETRY_DELAY)
+            wait_seconds(PROXY_RETRY_DELAY)
     
     # 重试失败，进入冷却
     disable_proxy()

@@ -11,6 +11,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional, Set
 
+from .scheduler import wait_seconds
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +77,7 @@ def _fetch_all_symbols_rest() -> List[str]:
         except Exception as exc:
             last_exc = exc
             if attempt < retries - 1:
-                time.sleep(1 + attempt)
+                wait_seconds(1 + attempt)
                 continue
             raise
     symbols = []

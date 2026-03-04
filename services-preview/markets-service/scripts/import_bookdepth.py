@@ -119,9 +119,9 @@ def _print_summary(db_url: str) -> None:
             )
             rows = cur.fetchall()
 
-    print("\n=== 导入结果 ===")
+    logger.info("=== 导入结果 ===")
     for symbol, cnt, ts_min, ts_max in rows:
-        print(f"{symbol:<12} {cnt:>10}  {ts_min}  ->  {ts_max}")
+        logger.info("%-12s %10s  %s  ->  %s", symbol, cnt, ts_min, ts_max)
 
 
 def main() -> None:

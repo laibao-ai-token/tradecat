@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from common.scheduler import wait_seconds
+
 from .db import SignalRow, fetch_recent, parse_ts, probe
 from .etf_profiles import get_etf_domain_profile, get_all_domain_keys, get_domain_label, load_dynamic_auto_driving_symbols
 from .etf_selector import select_etf_candidates
@@ -2970,7 +2972,7 @@ def _main(
             if key == -1:
                 sleep_for = min(0.03, max(0.0, next_frame_at - time.time()))
                 if sleep_for > 0:
-                    time.sleep(sleep_for)
+                    wait_seconds(sleep_for)
                 continue
 
             pending_force_redraw = True

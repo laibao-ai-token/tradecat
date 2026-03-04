@@ -3,6 +3,7 @@
 根据 RETENTION 配置，为每个币种每个周期计算并写入历史指标数据
 """
 import importlib.util
+import logging
 import os
 import sys
 import time
@@ -45,6 +46,7 @@ from src.core.async_full_engine import get_high_priority_symbols_fast
 
 INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d', '1w']
 DEFAULT_BAR_LIMIT = 10_000
+logger = logging.getLogger(__name__)
 
 
 def _is_truthy_env(name: str) -> bool:
@@ -1247,7 +1249,7 @@ def backfill_all(
     if symbols is None:
         symbols = get_high_priority_symbols_fast(top_n=50) or []
         if not symbols:
-            print("无法获取币种列表")
+            logger.warning("无法获取币种列表")
             return
     symbols = [s.strip().upper() for s in symbols if str(s).strip()]
 
@@ -1272,12 +1274,12 @@ def backfill_all(
         indicators = get_batch_indicators()
 
     mode = "FAST" if fast else "SLOW"
-    print(f"开始回填({mode}): {len(symbols)} 币种, {len(intervals)} 周期, {len(indicators)} 指标")
-    print(f"保留配置: {retention_map}")
-    print(f"K线读取上限: {bar_limit_map}")
+    logger.info("开始回填(%s): %d 币种, %d 周期, %d 指标", mode, len(symbols), len(intervals), len(indicators))
+    logger.info("保留配置: %s", retention_map)
+    logger.info("K线读取上限: %s", bar_limit_map)
     if fast and str(fast_fallback).strip().lower() == "broadcast":
-        print("WARNING: --fast-fallback=broadcast 会把最后一行结果广播到历史K线，可能产生非真实历史值。")
-    print("-" * 60)
+        logger.warning("--fast-fallback=broadcast 会把最后一行结果广播到历史K线，可能产生非真实历史值。")
+    logger.info("-" * 60)
 
     total_start = time.time()
     total_computed = 0
@@ -1285,7 +1287,7 @@ def backfill_all(
     for interval in intervals:
         retention = retention_map.get(interval, 60)
         bar_limit = bar_limit_map.get(interval, DEFAULT_BAR_LIMIT)
-        print(f"\n[{interval}] 保留 {retention} 条 | 读取K线 {bar_limit} 条")
+        logger.info("[%s] 保留 %d 条 | 读取K线 %d 条", interval, retention, bar_limit)
 
         for i, symbol in enumerate(symbols):
             t0 = time.time()
@@ -1310,18 +1312,19 @@ def backfill_all(
             total_computed += computed
 
             if computed > 0:
-                print(f"  {symbol}: {computed} 条, {time.time()-t0:.1f}s")
+                logger.info("  %s: %d 条, %.1fs", symbol, computed, time.time() - t0)
 
             # 进度
             if (i + 1) % 10 == 0:
-                print(f"  进度: {i+1}/{len(symbols)}")
+                logger.info("  进度: %d/%d", i + 1, len(symbols))
 
-    print("-" * 60)
-    print(f"完成! 总计 {total_computed} 条, 耗时 {time.time()-total_start:.1f}s")
+    logger.info("-" * 60)
+    logger.info("完成! 总计 %d 条, 耗时 %.1fs", total_computed, time.time() - total_start)
 
 
 if __name__ == "__main__":
     import argparse
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="历史指标回填")
     parser.add_argument("-s", "--symbols", nargs="+", help="指定币种")
     parser.add_argument("-i", "--intervals", nargs="+", help="指定周期")

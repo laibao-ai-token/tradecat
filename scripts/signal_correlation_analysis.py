@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import logging
 import os
 import re
 import sqlite3
@@ -33,6 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COOLDOWN_DB = PROJECT_ROOT / "libs/database/services/signal-service/cooldown.db"
 DEFAULT_HISTORY_DB = PROJECT_ROOT / "libs/database/services/signal-service/signal_history.db"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "artifacts/analysis/signal_correlation"
+logger = logging.getLogger(__name__)
 
 
 def _load_repo_env() -> None:
@@ -153,7 +155,7 @@ def _load_rule_meta() -> dict[str, dict]:
                 "table": r.table,
             }
     except Exception as exc:
-        print(f"警告: 规则元数据加载失败: {exc}", file=sys.stderr)
+        logger.warning("规则元数据加载失败: %s", exc)
     return rule_meta
 
 
@@ -339,6 +341,7 @@ def _format_num(val: float | None) -> str:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="信号相关性分析（cooldown + PG candles）")
     parser.add_argument("--cooldown-db", default=str(DEFAULT_COOLDOWN_DB), help="cooldown.db 路径")
     parser.add_argument("--history-db", default=str(DEFAULT_HISTORY_DB), help="signal_history.db 路径")
@@ -378,14 +381,14 @@ def main() -> int:
     rule_meta = _load_rule_meta()
     if args.use_history:
         if not history_db.exists():
-            print(f"未找到 history DB: {history_db}", file=sys.stderr)
+            logger.error("未找到 history DB: %s", history_db)
             return 1
         events = _load_history_events(history_db, rule_meta)
     else:
         events = _load_cooldown_events(cooldown_db, rule_meta)
 
     if not events:
-        print("未解析到任何信号事件。", file=sys.stderr)
+        logger.error("未解析到任何信号事件。")
         return 1
 
     df = pd.DataFrame([e.__dict__ for e in events])
@@ -413,7 +416,7 @@ def main() -> int:
             mask &= ~df["table"].fillna("").isin(exclude_tables)
         df = df[mask].reset_index(drop=True)
     if df.empty:
-        print("过滤后无有效事件。", file=sys.stderr)
+        logger.error("过滤后无有效事件。")
         return 1
 
     # ==================== 查询价格 ====================
@@ -561,7 +564,7 @@ def main() -> int:
 
     (output_dir / "report.md").write_text("\n".join(report_lines), encoding="utf-8")
 
-    print(f"完成：已输出到 {output_dir}")
+    logger.info("完成：已输出到 %s", output_dir)
     return 0
 
 

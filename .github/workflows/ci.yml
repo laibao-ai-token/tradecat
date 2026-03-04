@@ -21,7 +21,10 @@ jobs:
         run: pip install ruff
       
       - name: Lint with ruff
-        run: ruff check services/ --ignore E501,E402
+        run: ruff check services/ services-preview/ libs/ scripts/ --ignore E501,E402
+
+      - name: Guard print in services source
+        run: python scripts/check_no_print_services.py
 
   syntax-check:
     runs-on: ubuntu-latest
@@ -35,4 +38,24 @@ jobs:
       
       - name: Syntax check
         run: |
-          find services -name "*.py" -type f | head -50 | xargs -I {} python -m py_compile {}
+          python - <<'PY'
+          import py_compile
+          import subprocess
+          import sys
+
+          roots = ("services", "services-preview", "libs", "scripts")
+          out = subprocess.check_output(["git", "ls-files", "-z", "--", *roots], text=False)
+          files = [p for p in out.decode("utf-8", errors="surrogateescape").split("\0") if p.endswith(".py")]
+
+          failed = False
+          for path in sorted(files):
+              try:
+                  py_compile.compile(path, doraise=True)
+              except py_compile.PyCompileError as exc:
+                  failed = True
+                  print(f"[syntax-error] {path}: {exc.msg}", file=sys.stderr)
+
+          print(f"checked_python_files={len(files)}")
+          if failed:
+              sys.exit(1)
+          PY

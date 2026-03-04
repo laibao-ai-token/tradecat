@@ -88,7 +88,7 @@ def main() -> None:
         sched.add("backfill", [py, "-m", "collectors.backfill"])
 
     if not sched._procs:
-        print("用法: python src/__main__.py --ws|--metrics|--backfill|--all")
+        parser.print_help(sys.stderr)
         sys.exit(1)
 
     sched.run()

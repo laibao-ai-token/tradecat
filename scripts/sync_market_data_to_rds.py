@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
-import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 基础工具 ====================
@@ -209,10 +211,11 @@ def sync_table(
     if time_col and total > 0:
         state[table] = {"last_watermark": max_time}
 
-    print(f"[同步完成] 表={table} 条数={total} 增量列={time_col or '无'}")
+    logger.info("同步完成: 表=%s 条数=%d 增量列=%s", table, total, time_col or "无")
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="增量同步 SQLite market_data.db 到 PostgreSQL")
     parser.add_argument(
         "--sqlite",
@@ -230,11 +233,11 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.pg_dsn:
-        print("[错误] 未提供 --pg-dsn 或环境变量 PG_DSN")
+        logger.error("未提供 --pg-dsn 或环境变量 PG_DSN")
         return 2
 
     if not os.path.exists(args.sqlite):
-        print(f"[错误] SQLite 文件不存在: {args.sqlite}")
+        logger.error("SQLite 文件不存在: %s", args.sqlite)
         return 2
 
     state = load_state(args.state)
@@ -252,14 +255,14 @@ def main() -> int:
         tables = all_tables
 
     if not tables:
-        print("[提示] 未找到可同步的表")
+        logger.info("未找到可同步的表")
         return 0
 
     for table in tables:
         sync_table(sqlite_conn, pg_conn, table, state, args.batch_size)
 
     save_state(args.state, state)
-    print(f"[完成] 水位已写入: {args.state}")
+    logger.info("完成: 水位已写入 %s", args.state)
     return 0
 
 

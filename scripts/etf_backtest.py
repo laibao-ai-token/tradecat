@@ -16,6 +16,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import logging
 import math
 import sys
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
 _TUI_ROOT = _REPO_ROOT / "services-preview" / "tui-service"
 _TUI_SRC_ROOT = _TUI_ROOT / "src"
+logger = logging.getLogger(__name__)
 
 
 def _load_tui_modules():
@@ -260,16 +262,16 @@ def run_backtest(
 ) -> BacktestResult:
     """Run the backtest."""
     # Fetch history for all symbols
-    print(f"Fetching historical data for {len(symbols)} symbols...")
+    logger.info("Fetching historical data for %d symbols...", len(symbols))
     history: dict[str, list[DailyCandle]] = {}
     for sym in symbols:
         hist = fetch_fund_history(sym, days=days + 10)  # Extra buffer
         if hist:
             history[sym] = hist
-            print(f"  {sym}: {len(hist)} days")
-    
+            logger.info("  %s: %d days", sym, len(hist))
+
     if not history:
-        print("No historical data fetched!")
+        logger.error("No historical data fetched!")
         return BacktestResult()
     
     # Determine date range
@@ -282,13 +284,13 @@ def run_backtest(
     # Use last N trading days
     trading_days = sorted_dates[-days:] if len(sorted_dates) >= days else sorted_dates
     if len(trading_days) < 10:
-        print(f"Not enough trading days: {len(trading_days)}")
+        logger.error("Not enough trading days: %d", len(trading_days))
         return BacktestResult()
     
     start_date = datetime.fromtimestamp(trading_days[0]).strftime("%Y-%m-%d")
     end_date = datetime.fromtimestamp(trading_days[-1]).strftime("%Y-%m-%d")
     
-    print(f"Backtest period: {start_date} to {end_date} ({len(trading_days)} days)")
+    logger.info("Backtest period: %s to %s (%d days)", start_date, end_date, len(trading_days))
     
     active_profile = profile or get_etf_domain_profile("auto_driving_cn")
 
@@ -322,7 +324,7 @@ def run_backtest(
         if len(features) >= 3:  # Need at least 3 funds
             valid_days.append((day_ts, features))
     
-    print(f"Valid evaluation days: {len(valid_days)}")
+    logger.info("Valid evaluation days: %d", len(valid_days))
     
     # Process each day
     for day_ts, features in valid_days:
@@ -377,7 +379,7 @@ def run_backtest(
     
     # Calculate metrics
     if not strategy_returns:
-        print("No valid returns calculated!")
+        logger.error("No valid returns calculated!")
         return BacktestResult()
     
     # Total returns (compound, not sum)
@@ -484,6 +486,7 @@ Top 10 持仓天数:
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     parser = argparse.ArgumentParser(description="ETF 自动驾驶选基 30天离线评估")
     parser.add_argument("--domain", type=str, default="auto_driving_cn", help="领域key（默认 auto_driving_cn）")
     parser.add_argument("--days", type=int, default=30, help="评估天数")
@@ -494,15 +497,15 @@ def main():
     symbols = list(profile.symbols)
     top_n = args.top_n if int(args.top_n) > 0 else max(1, int(profile.top_n))
 
-    print(f"领域: {profile.key} ({profile.label})")
-    print(f"候选池: {symbols}")
-    print(f"TopN: {top_n}")
+    logger.info("领域: %s (%s)", profile.key, profile.label)
+    logger.info("候选池: %s", symbols)
+    logger.info("TopN: %d", top_n)
 
     # Run backtest
     result = run_backtest(symbols, days=args.days, top_n=top_n, profile=profile)
     
     if not result.daily_results:
-        print("评估失败：无有效数据")
+        logger.error("评估失败：无有效数据")
         sys.exit(1)
     
     # Output paths
@@ -538,23 +541,23 @@ def main():
     }
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(json_data, f, ensure_ascii=False, indent=2)
-    print(f"JSON 报告: {json_path}")
+    logger.info("JSON 报告: %s", json_path)
     
     # Save Markdown
     md_content = format_markdown(result)
     with md_path.open("w", encoding="utf-8") as f:
         f.write(md_content)
-    print(f"Markdown 报告: {md_path}")
+    logger.info("Markdown 报告: %s", md_path)
     
     # Print summary
-    print("\n" + "=" * 50)
-    print("评估结果摘要")
-    print("=" * 50)
-    print(f"策略累计收益: {result.strategy_total_return * 100:.2f}%")
-    print(f"基准累计收益: {result.benchmark_total_return * 100:.2f}%")
-    print(f"策略夏普比率: {result.strategy_sharpe:.4f}")
-    print(f"基准夏普比率: {result.benchmark_sharpe:.4f}")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("评估结果摘要")
+    logger.info("=" * 50)
+    logger.info("策略累计收益: %.2f%%", result.strategy_total_return * 100)
+    logger.info("基准累计收益: %.2f%%", result.benchmark_total_return * 100)
+    logger.info("策略夏普比率: %.4f", result.strategy_sharpe)
+    logger.info("基准夏普比率: %.4f", result.benchmark_sharpe)
+    logger.info("=" * 50)
 
 
 if __name__ == "__main__":
