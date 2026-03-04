@@ -19,9 +19,25 @@ if [[ ! -d "$VENV_DIR" ]]; then
   if [[ -f "$SERVICE_DIR/requirements.txt" ]]; then
     "$VENV_DIR/bin/pip" install -q -r "$SERVICE_DIR/requirements.txt"
   fi
+  # TUI 依赖 shared common 包（如 common.scheduler）。
+  "$VENV_DIR/bin/pip" install -q -e "$REPO_ROOT/libs"
 fi
 
 PYTHON="$VENV_DIR/bin/python"
+
+_ensure_common_package() {
+  if "$PYTHON" - <<'PY' >/dev/null 2>&1
+import common.scheduler
+PY
+  then
+    return 0
+  fi
+
+  echo "检测到缺少 shared common 包，正在安装..."
+  "$VENV_DIR/bin/pip" install -q -e "$REPO_ROOT/libs"
+}
+
+_ensure_common_package
 
 SIGNAL_START_SCRIPT="$REPO_ROOT/services/signal-service/scripts/start.sh"
 SIGNAL_PID_FILE="$REPO_ROOT/services/signal-service/logs/signal-service.pid"

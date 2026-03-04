@@ -3,7 +3,7 @@
 
 Policy:
 - scan tracked `.py` files under `services/` and `services-preview/`
-- ignore `tests/` and `scripts/` subtrees
+- ignore `tests/` and service-level `scripts/` subtrees
 - fail on runtime print calls (AST-based)
 """
 
@@ -15,8 +15,25 @@ import subprocess
 
 
 ROOTS = ("services", "services-preview")
-EXCLUDE_PARTS = ("/tests/", "/scripts/")
 logger = logging.getLogger(__name__)
+
+
+def _is_excluded_path(path: str) -> bool:
+    """Exclude tests and service-level scripts directories only.
+
+    Keep `src/scripts/` in scan scope to catch print regressions inside source modules.
+    """
+
+    norm = "/" + path.replace(chr(92), "/")
+    if "/tests/" in norm:
+        return True
+
+    parts = norm.strip("/").split("/")
+    # Match: services/<service>/scripts/... and services-preview/<service>/scripts/...
+    if len(parts) >= 4 and parts[0] in ROOTS and parts[2] == "scripts":
+        return True
+
+    return False
 
 
 def _iter_tracked_python_files() -> list[str]:
@@ -24,8 +41,7 @@ def _iter_tracked_python_files() -> list[str]:
     files = [p for p in out.decode("utf-8", errors="surrogateescape").split("\0") if p.endswith(".py")]
     result: list[str] = []
     for path in files:
-        norm = "/" + path.replace(chr(92), "/")
-        if any(part in norm for part in EXCLUDE_PARTS):
+        if _is_excluded_path(path):
             continue
         result.append(path)
     return sorted(result)
