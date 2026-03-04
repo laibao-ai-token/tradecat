@@ -184,7 +184,7 @@ start_service() {
         local interval_s="${ENGINE_LOOP_INTERVAL_SECONDS:-60}"
         new_pid=$(run_detached "$SERVICE_LOG" bash -c "
 while true; do
-  \"$vpy\" -u -m src --once --mode \"${ENGINE_MODE:-all}\" || true
+  \"$vpy\" -u -m src --engine core --once --mode \"${ENGINE_MODE:-all}\" || true
   sleep \"$interval_s\" || true
 done
 ")

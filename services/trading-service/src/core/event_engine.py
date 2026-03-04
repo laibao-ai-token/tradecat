@@ -22,6 +22,7 @@ import psycopg
 import select
 
 from ..config import config
+from .experimental import ensure_experimental_enabled
 from .scheduler import wait_for_next_cycle
 
 LOG = logging.getLogger("indicator_service.event")
@@ -135,7 +136,7 @@ class EventEngine:
 
     def _init_engine(self):
         """后台初始化 - 识别高优先级币种并全量计算"""
-        from .async_full_engine import get_high_priority_symbols_fast
+        from .priority import get_high_priority_symbols_fast
 
         # 识别高优先级币种
         LOG.info("识别高优先级币种...")
@@ -292,5 +293,6 @@ class EventEngine:
 
 def run_event_engine(symbols=None, intervals=None, workers=4):
     """启动事件驱动引擎"""
+    ensure_experimental_enabled("event")
     engine = EventEngine(symbols=symbols, intervals=intervals, workers=workers)
     engine.run()

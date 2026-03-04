@@ -16,9 +16,10 @@
 ```
 src/
 ├── core/                    # 计算引擎
-│   ├── engine.py            # 同步计算引擎
-│   ├── async_full_engine.py # 异步计算引擎
-│   └── event_engine.py      # 事件驱动引擎
+│   ├── engine.py            # 主引擎（默认）
+│   ├── async_full_engine.py # 异步计算引擎（实验）
+│   ├── event_engine.py      # 事件驱动引擎（实验）
+│   └── priority.py          # 高优先级币种共享选择器
 ├── db/
 │   ├── reader.py            # TimescaleDB 读取
 │   └── cache.py             # 数据缓存
@@ -85,6 +86,10 @@ python3 -m src --once
 
 # 指定参数
 python3 -m src --once --symbols BTCUSDT,ETHUSDT --intervals 5m,15m
+
+# 实验引擎（默认禁用，需显式开启）
+ENABLE_EXPERIMENTAL_ENGINES=1 python3 -m src --engine full_async
+ENABLE_EXPERIMENTAL_ENGINES=1 python3 -m src --engine event
 ```
 
 ## 配置说明

@@ -27,7 +27,8 @@ help:
 	@echo ""
 	@echo "  运行服务:"
 	@echo "    make run         - 一次性计算（推荐）"
-	@echo "    make run-async   - 完全异步持续运行"
+	@echo "    make run-async   - 完全异步持续运行（实验）"
+	@echo "    make run-event   - 事件驱动模式（实验）"
 	@echo "    make start       - 后台启动"
 	@echo "    make stop        - 停止服务"
 	@echo "    make status      - 查看状态"
@@ -128,10 +129,10 @@ run: install
 	$(PYTHON) -m src --once
 
 run-async:
-	$(PYTHON) -m src --full-async
+	ENABLE_EXPERIMENTAL_ENGINES=1 $(PYTHON) -m src --engine full_async
 
 run-event:
-	$(PYTHON) -m src --event
+	ENABLE_EXPERIMENTAL_ENGINES=1 $(PYTHON) -m src --engine event
 
 start:
 	./scripts/start.sh start

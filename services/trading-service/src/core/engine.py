@@ -63,7 +63,7 @@ class Engine:
             if self.symbols:
                 symbols = self.symbols
             else:
-                from .async_full_engine import get_high_priority_symbols_fast
+                from .priority import get_high_priority_symbols_fast
                 t_priority = time.time()
                 high_symbols = get_high_priority_symbols_fast(top_n=15)
                 if not high_symbols:

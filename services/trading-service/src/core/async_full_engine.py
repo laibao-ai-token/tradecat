@@ -28,6 +28,7 @@ import pandas as pd
 from ..config import config
 from ..db.reader import shared_pg_conn
 from ..indicators.base import get_all_indicators
+from .experimental import ensure_experimental_enabled
 from .scheduler import wait_for_next_cycle
 
 LOG = logging.getLogger("indicator_service.async_full")
@@ -53,93 +54,10 @@ INDICATOR_DEPS = {
 }
 
 def get_high_priority_symbols_fast(top_n: int = 30) -> Set[str]:
-    """
-    快速获取高优先级币种 - 合并SQL + 并行查询
-    """
-    result = set()
+    """兼容入口：委托共享优先级模块实现。"""
+    from .priority import get_high_priority_symbols_fast as _shared_get_high_priority_symbols_fast
 
-    def query_kline_priority():
-        """K线维度优先级 - 单SQL合并查询"""
-        symbols = set()
-        try:
-            with shared_pg_conn() as conn:
-                # Prefer 5m table if present; otherwise fall back to 1m (no DB schema changes required).
-                # Also always filter by configured exchange to avoid mixing multiple sources.
-                table = "market_data.candles_5m"
-                try:
-                    row = conn.execute("SELECT to_regclass(%s) AS reg", ("market_data.candles_5m",)).fetchone()
-                    reg = None
-                    if row:
-                        reg = row.get("reg") if hasattr(row, "get") else (row[0] if len(row) > 0 else None)
-                    if not reg:
-                        table = "market_data.candles_1m"
-                except Exception:
-                    table = "market_data.candles_1m"
-
-                # 合并3个维度到单个SQL
-                sql = """
-                    WITH base AS (
-                        SELECT symbol, 
-                               SUM(quote_volume) as total_qv,
-                               AVG((high-low)/NULLIF(close,0)) as volatility
-                        FROM {table}
-                        WHERE exchange = %s AND bucket_ts > NOW() - INTERVAL '24 hours'
-                        GROUP BY symbol
-                    ),
-                    volume_rank AS (
-                        SELECT symbol FROM base ORDER BY total_qv DESC LIMIT %s
-                    ),
-                    volatility_rank AS (
-                        SELECT symbol FROM base ORDER BY volatility DESC LIMIT %s
-                    ),
-                    change_rank AS (
-                        WITH latest AS (
-                            SELECT DISTINCT ON (symbol) symbol, close
-                            FROM {table}
-                            WHERE exchange = %s AND bucket_ts > NOW() - INTERVAL '1 hour'
-                            ORDER BY symbol, bucket_ts DESC
-                        ),
-                        prev AS (
-                            SELECT DISTINCT ON (symbol) symbol, close as prev_close
-                            FROM {table}
-                            WHERE exchange = %s AND bucket_ts BETWEEN NOW() - INTERVAL '25 hours' AND NOW() - INTERVAL '23 hours'
-                            ORDER BY symbol, bucket_ts DESC
-                        )
-                        SELECT l.symbol
-                        FROM latest l JOIN prev p ON l.symbol = p.symbol
-                        ORDER BY ABS((l.close - p.prev_close) / NULLIF(p.prev_close, 0)) DESC
-                        LIMIT %s
-                    )
-                    SELECT DISTINCT symbol FROM (
-                        SELECT symbol FROM volume_rank
-                        UNION SELECT symbol FROM volatility_rank
-                        UNION SELECT symbol FROM change_rank
-                    ) combined
-                """.format(table=table)
-                cur = conn.execute(sql, (config.exchange, top_n, top_n, config.exchange, config.exchange, top_n))
-                symbols.update(r[0] for r in cur.fetchall())
-        except Exception as e:
-            LOG.warning(f"K线优先级查询失败: {e}")
-        return symbols
-
-    def query_futures_priority():
-        """期货维度优先级"""
-        return _get_futures_priority(top_n)[0]
-
-    # 并行执行K线和期货查询
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(query_kline_priority),
-            executor.submit(query_futures_priority),
-        ]
-        for f in as_completed(futures):
-            try:
-                result.update(f.result())
-            except Exception as e:
-                LOG.warning(f"优先级查询失败: {e}")
-
-    LOG.info(f"高优先级币种: {len(result)} 个")
-    return result
+    return _shared_get_high_priority_symbols_fast(top_n=top_n)
 
 
 def get_high_priority_symbols(cache, interval: str = "5m", top_n: int = 15) -> tuple[Set[str], dict]:
@@ -254,65 +172,10 @@ def get_high_priority_symbols(cache, interval: str = "5m", top_n: int = 15) -> t
 
 
 def _get_futures_priority(top_n: int = 15) -> tuple[set, dict]:
-    """获取期货维度的高优先级币种"""
-    result = set()
-    debug = {"oi_value": 0, "oi_change": 0, "taker_extreme": 0, "ls_extreme": 0, "top_ls_change": 0, "futures_total": 0}
+    """兼容入口：委托共享优先级模块实现。"""
+    from .priority import _get_futures_priority as _shared_get_futures_priority
 
-    try:
-        with shared_pg_conn() as conn:
-            with conn.cursor() as cur:
-                # 查每个币种的最新数据（限制7天）
-                cur.execute("""
-                    SELECT DISTINCT ON (symbol) 
-                        symbol, sum_open_interest_value as oi_val,
-                        sum_taker_long_short_vol_ratio as taker_ratio,
-                        count_long_short_ratio as ls_ratio
-                    FROM market_data.binance_futures_metrics_5m 
-                    WHERE create_time > NOW() - INTERVAL '7 days'
-                    ORDER BY symbol, create_time DESC
-                """)
-                rows = cur.fetchall()
-
-                oi_value_rank = []    # 持仓价值
-                taker_extreme = set() # 主动买卖比极端
-                ls_extreme = set()    # 多空比极端
-
-                for row in rows:
-                    sym, oi_val, taker, ls = row
-
-                    # 7. 持仓价值 Top30
-                    if oi_val:
-                        oi_value_rank.append((sym, float(oi_val)))
-
-                    # 9. 主动买卖比极端 (<0.2 或 >5.0)
-                    if taker:
-                        t = float(taker)
-                        if t < 0.2 or t > 5.0:
-                            taker_extreme.add(sym)
-
-                    # 10. 多空比极端 (<0.5 或 >4.0)
-                    if ls:
-                        ls_val = float(ls)
-                        if ls_val < 0.5 or ls_val > 4.0:
-                            ls_extreme.add(sym)
-
-                # Top N
-                top_oi_value = {s for s, _ in sorted(oi_value_rank, key=lambda x: x[1], reverse=True)[:top_n]}
-
-                result = top_oi_value | taker_extreme | ls_extreme
-
-                debug = {
-                    "oi_value": len(top_oi_value),
-                    "oi_change": 0,  # 简化掉
-                    "taker_extreme": len(taker_extreme),
-                    "ls_extreme": len(ls_extreme),
-                    "top_ls_change": 0,  # 简化掉
-                    "futures_total": len(result)
-                }
-    except Exception as e:
-        LOG.warning(f"获取期货优先级失败: {e}")
-
-    return result, debug
+    return _shared_get_futures_priority(top_n=top_n)
 
 
 def _compute_indicator(indicator_name: str, klines_data: Dict[str, bytes], interval: str) -> tuple:
@@ -653,6 +516,7 @@ def run_async_full(
     high_workers: int = 4,
     low_workers: int = 2,
 ):
+    ensure_experimental_enabled("full_async")
     FullAsyncEngine(
         symbols=symbols,
         intervals=intervals,
