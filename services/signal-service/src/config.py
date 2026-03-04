@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from common.config_loader import load_repo_env
+from common.db_url import resolve_database_url
 
 # 路径
 SRC_DIR = Path(__file__).parent
@@ -19,7 +20,7 @@ load_repo_env(repo_root=REPO_ROOT, set_os_env=True, override=False)
 # 数据库配置
 def get_database_url() -> str:
     """获取 TimescaleDB 连接 URL"""
-    return os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data")
+    return resolve_database_url("DATABASE_URL")
 
 
 def get_sqlite_path() -> Path:

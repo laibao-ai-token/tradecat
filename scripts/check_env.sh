@@ -7,6 +7,11 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+DB_URL_HELPER="$ROOT/scripts/lib/db_url.sh"
+if [[ -f "$DB_URL_HELPER" ]]; then
+    # shellcheck disable=SC1090
+    source "$DB_URL_HELPER"
+fi
 
 # ==================== 工具函数 ====================
 RED='\033[0;31m'
@@ -22,6 +27,24 @@ info() { echo -e "${BLUE}→${NC} $1"; }
 
 ERRORS=0
 WARNINGS=0
+
+read_config_key() {
+    local key="$1"
+    local config_file="$ROOT/config/.env"
+    if declare -f tc_read_env_key >/dev/null 2>&1; then
+        tc_read_env_key "$config_file" "$key"
+    else
+        grep "^${key}=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'"
+    fi
+}
+
+resolve_database_url() {
+    if declare -f tc_resolve_db_url >/dev/null 2>&1; then
+        tc_resolve_db_url "$ROOT" "" "DATABASE_URL"
+    else
+        read_config_key "DATABASE_URL"
+    fi
+}
 
 # ==================== 1. Python 环境 ====================
 check_python() {
@@ -135,7 +158,8 @@ check_config() {
         # 必填字段检查
         local required_keys=(DATABASE_URL)
         for key in "${required_keys[@]}"; do
-            local value=$(grep "^${key}=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+            local value
+            value="$(read_config_key "$key")"
             if [ -n "$value" ] && [ "$value" != "your_token_here" ]; then
                 success "$key: 已配置"
             else
@@ -144,7 +168,8 @@ check_config() {
         done
         
         # 代理配置
-        local http_proxy=$(grep "^HTTP_PROXY=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+        local http_proxy
+        http_proxy="$(read_config_key "HTTP_PROXY")"
         if [ -n "$http_proxy" ]; then
             if curl -s --connect-timeout 3 -x "$http_proxy" https://api.telegram.org -o /dev/null 2>/dev/null; then
                 success "HTTP_PROXY: $http_proxy (可用)"
@@ -156,14 +181,16 @@ check_config() {
         fi
 
         # 信号服务新鲜度/冷却（可选）
-        local signal_age=$(grep "^SIGNAL_DATA_MAX_AGE=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+        local signal_age
+        signal_age="$(read_config_key "SIGNAL_DATA_MAX_AGE")"
         if [ -n "$signal_age" ]; then
             success "SIGNAL_DATA_MAX_AGE: $signal_age 秒"
         else
             warn "SIGNAL_DATA_MAX_AGE: 未配置，默认 600 秒"
         fi
 
-        local pg_cooldown=$(grep "^COOLDOWN_SECONDS=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+        local pg_cooldown
+        pg_cooldown="$(read_config_key "COOLDOWN_SECONDS")"
         if [ -n "$pg_cooldown" ]; then
             success "COOLDOWN_SECONDS: $pg_cooldown 秒"
         else
@@ -186,20 +213,33 @@ check_database() {
         return 0
     fi
     
-    local db_url=$(grep "^DATABASE_URL=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+    local db_url
+    db_url="$(resolve_database_url)"
     if [ -z "$db_url" ]; then
         fail "DATABASE_URL 未配置"
         return 1
     fi
-    
+
     # 解析连接信息
-    local db_host=$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    local db_port=$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo "5432")
-    # 数据库名取最后一个 '/' 之后，并去掉 query string
-    local db_name=$(echo "$db_url" | sed -n 's|.*/||p' | cut -d'?' -f1)
-    [ -z "$db_name" ] && db_name="market_data"
-    
+    local db_host="localhost"
+    local db_port="5432"
+    local db_name="market_data"
+    if declare -f tc_db_url_target >/dev/null 2>&1; then
+        local db_target host_port
+        db_target="$(tc_db_url_target "$db_url")"
+        host_port="${db_target%%/*}"
+        db_name="${db_target#*/}"
+        if [[ "$host_port" == *:* ]]; then
+            db_host="${host_port%%:*}"
+            db_port="${host_port##*:}"
+        fi
+    else
+        db_host="$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')"
+        db_port="$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo "5432")"
+        db_name="$(echo "$db_url" | sed -n 's|.*/||p' | cut -d'?' -f1)"
+    fi
     [ -z "$db_host" ] && db_host="localhost"
+    [ -z "$db_name" ] && db_name="market_data"
     
     info "连接: $db_host:$db_port/$db_name"
     
@@ -217,13 +257,19 @@ check_database() {
     fi
     
     # 表检查
-    # 解析 user/password（支持无密码）
-    local userinfo=$(echo "$db_url" | sed -n 's|.*//\([^@]*\)@.*|\1|p')
-    local db_user="${userinfo%%:*}"
-    local db_pass=""
-    if [[ "$userinfo" == *:* ]]; then
-        db_pass="${userinfo#*:}"
-    fi
+    # 解析 user/password（支持无密码，兼容 URL 编码）
+    local db_user db_pass
+    read -r db_user db_pass < <(
+        python3 - "$db_url" <<'PY'
+from urllib.parse import unquote, urlparse
+import sys
+
+p = urlparse(sys.argv[1] or "")
+u = unquote(p.username or "")
+pw = unquote(p.password or "")
+print(u, pw)
+PY
+    )
     
     if [ -n "$db_user" ] && [ -n "$db_pass" ]; then
         if PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" \
@@ -245,7 +291,7 @@ check_network() {
     local proxy=""
     
     if [ -f "$config_file" ]; then
-        proxy=$(grep "^HTTP_PROXY=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+        proxy="$(read_config_key "HTTP_PROXY")"
     fi
     
     local curl_opts="-s --connect-timeout 5"

@@ -9,6 +9,11 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+DB_URL_HELPER="$ROOT/scripts/lib/db_url.sh"
+if [[ -f "$DB_URL_HELPER" ]]; then
+    # shellcheck disable=SC1090
+    source "$DB_URL_HELPER"
+fi
 
 # 核心服务（services/ 目录）
 CORE_SERVICES=(data-service trading-service signal-service)
@@ -21,6 +26,49 @@ success() { echo -e "\033[0;32m✓ $1\033[0m"; }
 fail() { echo -e "\033[0;31m✗ $1\033[0m"; exit 1; }
 info() { echo -e "\033[0;34m→ $1\033[0m"; }
 warn() { echo -e "\033[0;33m⚠ $1\033[0m"; }
+
+read_config_key() {
+    local key="$1"
+    local config_file="$ROOT/config/.env"
+    if declare -f tc_read_env_key >/dev/null 2>&1; then
+        tc_read_env_key "$config_file" "$key"
+    else
+        grep "^${key}=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'"
+    fi
+}
+
+resolve_database_url() {
+    if declare -f tc_resolve_db_url >/dev/null 2>&1; then
+        tc_resolve_db_url "$ROOT" "" "DATABASE_URL"
+    else
+        read_config_key "DATABASE_URL"
+    fi
+}
+
+db_host_port() {
+    local db_url="$1"
+    local host="localhost"
+    local port="5432"
+
+    if declare -f tc_db_url_target >/dev/null 2>&1; then
+        local target host_port
+        target="$(tc_db_url_target "$db_url")"
+        host_port="${target%%/*}"
+        if [[ "$host_port" == *:* ]]; then
+            host="${host_port%%:*}"
+            port="${host_port##*:}"
+        fi
+    else
+        host="$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')"
+        port="$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo '5432')"
+    fi
+
+    [ -z "$host" ] && host="localhost"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        port="5432"
+    fi
+    echo "$host $port"
+}
 
 # ==================== 查找服务目录 ====================
 find_service_dir() {
@@ -158,9 +206,11 @@ check_config() {
         fi
         
         # 显示 DATABASE_URL 端口
-        local db_url=$(grep "^DATABASE_URL=" "$config_file" | cut -d= -f2-)
+        local db_url
+        db_url="$(read_config_key "DATABASE_URL")"
         if [ -n "$db_url" ]; then
-            local db_port=$(echo "$db_url" | grep -oP ':\K\d+(?=/)')
+            local _db_host db_port
+            read -r _db_host db_port <<< "$(db_host_port "$db_url")"
             success "DATABASE_URL: 端口 $db_port"
         else
             warn "DATABASE_URL: 未配置"
@@ -187,19 +237,16 @@ check_database() {
     fi
     
     # 解析 DATABASE_URL
-    local db_url=$(grep "^DATABASE_URL=" "$config_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
+    local db_url
+    db_url="$(resolve_database_url)"
     if [ -z "$db_url" ]; then
         info "跳过数据库检查 (DATABASE_URL 未配置)"
         return 0
     fi
-    
+
     # 提取 host 和 port
-    local db_host=$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    local db_port=$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo "5432")
-    
-    if [ -z "$db_host" ]; then
-        db_host="localhost"
-    fi
+    local db_host db_port
+    read -r db_host db_port <<< "$(db_host_port "$db_url")"
     
     if command -v pg_isready &>/dev/null; then
         if pg_isready -h "$db_host" -p "$db_port" -q 2>/dev/null; then

@@ -187,7 +187,7 @@ Restart WSL: `wsl --shutdown`, then use the AI installation prompt above.
 
 # 2) Fill global config (DB / proxy)
 cp config/.env.example config/.env && chmod 600 config/.env
-# Change DATABASE_URL port to 5433 to match repo scripts (scripts default 5433, template defaults 5434)
+# Use config/.env DATABASE_URL as the single runtime source of truth (5434 recommended)
 vim config/.env
 
 # 3) Start core services (data + signal + trading)
@@ -218,7 +218,7 @@ vim config/.env
 ### ⚙️ Configuration (required)
 
 - Location: `config/.env` (copied by init.sh), must be chmod 600, startup scripts will enforce this.  
-- TimescaleDB port must match scripts: repo scripts default to 5433, template defaults to 5434. After copying, change `DATABASE_URL` to 5433; or if keeping 5434, update `scripts/export_timescaledb.sh`, `scripts/timescaledb_compression.sh` and all example ports below.
+- TimescaleDB runtime settings are resolved from `config/.env` `DATABASE_URL` (single source of truth). Keep examples/commands aligned with that value.
 - Key fields:  
   - `DATABASE_URL` (TimescaleDB, see port note below)  
   - `HTTP_PROXY` / `HTTPS_PROXY` (if proxy needed)  
@@ -261,34 +261,43 @@ Script features:
 ```bash
 # 0. Load schema (TimescaleDB + continuous aggregates)
 for f in libs/database/db/schema/*.sql; do
-  psql -h localhost -p 5433 -U postgres -d market_data -f "$f"
+  psql -h localhost -p 5434 -U postgres -d market_data -f "$f"
 done
 
 # 1. Import candlesticks (373M)
-zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
   -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # 2. Import futures metrics (94M)
-zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
   -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
-> Port note: template defaults to 5434, but repo scripts default to 5433. After copying, change `DATABASE_URL` port to 5433 in `config/.env`, or if choosing 5434, update `scripts/export_timescaledb.sh`, `scripts/timescaledb_compression.sh` and all example command ports.
+> Port note: scripts and services resolve runtime DB target from `config/.env` `DATABASE_URL`; keep manual command ports consistent with it.
 
 ## 🔍 Additional Checks (2026-01-09)
 
-- **Port selection**: `config/.env.example` defaults to port **5434** (new DB with raw/agg/quality schema); core scripts `scripts/export_timescaledb.sh`, `scripts/timescaledb_compression.sh` still default to **5433** (old DB). Choose one port based on your needs and sync all scripts.<!-- TODO: choose unified port (5433 or 5434) and do global replace -->
+- **Port selection**: use **5434** by default (`config/.env.example`). Runtime scripts/services read from `config/.env` `DATABASE_URL`.
 - CI only runs ruff + py_compile sampling (`.github/workflows/ci.yml`, checks first 50 .py files), doesn't run tests; still need `./scripts/verify.sh` locally before commit.
 - `scripts/install.sh` generates per-service `.env` but runtime only reads `config/.env`; avoid config drift.
 
 ### 🗄️ Dual Database Port Explanation (Old DB 5433 / New DB 5434)
 
-- Old DB (5433, single schema `market_data`): Compatible with early data collection chain, still used by `scripts/export_timescaledb.sh` / `scripts/timescaledb_compression.sh` and most example commands.
-- New DB (5434, multi-schema `raw` / `agg` / `quality`): `config/.env.example` and markets-service init/migration scripts (`init_market_db.sh`, `sync_from_old_db.sh`, `migrate_5434.sql` etc.) default to this.
+- Old DB (5433, single schema `market_data`): kept mainly for legacy migration scenarios.
+- New DB (5434, multi-schema `raw` / `agg` / `quality`): `config/.env.example` and runtime scripts/services default to this.
 - Usage principles:  
-  - Continue with old DB: Keep `DATABASE_URL` at 5433, change markets-service script ports to 5433.  
-  - Switch to new DB: Keep 5434, update top-level ops scripts and README example ports to 5434, ensure storage/compression/export scripts are consistent.  
-- Mixed use risk: If scripts and services point to different ports, data will fork; backup `./scripts/export_timescaledb.sh` (currently defaults to 5433) before changes.<!-- TODO: if migrating to 5434, provide unified replacement list and execution order -->
+  - Runtime (services + normal scripts): use only `DATABASE_URL` (5434 recommended).  
+  - Historical migration (old DB -> new DB): use explicit migration variables, not runtime defaults.  
+- Migration script example (migration-only):
+
+```bash
+cd services-preview/markets-service/scripts
+MIGRATION_OLD_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/market_data \
+MIGRATION_NEW_DATABASE_URL=postgresql://postgres:postgres@localhost:5434/market_data \
+./sync_from_old_db.sh
+```
+
+- Mixed use risk: if runtime and migration targets are mixed, data forks. Keep this rule: runtime reads `DATABASE_URL`; migration reads `MIGRATION_*_DATABASE_URL`.
 
 ### ✅ Verify Installation
 
@@ -476,7 +485,7 @@ graph TD
     API_WS --> DS_LIVE
     API_REST --> DS_MET
 
-    subgraph TSDB["🗄️ TimescaleDB :5433<br><small>PostgreSQL 16 + TimescaleDB</small>"]
+    subgraph TSDB["🗄️ TimescaleDB :5434<br><small>PostgreSQL 16 + TimescaleDB</small>"]
         TS_CANDLE[("candles_1m<br>373M rows / 99GB")]
         TS_FUTURE[("futures_metrics<br>94M rows / 5GB")]
     end
@@ -670,14 +679,14 @@ graph LR
 # Download .bin.zst files from HuggingFace to backups/timescaledb/
 
 # 2. Restore schema
-zstd -d schema.sql.zst -c | psql -h localhost -p 5433 -U postgres -d market_data
+zstd -d schema.sql.zst -c | psql -h localhost -p 5434 -U postgres -d market_data
 
 # 3. Import candlestick data
-zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # 4. Import futures data
-zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
@@ -1087,7 +1096,7 @@ htop -p $(pgrep -d',' -f "simple_scheduler|crypto_trading")
 
 ```bash
 # Connect to database
-PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -d market_data
+PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -d market_data
 
 # Common queries
 -- Candlestick count
@@ -1155,14 +1164,14 @@ ls -lh backups/timescaledb/
 cd backups/timescaledb
 
 # Restore schema
-zstd -d schema_*.sql.zst -c | psql -h localhost -p 5433 -U postgres -d market_data
+zstd -d schema_*.sql.zst -c | psql -h localhost -p 5434 -U postgres -d market_data
 
 # Restore candlestick data
-zstd -d candles_1m_*.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m_*.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # Restore futures data
-zstd -d futures_metrics_*.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_*.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
@@ -1217,10 +1226,10 @@ cd services/trading-service
 sudo systemctl status postgresql
 
 # Check port
-ss -tlnp | grep 5433
+ss -tlnp | grep 5434
 
 # Test connection
-PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -c "\l"
+PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -c "\l"
 ```
 
 </details>
@@ -1233,10 +1242,10 @@ PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -c "\l"
 sudo systemctl status postgresql
 
 # Check port
-ss -tlnp | grep 5433
+ss -tlnp | grep 5434
 
 # Test connection
-PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -c "\l"
+PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -c "\l"
 ```
 
 </details>

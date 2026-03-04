@@ -10,10 +10,11 @@ import logging
 import os
 import re
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from common.db_url import resolve_database_url
 from psycopg import connect, sql
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -40,10 +41,7 @@ def _load_repo_env() -> None:
 
 _load_repo_env()
 
-DB_URL = os.getenv(
-    "MARKETS_SERVICE_DATABASE_URL",
-    os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data"),
-)
+DB_URL = resolve_database_url("MARKETS_SERVICE_DATABASE_URL", "DATABASE_URL")
 DATA_ROOT = Path(os.getenv("MARKETS_SERVICE_DATA_DIR", str(PROJECT_ROOT / "libs" / "database" / "csv")))
 DATA_DIR = DATA_ROOT / "downloads" / "bookDepth"
 
@@ -67,7 +65,7 @@ def parse_bookdepth_file(fpath: Path) -> list[dict]:
             with zf.open(name) as f:
                 reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
                 for row in reader:
-                    ts = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    ts = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
                     rows.append(
                         {
                             "timestamp": ts,

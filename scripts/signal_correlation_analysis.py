@@ -47,7 +47,7 @@ load_repo_env_compat(PROJECT_ROOT, set_os_env=True, override=False)
 
 DEFAULT_DB_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5434/market_data",
+    "",
 )
 DEFAULT_HORIZONS = [5, 15, 60, 240, 1440]
 
@@ -351,6 +351,9 @@ def main() -> int:
         help="使用 signal_history.db 作为事件源（完整触发日志）",
     )
     args = parser.parse_args()
+    if not (args.database_url or "").strip():
+        logger.error("DATABASE_URL 未配置，请在 config/.env 中设置或通过 --database-url 显式指定")
+        return 1
 
     cooldown_db = Path(args.cooldown_db)
     history_db = Path(args.history_db)

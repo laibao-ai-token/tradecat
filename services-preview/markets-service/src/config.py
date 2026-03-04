@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from common.config_loader import load_repo_env
+from common.db_url import resolve_database_url
 
 SERVICE_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = SERVICE_ROOT.parent.parent
@@ -41,9 +42,9 @@ if os.getenv("MARKETS_SERVICE_FORCE_PROXY_9910", "0") == "1":
 class Settings:
     """服务配置"""
     # 数据库
-    database_url: str = field(default_factory=lambda: os.getenv(
+    database_url: str = field(default_factory=lambda: resolve_database_url(
         "MARKETS_SERVICE_DATABASE_URL",
-        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data"),
+        "DATABASE_URL",
     ))
     db_schema: str = field(default_factory=lambda: os.getenv("MARKET_DB_SCHEMA", "market_data"))
     raw_schema: str = field(default_factory=lambda: os.getenv("RAW_DB_SCHEMA", "raw"))

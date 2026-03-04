@@ -172,7 +172,7 @@ networkingMode=mirrored
 
 # 2) 填写全局配置（含 DB / 代理 等）
 cp config/.env.example config/.env && chmod 600 config/.env
-# 端口选择：保持 5434（新库）或改为 5433（旧库），见下方端口说明
+# 统一以 config/.env 的 DATABASE_URL 为准（推荐保持 5434）
 vim config/.env
 
 # 3) 启动核心服务（data + signal + trading）
@@ -203,13 +203,11 @@ vim config/.env
 ### ⚙️ 配置（必须）
 
 - 路径：`config/.env`（已由 init.sh 复制），权限需 600，服务启动脚本会强制校验。  
-- **TimescaleDB 端口说明**（重要）：
-  - **新库（5434）**：`config/.env.example` 默认端口，含 raw/agg/quality 多 schema 架构，推荐新部署使用
-  - **旧库（5433）**：与早期数据采集链兼容，`scripts/export_timescaledb.sh` / `scripts/timescaledb_compression.sh` 默认使用
-  - **选择建议**：
-    - 继续沿用旧库：保持 `DATABASE_URL` 端口 5433，并将 markets-service 脚本端口改为 5433
-    - 切换到新库：保持 5434，同时修改顶层运维脚本与 README 示例端口为 5434，确保存储/压缩/导出脚本一致
-  - **混用风险**：脚本与服务若指向不同端口会造成数据分叉；变更前先备份
+- **TimescaleDB 口径说明**（重要）：
+  - 运行时统一以 `config/.env` 的 `DATABASE_URL` 为准（脚本与服务均按该值解析）
+  - 推荐新部署使用 **5434**（`config/.env.example` 默认值）
+  - `5433` 仅作为历史迁移口径保留在迁移脚本/历史文档，不建议作为新默认
+  - **混用风险**：若不同命令链路指向不同端口会造成数据分叉
 - 核心字段：  
   - `DATABASE_URL`（TimescaleDB，见下方端口说明）  
   - `HTTP_PROXY` / `HTTPS_PROXY`（需要代理时填写）  
@@ -252,34 +250,43 @@ python scripts/download_hf_data.py --symbols BTCUSDT,ETHUSDT,BNBUSDT
 ```bash
 # 0. 创建库并导入 schema（依次执行仓库内 SQL）
 for f in libs/database/db/schema/*.sql; do
-  psql -h localhost -p 5433 -U postgres -d market_data -f "$f"
+  psql -h localhost -p 5434 -U postgres -d market_data -f "$f"
 done
 
 # 1. 导入 K线数据 (3.73亿条)
-zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
   -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # 2. 导入期货数据 (9457万条)
-zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
   -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
-> 端口说明：模板默认 5434，但仓库脚本默认 5433。复制后请在 `config/.env` 中把 `DATABASE_URL` 端口改为 5433，或若选择 5434，则务必同步修改 `scripts/export_timescaledb.sh`、`scripts/timescaledb_compression.sh` 与所有示例命令端口。
+> 端口说明：脚本与服务运行时均以 `config/.env` 的 `DATABASE_URL` 为准；示例命令中的端口请与该配置保持一致。
 
 ## 🔍 补充检查（2026-01-23）
 
-- **端口选择**：`config/.env.example` 默认端口为 **5434**（新库，含 raw/agg/quality schema）；核心脚本 `scripts/export_timescaledb.sh`、`scripts/timescaledb_compression.sh` 默认 **5433**（旧库）。请根据实际使用情况选定端口并同步修改。
+- **端口选择**：建议统一使用 **5434**（`config/.env.example` 默认）；运行时统一从 `config/.env` 读取 `DATABASE_URL`。
 - CI 仅执行 ruff + py_compile 抽样（`.github/workflows/ci.yml`，检查前 50 个 .py 文件），不会跑 tests；提交前本地仍需 `./scripts/verify.sh`。
 - `scripts/install.sh` 生成各服务 `.env` 但运行时只读 `config/.env`；避免多份配置漂移。
 
 ### 🗄️ 双库端口说明（旧库 5433 / 新库 5434）
 
-- 旧库（5433，单 schema `market_data`）：与早期数据采集链兼容，仍被 `scripts/export_timescaledb.sh` / `scripts/timescaledb_compression.sh` 及多数示例命令使用。
-- 新库（5434，多 schema `raw` / `agg` / `quality`）：`config/.env.example`、markets-service 的初始化与迁移脚本（`init_market_db.sh`、`sync_from_old_db.sh`、`migrate_5434.sql` 等）默认指向此库。
+- 旧库（5433，单 schema `market_data`）：与早期数据采集链兼容，主要用于历史迁移场景。
+- 新库（5434，多 schema `raw` / `agg` / `quality`）：`config/.env.example` 与运行时脚本/服务默认指向此库。
 - 使用原则：  
-  - 继续沿用旧库：保持 `DATABASE_URL` 5433，并将 markets-service 脚本端口改为 5433。  
-  - 切换到新库：保持 5434，同时修改顶层运维脚本与 README 示例端口为 5434，确保存储/压缩/导出脚本一致。  
-- 混用风险：脚本与服务若指向不同端口会造成数据分叉；变更前先备份 `./scripts/export_timescaledb.sh`（当前默认 5433）。<!-- TODO: 若正式迁移到 5434，请提供统一替换列表与执行顺序 -->
+  - 运行时（服务与常规脚本）统一只看 `DATABASE_URL`（建议 5434）。  
+  - 历史迁移（旧库 -> 新库）使用显式迁移变量，不复用运行时默认口径。  
+- 迁移脚本示例（仅迁移场景）：
+
+```bash
+cd services-preview/markets-service/scripts
+MIGRATION_OLD_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/market_data \
+MIGRATION_NEW_DATABASE_URL=postgresql://postgres:postgres@localhost:5434/market_data \
+./sync_from_old_db.sh
+```
+
+- 混用风险：运行口径与迁移口径如果混在一起会导致数据分叉；请保持“运行时只看 `DATABASE_URL`，迁移只看 `MIGRATION_*_DATABASE_URL`”。
 
 ### ✅ 验证安装
 
@@ -337,7 +344,7 @@ cd .. && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 #### 4. 配置环境变量
 
 ```bash
-# 编辑 `config/.env`（init.sh 已自动从 .env.example 复制；请同步端口为 5433 以与脚本一致）
+# 编辑 `config/.env`（init.sh 已自动从 .env.example 复制；默认推荐 5434）
 vim config/.env
 ```
 
@@ -468,7 +475,7 @@ graph TD
     API_WS --> DS_LIVE
     API_REST --> DS_MET
 
-    subgraph TSDB["🗄️ TimescaleDB :5433<br><small>PostgreSQL 16 + TimescaleDB</small>"]
+    subgraph TSDB["🗄️ TimescaleDB :5434<br><small>PostgreSQL 16 + TimescaleDB</small>"]
         TS_CANDLE[("candles_1m<br>3.73亿条 / 99GB")]
         TS_FUTURE[("futures_metrics<br>9457万条 / 5GB")]
     end
@@ -662,14 +669,14 @@ graph LR
 # 从 HuggingFace 下载 .bin.zst 文件到 backups/timescaledb/
 
 # 2. 恢复表结构
-zstd -d schema.sql.zst -c | psql -h localhost -p 5433 -U postgres -d market_data
+zstd -d schema.sql.zst -c | psql -h localhost -p 5434 -U postgres -d market_data
 
 # 3. 导入 K线数据
-zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # 4. 导入期货数据
-zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_5m.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
@@ -1078,7 +1085,7 @@ htop -p $(pgrep -d',' -f "simple_scheduler|crypto_trading")
 
 ```bash
 # 连接数据库
-PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -d market_data
+PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -d market_data
 
 # 常用查询
 -- K线数据量
@@ -1146,14 +1153,14 @@ ls -lh backups/timescaledb/
 cd backups/timescaledb
 
 # 恢复 schema
-zstd -d schema_*.sql.zst -c | psql -h localhost -p 5433 -U postgres -d market_data
+zstd -d schema_*.sql.zst -c | psql -h localhost -p 5434 -U postgres -d market_data
 
 # 恢复 K线数据
-zstd -d candles_1m_*.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d candles_1m_*.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.candles_1m FROM STDIN WITH (FORMAT binary)"
 
 # 恢复期货数据
-zstd -d futures_metrics_*.bin.zst -c | psql -h localhost -p 5433 -U postgres -d market_data \
+zstd -d futures_metrics_*.bin.zst -c | psql -h localhost -p 5434 -U postgres -d market_data \
     -c "COPY market_data.binance_futures_metrics_5m FROM STDIN WITH (FORMAT binary)"
 ```
 
@@ -1208,10 +1215,10 @@ cd services/trading-service
 sudo systemctl status postgresql
 
 # 检查端口
-ss -tlnp | grep 5433
+ss -tlnp | grep 5434
 
 # 检查连接
-PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -c "\l"
+PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -c "\l"
 ```
 
 </details>

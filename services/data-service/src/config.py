@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from common.config_loader import load_repo_env
+from common.db_url import resolve_database_url
 
 # 服务根目录
 SERVICE_ROOT = Path(__file__).parent.parent  # src/config.py -> data-service
@@ -26,9 +27,7 @@ def _int_env(name: str, default: int) -> int:
 @dataclass
 class Settings:
     """服务配置"""
-    database_url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data"
-    ))
+    database_url: str = field(default_factory=lambda: resolve_database_url("DATABASE_URL"))
     http_proxy: Optional[str] = field(default_factory=lambda: os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"))
 
     # K线采集数据源：

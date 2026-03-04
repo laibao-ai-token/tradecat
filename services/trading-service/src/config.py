@@ -10,11 +10,12 @@
     FUTURES_INTERVALS: 期货情绪计算周期
 """
 import os
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
 
 from common.config_loader import load_repo_env
+from common.db_url import resolve_database_url
 
 SERVICE_ROOT = Path(__file__).parents[1]  # src/config.py -> src -> trading-service
 # Repo root: .../tradecat-origin
@@ -40,10 +41,7 @@ def _resolve_repo_path(env_key: str, default: Path) -> Path:
 @dataclass
 class Config:
     # TimescaleDB（读取K线）
-    db_url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5434/market_data"
-    ))
+    db_url: str = field(default_factory=lambda: resolve_database_url("DATABASE_URL"))
 
     # SQLite（写入指标结果）
     # 支持相对路径（相对 REPO_ROOT），避免在不同 cwd 下写到意外位置。

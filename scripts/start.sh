@@ -5,6 +5,11 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DB_URL_HELPER="$ROOT/scripts/lib/db_url.sh"
+if [[ -f "$DB_URL_HELPER" ]]; then
+    # shellcheck disable=SC1090
+    source "$DB_URL_HELPER"
+fi
 
 # 核心服务（与 init.sh 保持一致）
 SERVICES=(data-service signal-service trading-service)
@@ -31,16 +36,35 @@ check_database() {
     if [ ! -f "$config_file" ]; then
         return 0  # 无配置，跳过检查
     fi
-    
-    local db_url=$(grep "^DATABASE_URL=" "$config_file" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
+
+    local db_url=""
+    if declare -f tc_resolve_db_url >/dev/null 2>&1; then
+        db_url="$(tc_resolve_db_url "$ROOT" "" "DATABASE_URL")"
+    else
+        db_url="$(grep "^DATABASE_URL=" "$config_file" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")"
+    fi
     if [ -z "$db_url" ]; then
         return 0  # 无 DATABASE_URL，跳过检查
     fi
-    
-    # 解析连接信息
-    local db_host=$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    local db_port=$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo "5432")
+
+    local db_host="localhost"
+    local db_port="5432"
+    if declare -f tc_db_url_target >/dev/null 2>&1; then
+        local db_target host_port
+        db_target="$(tc_db_url_target "$db_url")"
+        host_port="${db_target%%/*}"
+        if [[ "$host_port" == *:* ]]; then
+            db_host="${host_port%%:*}"
+            db_port="${host_port##*:}"
+        fi
+    else
+        db_host="$(echo "$db_url" | sed -n 's|.*@\([^:/]*\).*|\1|p')"
+        db_port="$(echo "$db_url" | grep -oP ':\K\d+(?=/)' || echo "5432")"
+    fi
     [ -z "$db_host" ] && db_host="localhost"
+    if ! [[ "$db_port" =~ ^[0-9]+$ ]]; then
+        db_port="5432"
+    fi
     
     if command -v pg_isready &>/dev/null; then
         if ! pg_isready -h "$db_host" -p "$db_port" -q -t 3 2>/dev/null; then

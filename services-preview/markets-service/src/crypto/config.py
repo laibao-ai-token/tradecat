@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from common.config_loader import load_repo_env
+from common.db_url import resolve_database_url
 
 SERVICE_ROOT = Path(__file__).parent.parent.parent  # markets-service/
 PROJECT_ROOT = SERVICE_ROOT.parent.parent           # tradecat/
@@ -71,9 +72,9 @@ def validate_table_name(table_name: str) -> str:
 class Settings:
     """服务配置"""
     # 数据库 - 优先使用 MARKETS_SERVICE_DATABASE_URL
-    database_url: str = field(default_factory=lambda: os.getenv(
+    database_url: str = field(default_factory=lambda: resolve_database_url(
         "MARKETS_SERVICE_DATABASE_URL",
-        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5434/market_data")
+        "DATABASE_URL",
     ))
 
     # 写入模式: "raw" = raw.*, "legacy" = market_data.*
