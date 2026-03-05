@@ -44,7 +44,7 @@ SIGNAL_PID_FILE="$REPO_ROOT/services/signal-service/logs/signal-service.pid"
 DATA_START_SCRIPT="$REPO_ROOT/services/data-service/scripts/start.sh"
 DATA_PID_FILE="$REPO_ROOT/services/data-service/pids/daemon.pid"
 
-# 默认自动拉起 signal/data-service，可用 TUI_AUTO_START_* =0 关闭。
+# 默认自动拉起 signal/data-service，可用 TUI_AUTO_START_*=0 关闭。
 AUTO_START_SIGNAL="${TUI_AUTO_START_SIGNAL:-1}"
 AUTO_START_DATA="${TUI_AUTO_START_DATA:-1}"
 
