@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.backtest.models import Bar, EquityPoint, SignalEvent
+from src.backtest.precheck import InputQualityReport, InputQualitySymbol
 from src.backtest.reporter import build_metrics, write_artifacts
 
 
@@ -135,7 +136,45 @@ def test_write_artifacts_persists_baseline_fields(tmp_path: Path) -> None:
         },
     )
 
-    write_artifacts(tmp_path, trades=[], curve=[], metrics=metrics)
+    input_quality = InputQualityReport(
+        run_id="unit-json",
+        mode="history_signal",
+        start=t0.isoformat(sep=" "),
+        end=t1.isoformat(sep=" "),
+        timeframe="1m",
+        generated_at=t1.isoformat(sep=" "),
+        signal_count=1,
+        aggregated_signal_bucket_count=1,
+        candle_count=2,
+        expected_candle_count=2,
+        candle_coverage_pct=100.0,
+        no_next_open_bucket_count=0,
+        dropped_signal_count=0,
+        quality_score=100.0,
+        quality_status="pass",
+        quality_breakdown={
+            "coverage_score": 100.0,
+            "missing_candle_penalty": 0.0,
+            "gap_penalty": 0.0,
+            "no_next_open_penalty": 0.0,
+            "dropped_signal_penalty": 0.0,
+            "quality_score": 100.0,
+        },
+        symbol_rows=[
+            InputQualitySymbol(
+                symbol="BTCUSDT",
+                signal_count=1,
+                aggregated_signal_bucket_count=1,
+                candle_count=2,
+                expected_candle_count=2,
+                candle_coverage_pct=100.0,
+                quality_score=100.0,
+                quality_status="pass",
+            )
+        ],
+    )
+
+    write_artifacts(tmp_path, trades=[], curve=[], metrics=metrics, input_quality=input_quality)
 
     payload = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
     assert "buy_hold_return_pct" in payload
@@ -145,3 +184,13 @@ def test_write_artifacts_persists_baseline_fields(tmp_path: Path) -> None:
     assert "timeframe_counts" in payload
     assert payload["buy_hold_return_pct"] == metrics.buy_hold_return_pct
     assert payload["excess_return_pct"] == metrics.excess_return_pct
+
+    input_quality_payload = json.loads((tmp_path / "input_quality.json").read_text(encoding="utf-8"))
+    assert input_quality_payload["quality_score"] == 100.0
+    assert input_quality_payload["quality_status"] == "pass"
+    assert input_quality_payload["quality_breakdown"]["coverage_score"] == 100.0
+    assert input_quality_payload["symbol_rows"][0]["quality_status"] == "pass"
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "## Input Quality" in report_md
+    assert "Quality Status" in report_md
+    assert "Penalties" in report_md

@@ -183,6 +183,7 @@ def test_run_backtest_writes_artifacts_and_done_state(tmp_path: Path, monkeypatc
     assert (out.output_dir / "trades.csv").exists()
     assert (out.output_dir / "equity_curve.csv").exists()
     assert (out.output_dir / "metrics.json").exists()
+    assert (out.output_dir / "input_quality.json").exists()
     assert (out.output_dir / "report.md").exists()
     assert (tmp_path / "artifacts" / "backtest" / "latest").exists()
     assert out.metrics.avg_holding_minutes >= 0
@@ -194,6 +195,11 @@ def test_run_backtest_writes_artifacts_and_done_state(tmp_path: Path, monkeypatc
     assert out.metrics.symbol_contributions[0].symbol == "BTCUSDT"
     assert out.metrics.buy_hold_return_pct > 0
     assert out.metrics.buy_hold_final_equity > out.metrics.initial_equity
+
+    quality_payload = json.loads((out.output_dir / "input_quality.json").read_text(encoding="utf-8"))
+    assert quality_payload["run_id"] == "unit-run"
+    assert quality_payload["signal_count"] == 1
+    assert quality_payload["quality_score"] >= 0
 
     state_payload = json.loads((tmp_path / "artifacts" / "backtest" / "run_state.json").read_text(encoding="utf-8"))
     assert state_payload["status"] == "done"

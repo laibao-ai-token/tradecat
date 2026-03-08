@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Bar, EquityPoint, Metrics, SignalEvent, SymbolContribution, Trade
+from .precheck import InputQualityReport, input_quality_to_payload
 
 
 def _fmt_ts(dt: datetime) -> str:
@@ -599,7 +600,11 @@ def _write_metrics_json(path: Path, metrics: Metrics) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def _render_markdown_report(metrics: Metrics, trades: list[Trade]) -> str:
+def _render_markdown_report(
+    metrics: Metrics,
+    trades: list[Trade],
+    input_quality: InputQualityReport | None = None,
+) -> str:
     recent = sorted(trades, key=lambda x: x.exit_ts, reverse=True)[:10]
     lines = [
         "# Backtest Report",
@@ -642,7 +647,46 @@ def _render_markdown_report(metrics: Metrics, trades: list[Trade]) -> str:
         f"- Buy & Hold Return: `{metrics.buy_hold_return_pct:+.2f}%`",
         f"- Excess Return vs Buy & Hold: `{metrics.excess_return_pct:+.2f}%`",
         "",
-        "## Signal Profile",
+    ]
+
+    if input_quality is not None:
+        breakdown = input_quality.quality_breakdown or {}
+        lines.extend(
+            [
+                "## Input Quality",
+                "",
+                f"- Quality Score: `{input_quality.quality_score:.2f}`",
+                f"- Quality Status: `{str(input_quality.quality_status or '--').upper()}`",
+                f"- Candle Coverage: `{input_quality.candle_coverage_pct:.2f}%`",
+                f"- Aggregated Signal Buckets: `{input_quality.aggregated_signal_bucket_count}`",
+                f"- No Next Open Buckets: `{input_quality.no_next_open_bucket_count}`",
+                f"- Dropped Signals: `{input_quality.dropped_signal_count}`",
+                (
+                    "- Penalties: "
+                    f"missing=`{float(breakdown.get('missing_candle_penalty', 0.0)):.2f}` | "
+                    f"gaps=`{float(breakdown.get('gap_penalty', 0.0)):.2f}` | "
+                    f"no_next_open=`{float(breakdown.get('no_next_open_penalty', 0.0)):.2f}` | "
+                    f"dropped=`{float(breakdown.get('dropped_signal_penalty', 0.0)):.2f}`"
+                ),
+                "",
+                "| symbol | score | status | coverage | gaps | missing_candles | no_next_open | dropped |",
+                "|---|---:|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in input_quality.symbol_rows:
+            lines.append(
+                "| "
+                f"{row.symbol} | {row.quality_score:.2f} | {str(row.quality_status or '--').upper()} | "
+                f"{row.candle_coverage_pct:.2f}% | {row.gap_count} | {row.missing_candle_count} | "
+                f"{row.no_next_open_bucket_count} | {row.dropped_signal_count} |"
+            )
+        if not input_quality.symbol_rows:
+            lines.append("| -- | -- | -- | -- | -- | -- | -- | -- |")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Signal Profile",
         "",
         f"- Direction Mix: `{metrics.direction_counts}`",
         f"- Timeframe Mix: `{metrics.timeframe_counts}`",
@@ -683,11 +727,26 @@ def _render_markdown_report(metrics: Metrics, trades: list[Trade]) -> str:
     return "\n".join(lines)
 
 
-def write_artifacts(output_dir: Path, trades: list[Trade], curve: list[EquityPoint], metrics: Metrics) -> None:
+def _write_input_quality_json(path: Path, report: InputQualityReport) -> None:
+    path.write_text(json.dumps(input_quality_to_payload(report), ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def write_artifacts(
+    output_dir: Path,
+    trades: list[Trade],
+    curve: list[EquityPoint],
+    metrics: Metrics,
+    input_quality: InputQualityReport | None = None,
+) -> None:
     """Write run artifacts under output_dir."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_trades_csv(output_dir / "trades.csv", trades)
     _write_curve_csv(output_dir / "equity_curve.csv", curve)
     _write_metrics_json(output_dir / "metrics.json", metrics)
-    (output_dir / "report.md").write_text(_render_markdown_report(metrics, trades), encoding="utf-8")
+    if input_quality is not None:
+        _write_input_quality_json(output_dir / "input_quality.json", input_quality)
+    (output_dir / "report.md").write_text(
+        _render_markdown_report(metrics, trades, input_quality=input_quality),
+        encoding="utf-8",
+    )

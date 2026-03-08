@@ -15,6 +15,7 @@ from .execution_engine import run_execution
 from .models import BacktestConfig, Bar, Metrics, SignalEvent
 from .offline_replay import replay_signals_from_bars
 from .rule_replay import replay_signals_from_rules
+from .precheck import build_input_quality_report
 from .reporter import build_metrics, write_artifacts
 from .retention import cleanup_old_runs, update_latest_link
 from .state import mark_done, mark_error, mark_running
@@ -385,6 +386,15 @@ def run_backtest(
             raise RuntimeError("No candle data loaded from market_data.candles_1m")
 
         score_map = aggregate_signal_scores(signals, timeframe=config.timeframe)
+        input_quality = build_input_quality_report(
+            config,
+            run_id=rid,
+            mode=mode,
+            signals=signals,
+            bars_by_symbol=bars_by_symbol,
+            score_map=score_map,
+        )
+
 
         current_stage = "executing"
         _safe_state_update(
@@ -438,7 +448,13 @@ def run_backtest(
             strategy_summary=_strategy_summary(config),
         )
 
-        write_artifacts(resolved_output_dir, result.trades, result.equity_curve, metrics)
+        write_artifacts(
+            resolved_output_dir,
+            result.trades,
+            result.equity_curve,
+            metrics,
+            input_quality=input_quality,
+        )
         if mode == "offline_rule_replay" and replay_stats is not None:
             _write_rule_replay_diagnostics(resolved_output_dir, replay_stats)
 
