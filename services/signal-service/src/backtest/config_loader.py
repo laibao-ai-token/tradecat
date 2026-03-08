@@ -225,12 +225,44 @@ def load_config(
         if not cfg.strategy_label:
             cfg.strategy_label = _strategy_label_from_path(cfg_path)
 
+    if cfg.execution.maker_fee_bps is None:
+        cfg.execution.maker_fee_bps = float(cfg.execution.fee_bps)
+    if cfg.execution.taker_fee_bps is None:
+        cfg.execution.taker_fee_bps = float(cfg.execution.fee_bps)
+
     if cfg.risk.initial_equity <= 0:
         raise ValueError("risk.initial_equity must be > 0")
+    if cfg.risk.leverage < 1:
+        raise ValueError("risk.leverage must be >= 1")
     if not (0 < cfg.risk.position_size_pct <= 1.0):
         raise ValueError("risk.position_size_pct must be in (0, 1]")
+    if not (0.0 <= cfg.risk.maintenance_margin_ratio < 1.0):
+        raise ValueError("risk.maintenance_margin_ratio must be in [0, 1)")
+    if cfg.risk.liquidation_fee_bps < 0 or cfg.risk.liquidation_buffer_bps < 0:
+        raise ValueError("risk liquidation fee/buffer must be >= 0")
     if cfg.execution.fee_bps < 0 or cfg.execution.slippage_bps < 0:
         raise ValueError("execution fee/slippage must be >= 0")
+    cfg.execution.slippage_model = str(getattr(cfg.execution, "slippage_model", "fixed") or "fixed").strip().lower()
+    if cfg.execution.slippage_model not in {"fixed", "layered"}:
+        raise ValueError("execution.slippage_model must be fixed or layered")
+    if cfg.execution.slippage_max_bps is not None and float(cfg.execution.slippage_max_bps) < 0:
+        raise ValueError("execution.slippage_max_bps must be >= 0")
+    if float(getattr(cfg.execution, "slippage_volatility_weight", 0.0) or 0.0) < 0:
+        raise ValueError("execution.slippage_volatility_weight must be >= 0")
+    if float(getattr(cfg.execution, "slippage_volume_weight", 0.0) or 0.0) < 0:
+        raise ValueError("execution.slippage_volume_weight must be >= 0")
+    if float(getattr(cfg.execution, "slippage_session_weight", 0.0) or 0.0) < 0:
+        raise ValueError("execution.slippage_session_weight must be >= 0")
+    if int(getattr(cfg.execution, "slippage_volume_window", 20) or 20) < 1:
+        raise ValueError("execution.slippage_volume_window must be >= 1")
+    if not (0.0 <= float(getattr(cfg.execution, "max_bar_participation_rate", 1.0) or 0.0) <= 1.0):
+        raise ValueError("execution.max_bar_participation_rate must be in [0, 1]")
+    if float(getattr(cfg.execution, "min_order_notional", 0.0) or 0.0) < 0:
+        raise ValueError("execution.min_order_notional must be >= 0")
+    if float(getattr(cfg.execution, "impact_bps_per_bar_participation", 0.0) or 0.0) < 0:
+        raise ValueError("execution.impact_bps_per_bar_participation must be >= 0")
+    if float(cfg.execution.maker_fee_bps) < 0 or float(cfg.execution.taker_fee_bps) < 0:
+        raise ValueError("execution maker/taker fee must be >= 0")
     if cfg.aggregation.long_open_threshold <= 0 or cfg.aggregation.short_open_threshold <= 0:
         raise ValueError("aggregation thresholds must be > 0")
     if cfg.retention.keep_runs < 1:

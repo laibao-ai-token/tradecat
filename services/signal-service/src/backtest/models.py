@@ -12,9 +12,21 @@ class ExecutionConfig:
 
     entry: str = "next_open"
     slippage_bps: float = 3.0
+    slippage_model: str = "fixed"
+    slippage_max_bps: float | None = None
+    slippage_volatility_weight: float = 0.8
+    slippage_volume_weight: float = 0.6
+    slippage_session_weight: float = 0.3
+    slippage_volume_window: int = 20
+    max_bar_participation_rate: float = 1.0
+    min_order_notional: float = 0.0
+    impact_bps_per_bar_participation: float = 0.0
     # Default aligned to Binance USD-M futures VIP0 taker (0.04% per side).
     # Override via config/CLI if you use a different venue/VIP tier or maker orders.
     fee_bps: float = 4.0
+    maker_fee_bps: float | None = None
+    taker_fee_bps: float | None = None
+    funding_rate_bps_per_8h: float = 0.0
     # Enable/disable directions (useful for biasing a strategy to short-only / long-only).
     allow_long: bool = True
     allow_short: bool = True
@@ -33,6 +45,9 @@ class RiskConfig:
     leverage: float = 2.0
     initial_equity: float = 10_000.0
     position_size_pct: float = 0.25
+    maintenance_margin_ratio: float = 0.005
+    liquidation_fee_bps: float = 0.0
+    liquidation_buffer_bps: float = 0.0
 
 
 @dataclass
@@ -125,6 +140,16 @@ class Position:
     entry_price: float
     entry_fee: float
     entry_score: int
+    entry_notional: float
+    initial_margin: float
+    liquidation_price: float = 0.0
+    entry_slippage_bps: float = 0.0
+    entry_slippage_cost: float = 0.0
+    entry_requested_qty: float = 0.0
+    entry_fill_ratio: float = 1.0
+    entry_capacity_notional: float = 0.0
+    entry_impact_bps: float = 0.0
+    entry_impact_cost: float = 0.0
 
 
 @dataclass
@@ -145,6 +170,29 @@ class Trade:
     entry_score: int
     exit_score: int
     reason: str
+    exit_kind: str = ""
+    exit_price_source: str = ""
+    liquidation_price: float = 0.0
+    liquidation_fee: float = 0.0
+    funding_fee: float = 0.0
+    trading_fee: float = 0.0
+    slippage_model: str = ""
+    partial_fill: bool = False
+    constraint_flags: str = ""
+    entry_requested_qty: float = 0.0
+    exit_requested_qty: float = 0.0
+    entry_fill_ratio: float = 1.0
+    exit_fill_ratio: float = 1.0
+    entry_capacity_notional: float = 0.0
+    exit_capacity_notional: float = 0.0
+    entry_slippage_bps: float = 0.0
+    exit_slippage_bps: float = 0.0
+    entry_slippage_cost: float = 0.0
+    exit_slippage_cost: float = 0.0
+    entry_impact_bps: float = 0.0
+    exit_impact_bps: float = 0.0
+    entry_impact_cost: float = 0.0
+    exit_impact_cost: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -187,6 +235,22 @@ class Metrics:
     avg_holding_minutes: float
     signal_count: int
     bar_count: int
+    gross_pnl: float = 0.0
+    trading_fee: float = 0.0
+    funding_fee: float = 0.0
+    net_pnl: float = 0.0
+    total_cost_impact: float = 0.0
+    funding_credit: float = 0.0
+    cost_drag_pct_of_initial: float = 0.0
+    cost_erosion_pct_of_gross: float = 0.0
+    gross_to_net_retention_pct: float = 0.0
+    cost_status: str = ""
+    cost_summary: str = ""
+    slippage_cost: float = 0.0
+    slippage_cost_pct_of_initial: float = 0.0
+    impact_cost: float = 0.0
+    impact_cost_pct_of_initial: float = 0.0
+    partial_fill_trade_count: int = 0
     buy_hold_final_equity: float = 0.0
     buy_hold_return_pct: float = 0.0
     excess_return_pct: float = 0.0

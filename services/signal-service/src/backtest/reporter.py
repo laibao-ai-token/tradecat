@@ -181,6 +181,165 @@ def _calc_buy_hold_baseline(
     return float(final_equity), float(avg_return * 100.0)
 
 
+def _calc_risk_parity_baseline(
+    prepared_rows: list[dict[str, object]],
+    initial_equity: float,
+) -> tuple[float, float]:
+    initial = float(initial_equity)
+    if initial <= 0:
+        return 0.0, 0.0
+    if not prepared_rows:
+        return initial, 0.0
+
+    inv_vols = [1.0 / max(float(row["volatility"]), 1e-6) for row in prepared_rows]
+    weight_sum = sum(inv_vols)
+    if weight_sum <= 0:
+        return _calc_buy_hold_baseline(prepared_rows, initial_equity)
+
+    weighted_return = sum(
+        (inv_vol / weight_sum) * float(row["total_return"]) for inv_vol, row in zip(inv_vols, prepared_rows)
+    )
+    final_equity = initial * (1.0 + weighted_return)
+    return float(final_equity), float(weighted_return * 100.0)
+
+
+def _calc_simple_momentum_baseline(
+    prepared_rows: list[dict[str, object]],
+    initial_equity: float,
+    *,
+    lookback_bars: int = 60,
+) -> tuple[float, float]:
+    initial = float(initial_equity)
+    if initial <= 0:
+        return 0.0, 0.0
+    if not prepared_rows:
+        return initial, 0.0
+
+    timeline = sorted(
+        {timestamp for row in prepared_rows for timestamp in (row.get("timestamps") or [])}
+    )
+    if len(timeline) < 2:
+        return initial, 0.0
+
+    lookback = min(max(1, int(lookback_bars)), len(timeline) - 1)
+    equity = initial
+
+    for idx in range(1, len(timeline)):
+        prev_ts = timeline[idx - 1]
+        current_ts = timeline[idx]
+        lookback_ts = timeline[max(0, idx - lookback)]
+        active_returns: list[float] = []
+
+        for row in prepared_rows:
+            close_map = row.get("close_map")
+            if not isinstance(close_map, dict):
+                continue
+            prev_close = close_map.get(prev_ts)
+            current_close = close_map.get(current_ts)
+            lookback_close = close_map.get(lookback_ts)
+            if prev_close is None or current_close is None or lookback_close is None:
+                continue
+            prev_close = float(prev_close)
+            current_close = float(current_close)
+            lookback_close = float(lookback_close)
+            if prev_close <= 0 or lookback_close <= 0:
+                continue
+            momentum = (prev_close - lookback_close) / lookback_close
+            if momentum > 0:
+                active_returns.append((current_close - prev_close) / prev_close)
+
+        if active_returns:
+            equity *= 1.0 + (sum(active_returns) / len(active_returns))
+
+    return float(equity), float((equity / initial - 1.0) * 100.0)
+
+
+def _resolve_best_baseline(
+    *,
+    buy_hold_return_pct: float,
+    risk_parity_return_pct: float,
+    momentum_return_pct: float,
+) -> tuple[str, float]:
+    baselines = [
+        ("buy_hold", float(buy_hold_return_pct)),
+        ("risk_parity", float(risk_parity_return_pct)),
+        ("momentum", float(momentum_return_pct)),
+    ]
+    return max(baselines, key=lambda item: item[1])
+
+
+
+def _safe_pct(value: float, denominator: float) -> float:
+    den = abs(float(denominator))
+    if den <= 1e-12:
+        return 0.0
+    return float(value / den * 100.0)
+
+
+def _build_cost_profile(
+    *,
+    initial_equity: float,
+    gross_pnl: float,
+    trading_fee: float,
+    funding_fee: float,
+    net_pnl: float,
+) -> dict[str, float | str]:
+    total_cost_impact = float(trading_fee + funding_fee)
+    funding_credit = float(max(-funding_fee, 0.0))
+    cost_drag_pct_of_initial = _safe_pct(total_cost_impact, float(initial_equity)) if float(initial_equity) > 0 else 0.0
+    cost_erosion_pct_of_gross = _safe_pct(total_cost_impact, gross_pnl) if abs(float(gross_pnl)) > 1e-12 else 0.0
+    if abs(float(gross_pnl)) <= 1e-12:
+        gross_to_net_retention_pct = 0.0
+    elif gross_pnl < 0 and net_pnl < 0:
+        gross_to_net_retention_pct = _safe_pct(abs(net_pnl), gross_pnl)
+    else:
+        gross_to_net_retention_pct = _safe_pct(net_pnl, gross_pnl)
+
+    if gross_pnl > 0:
+        if net_pnl <= 0:
+            status = "cost_flip_loss"
+            summary = "Gross profit exists, but fees/funding flip the outcome to a net loss."
+        elif total_cost_impact < 0:
+            status = "funding_tailwind"
+            summary = "Signal edge is amplified by favorable funding."
+        elif gross_to_net_retention_pct >= 80.0:
+            status = "signal_driven"
+            summary = "Most gross profit survives costs; PnL is mainly signal-driven."
+        elif gross_to_net_retention_pct >= 50.0:
+            status = "cost_eroded"
+            summary = "Signal edge survives, but costs eat a meaningful share of gross profit."
+        else:
+            status = "cost_heavy"
+            summary = "Signal edge is heavily eroded by costs."
+    elif gross_pnl < 0:
+        if total_cost_impact < 0:
+            status = "loss_offset_by_funding"
+            summary = "Strategy loses before cost, but favorable funding offsets part of the loss."
+        else:
+            status = "signal_loss"
+            summary = "Strategy loses before cost, and costs worsen the final result."
+    else:
+        if total_cost_impact < 0:
+            status = "funding_tailwind_flat"
+            summary = "Strategy is flat before costs; favorable funding creates a net gain."
+        elif total_cost_impact > 0:
+            status = "flat_before_cost"
+            summary = "Strategy is flat before costs; fees/funding create the net loss."
+        else:
+            status = "flat"
+            summary = "Strategy is flat before and after costs."
+
+    return {
+        "total_cost_impact": float(total_cost_impact),
+        "funding_credit": float(funding_credit),
+        "cost_drag_pct_of_initial": float(cost_drag_pct_of_initial),
+        "cost_erosion_pct_of_gross": float(cost_erosion_pct_of_gross),
+        "gross_to_net_retention_pct": float(gross_to_net_retention_pct),
+        "cost_status": str(status),
+        "cost_summary": str(summary),
+    }
+
+
 def build_metrics(
     *,
     run_id: str,
@@ -206,6 +365,24 @@ def build_metrics(
     total_return_pct = ((final_equity / initial_equity) - 1.0) * 100.0 if initial_equity > 0 else 0.0
     max_dd = _calc_max_drawdown_pct(curve)
     sharpe = _calc_sharpe(curve)
+    gross_pnl = sum(float(t.pnl_gross) for t in trades)
+    trading_fee = sum(float(getattr(t, "trading_fee", t.entry_fee + t.exit_fee + getattr(t, "liquidation_fee", 0.0))) for t in trades)
+    funding_fee = sum(float(getattr(t, "funding_fee", 0.0)) for t in trades)
+    slippage_cost = sum(
+        float(getattr(t, "entry_slippage_cost", 0.0)) + float(getattr(t, "exit_slippage_cost", 0.0)) for t in trades
+    )
+    impact_cost = sum(
+        float(getattr(t, "entry_impact_cost", 0.0)) + float(getattr(t, "exit_impact_cost", 0.0)) for t in trades
+    )
+    partial_fill_trade_count = sum(1 for t in trades if bool(getattr(t, "partial_fill", False)))
+    net_pnl = sum(float(t.pnl_net) for t in trades)
+    cost_profile = _build_cost_profile(
+        initial_equity=float(initial_equity),
+        gross_pnl=float(gross_pnl),
+        trading_fee=float(trading_fee),
+        funding_fee=float(funding_fee),
+        net_pnl=float(net_pnl),
+    )
 
     wins = [t for t in trades if t.pnl_net > 0]
     win_rate = (len(wins) / len(trades) * 100.0) if trades else 0.0
@@ -238,6 +415,22 @@ def build_metrics(
         avg_holding_minutes=float(avg_holding_minutes),
         signal_count=int(signal_count),
         bar_count=int(bar_count),
+        gross_pnl=float(gross_pnl),
+        trading_fee=float(trading_fee),
+        funding_fee=float(funding_fee),
+        net_pnl=float(net_pnl),
+        total_cost_impact=float(cost_profile["total_cost_impact"]),
+        funding_credit=float(cost_profile["funding_credit"]),
+        cost_drag_pct_of_initial=float(cost_profile["cost_drag_pct_of_initial"]),
+        cost_erosion_pct_of_gross=float(cost_profile["cost_erosion_pct_of_gross"]),
+        gross_to_net_retention_pct=float(cost_profile["gross_to_net_retention_pct"]),
+        cost_status=str(cost_profile["cost_status"]),
+        cost_summary=str(cost_profile["cost_summary"]),
+        slippage_cost=float(slippage_cost),
+        slippage_cost_pct_of_initial=(float(slippage_cost) / float(initial_equity) * 100.0) if initial_equity > 0 else 0.0,
+        impact_cost=float(impact_cost),
+        impact_cost_pct_of_initial=(float(impact_cost) / float(initial_equity) * 100.0) if initial_equity > 0 else 0.0,
+        partial_fill_trade_count=int(partial_fill_trade_count),
         buy_hold_final_equity=float(buy_hold_final_equity),
         buy_hold_return_pct=float(buy_hold_return_pct),
         excess_return_pct=float(excess_return_pct),
@@ -260,13 +453,36 @@ def _write_trades_csv(path: Path, trades: list[Trade]) -> None:
         "entry_price",
         "exit_price",
         "qty",
+        "partial_fill",
+        "constraint_flags",
+        "entry_requested_qty",
+        "exit_requested_qty",
+        "entry_fill_ratio",
+        "exit_fill_ratio",
+        "entry_capacity_notional",
+        "exit_capacity_notional",
+        "slippage_model",
+        "entry_slippage_bps",
+        "exit_slippage_bps",
+        "entry_slippage_cost",
+        "exit_slippage_cost",
+        "entry_impact_bps",
+        "exit_impact_bps",
+        "entry_impact_cost",
+        "exit_impact_cost",
         "entry_fee",
         "exit_fee",
+        "liquidation_fee",
+        "liquidation_price",
+        "trading_fee",
+        "funding_fee",
         "pnl_gross",
         "pnl_net",
         "entry_score",
         "exit_score",
         "reason",
+        "exit_kind",
+        "exit_price_source",
     ]
 
     with path.open("w", encoding="utf-8", newline="") as fh:
@@ -282,13 +498,36 @@ def _write_trades_csv(path: Path, trades: list[Trade]) -> None:
                     "entry_price": f"{t.entry_price:.8f}",
                     "exit_price": f"{t.exit_price:.8f}",
                     "qty": f"{t.qty:.8f}",
+                    "partial_fill": str(bool(getattr(t, "partial_fill", False))).lower(),
+                    "constraint_flags": str(getattr(t, "constraint_flags", "") or ""),
+                    "entry_requested_qty": f"{float(getattr(t, 'entry_requested_qty', 0.0)):.8f}",
+                    "exit_requested_qty": f"{float(getattr(t, 'exit_requested_qty', 0.0)):.8f}",
+                    "entry_fill_ratio": f"{float(getattr(t, 'entry_fill_ratio', 1.0)):.6f}",
+                    "exit_fill_ratio": f"{float(getattr(t, 'exit_fill_ratio', 1.0)):.6f}",
+                    "entry_capacity_notional": f"{float(getattr(t, 'entry_capacity_notional', 0.0)):.8f}",
+                    "exit_capacity_notional": f"{float(getattr(t, 'exit_capacity_notional', 0.0)):.8f}",
+                    "slippage_model": str(getattr(t, "slippage_model", "") or "fixed"),
+                    "entry_slippage_bps": f"{float(getattr(t, 'entry_slippage_bps', 0.0)):.4f}",
+                    "exit_slippage_bps": f"{float(getattr(t, 'exit_slippage_bps', 0.0)):.4f}",
+                    "entry_slippage_cost": f"{float(getattr(t, 'entry_slippage_cost', 0.0)):.8f}",
+                    "exit_slippage_cost": f"{float(getattr(t, 'exit_slippage_cost', 0.0)):.8f}",
+                    "entry_impact_bps": f"{float(getattr(t, 'entry_impact_bps', 0.0)):.4f}",
+                    "exit_impact_bps": f"{float(getattr(t, 'exit_impact_bps', 0.0)):.4f}",
+                    "entry_impact_cost": f"{float(getattr(t, 'entry_impact_cost', 0.0)):.8f}",
+                    "exit_impact_cost": f"{float(getattr(t, 'exit_impact_cost', 0.0)):.8f}",
                     "entry_fee": f"{t.entry_fee:.8f}",
                     "exit_fee": f"{t.exit_fee:.8f}",
+                    "liquidation_fee": f"{t.liquidation_fee:.8f}",
+                    "liquidation_price": f"{t.liquidation_price:.8f}" if t.liquidation_price > 0 else "",
+                    "trading_fee": f"{t.trading_fee:.8f}",
+                    "funding_fee": f"{t.funding_fee:.8f}",
                     "pnl_gross": f"{t.pnl_gross:.8f}",
                     "pnl_net": f"{t.pnl_net:.8f}",
                     "entry_score": t.entry_score,
                     "exit_score": t.exit_score,
                     "reason": t.reason,
+                    "exit_kind": t.exit_kind,
+                    "exit_price_source": t.exit_price_source,
                 }
             )
 
@@ -320,6 +559,22 @@ def _write_metrics_json(path: Path, metrics: Metrics) -> None:
         "avg_holding_minutes": metrics.avg_holding_minutes,
         "signal_count": metrics.signal_count,
         "bar_count": metrics.bar_count,
+        "gross_pnl": metrics.gross_pnl,
+        "trading_fee": metrics.trading_fee,
+        "funding_fee": metrics.funding_fee,
+        "net_pnl": metrics.net_pnl,
+        "total_cost_impact": metrics.total_cost_impact,
+        "funding_credit": metrics.funding_credit,
+        "cost_drag_pct_of_initial": metrics.cost_drag_pct_of_initial,
+        "cost_erosion_pct_of_gross": metrics.cost_erosion_pct_of_gross,
+        "gross_to_net_retention_pct": metrics.gross_to_net_retention_pct,
+        "cost_status": metrics.cost_status,
+        "cost_summary": metrics.cost_summary,
+        "slippage_cost": metrics.slippage_cost,
+        "slippage_cost_pct_of_initial": metrics.slippage_cost_pct_of_initial,
+        "impact_cost": metrics.impact_cost,
+        "impact_cost_pct_of_initial": metrics.impact_cost_pct_of_initial,
+        "partial_fill_trade_count": metrics.partial_fill_trade_count,
         "buy_hold_final_equity": metrics.buy_hold_final_equity,
         "buy_hold_return_pct": metrics.buy_hold_return_pct,
         "excess_return_pct": metrics.excess_return_pct,
@@ -368,6 +623,22 @@ def _render_markdown_report(metrics: Metrics, trades: list[Trade]) -> str:
         f"- Avg Holding: `{metrics.avg_holding_minutes:.2f} min`",
         f"- Signal Count: `{metrics.signal_count}`",
         f"- Bar Count: `{metrics.bar_count}`",
+        f"- Gross PnL: `{metrics.gross_pnl:+.4f}`",
+        f"- Trading Fee: `{metrics.trading_fee:.4f}`",
+        f"- Funding Fee: `{metrics.funding_fee:+.4f}`",
+        f"- Net PnL: `{metrics.net_pnl:+.4f}`",
+        f"- Total Cost Impact: `{metrics.total_cost_impact:+.4f}`",
+        f"- Funding Credit: `{metrics.funding_credit:+.4f}`",
+        f"- Gross→Net Retention: `{metrics.gross_to_net_retention_pct:+.2f}%`",
+        f"- Cost Erosion vs Gross: `{metrics.cost_erosion_pct_of_gross:+.2f}%`",
+        f"- Cost Drag vs Initial Equity: `{metrics.cost_drag_pct_of_initial:+.2f}%`",
+        f"- Cost Status: `{metrics.cost_status}`",
+        f"- Cost Summary: `{metrics.cost_summary}`",
+        f"- Embedded Slippage Cost: `{metrics.slippage_cost:+.4f}`",
+        f"- Slippage Cost vs Initial Equity: `{metrics.slippage_cost_pct_of_initial:+.2f}%`",
+        f"- Embedded Impact Cost: `{metrics.impact_cost:+.4f}`",
+        f"- Impact Cost vs Initial Equity: `{metrics.impact_cost_pct_of_initial:+.2f}%`",
+        f"- Partial Fill Trades: `{metrics.partial_fill_trade_count}`",
         f"- Buy & Hold Return: `{metrics.buy_hold_return_pct:+.2f}%`",
         f"- Excess Return vs Buy & Hold: `{metrics.excess_return_pct:+.2f}%`",
         "",

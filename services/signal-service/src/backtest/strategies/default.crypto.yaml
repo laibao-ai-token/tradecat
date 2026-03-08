@@ -9,12 +9,27 @@
   "execution": {
     "entry": "next_open",
     "slippage_bps": 3,
-    "fee_bps": 4
+    "slippage_model": "fixed",
+    "slippage_max_bps": 9,
+    "slippage_volatility_weight": 0.8,
+    "slippage_volume_weight": 0.6,
+    "slippage_session_weight": 0.3,
+    "slippage_volume_window": 20,
+    "max_bar_participation_rate": 0.2,
+    "min_order_notional": 5,
+    "impact_bps_per_bar_participation": 60,
+    "fee_bps": 4,
+    "maker_fee_bps": 4,
+    "taker_fee_bps": 4,
+    "funding_rate_bps_per_8h": 0
   },
   "risk": {
     "leverage": 2,
     "initial_equity": 10000,
-    "position_size_pct": 0.25
+    "position_size_pct": 0.25,
+    "maintenance_margin_ratio": 0.005,
+    "liquidation_fee_bps": 0,
+    "liquidation_buffer_bps": 0
   },
   "aggregation": {
     "long_open_threshold": 130,
@@ -30,4 +45,3 @@
     "keep_runs": 30
   }
 }
-

@@ -30,8 +30,27 @@ def test_load_config_with_json_text_and_overrides(tmp_path: Path) -> None:
         """
         {
           "symbols": ["btc_usdt", "eth-usdt"],
-          "risk": {"initial_equity": 2000, "position_size_pct": 0.5},
-          "execution": {"fee_bps": 8, "slippage_bps": 2}
+          "risk": {
+            "initial_equity": 2000,
+            "position_size_pct": 0.5,
+            "maintenance_margin_ratio": 0.01,
+            "liquidation_fee_bps": 25,
+            "liquidation_buffer_bps": 12
+          },
+          "execution": {
+            "fee_bps": 8,
+            "slippage_bps": 2,
+            "slippage_model": "layered",
+            "slippage_max_bps": 9,
+            "slippage_volatility_weight": 0.7,
+            "slippage_volume_weight": 0.5,
+            "slippage_session_weight": 0.2,
+            "slippage_volume_window": 12,
+            "max_bar_participation_rate": 0.25,
+            "min_order_notional": 10,
+            "impact_bps_per_bar_participation": 80,
+            "funding_rate_bps_per_8h": 1.5
+          }
         }
         """,
         encoding="utf-8",
@@ -59,8 +78,23 @@ def test_load_config_with_json_text_and_overrides(tmp_path: Path) -> None:
     assert cfg.risk.initial_equity == 3500
     assert cfg.risk.leverage == 3
     assert cfg.risk.position_size_pct == 0.4
+    assert cfg.risk.maintenance_margin_ratio == 0.01
+    assert cfg.risk.liquidation_fee_bps == 25
+    assert cfg.risk.liquidation_buffer_bps == 12
     assert cfg.execution.fee_bps == 3
+    assert cfg.execution.maker_fee_bps == 3
+    assert cfg.execution.taker_fee_bps == 3
+    assert cfg.execution.funding_rate_bps_per_8h == 1.5
     assert cfg.execution.slippage_bps == 1
+    assert cfg.execution.slippage_model == "layered"
+    assert cfg.execution.slippage_max_bps == 9
+    assert cfg.execution.slippage_volatility_weight == 0.7
+    assert cfg.execution.slippage_volume_weight == 0.5
+    assert cfg.execution.slippage_session_weight == 0.2
+    assert cfg.execution.slippage_volume_window == 12
+    assert cfg.execution.max_bar_participation_rate == 0.25
+    assert cfg.execution.min_order_notional == 10
+    assert cfg.execution.impact_bps_per_bar_participation == 80
     assert cfg.walk_forward.train_days == 21
     assert cfg.walk_forward.test_days == 7
     assert cfg.walk_forward.step_days == 7
@@ -97,6 +131,8 @@ def test_run_execution_minimal_long_then_close() -> None:
     assert trade.side == "LONG"
     assert trade.entry_price == 101
     assert trade.exit_price == 103
+    assert trade.trading_fee == pytest.approx(0.0)
+    assert trade.funding_fee == pytest.approx(0.0)
     assert result.final_equity > 10_000
 
 
@@ -150,6 +186,10 @@ def test_run_backtest_writes_artifacts_and_done_state(tmp_path: Path, monkeypatc
     assert (out.output_dir / "report.md").exists()
     assert (tmp_path / "artifacts" / "backtest" / "latest").exists()
     assert out.metrics.avg_holding_minutes >= 0
+    assert out.metrics.gross_pnl > 0
+    assert out.metrics.trading_fee == pytest.approx(0.0)
+    assert out.metrics.funding_fee == pytest.approx(0.0)
+    assert out.metrics.net_pnl == pytest.approx(out.metrics.gross_pnl)
     assert len(out.metrics.symbol_contributions) == 1
     assert out.metrics.symbol_contributions[0].symbol == "BTCUSDT"
     assert out.metrics.buy_hold_return_pct > 0
