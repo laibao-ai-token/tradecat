@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from ..config import get_database_url, get_history_db_path
-from .data_loader import resolve_range
+from .data_loader import floor_minute, resolve_range
 from .models import BacktestConfig, Bar, SignalEvent
 
 
@@ -201,7 +201,11 @@ def _calc_gap_stats(bars: list[Bar]) -> tuple[int, int, int]:
 
 def _build_next_open_keys(bars: list[Bar]) -> set[datetime]:
     ordered = sorted(bars, key=lambda x: x.timestamp)
-    return {bar.timestamp for bar in ordered[:-1]}
+    executable: set[datetime] = set()
+    for current, nxt in zip(ordered, ordered[1:]):
+        if nxt.timestamp - current.timestamp == timedelta(minutes=1):
+            executable.add(current.timestamp)
+    return executable
 
 
 def _load_signal_coverage_from_sqlite(
@@ -469,10 +473,13 @@ def build_input_quality_report(
         candle_coverage_pct = (candle_count / expected_candle_count * 100.0) if expected_candle_count > 0 else 0.0
         gap_count, missing_candle_count, largest_gap_minutes = _calc_gap_stats(bars)
         next_open_keys = _build_next_open_keys(bars)
-        aggregated_bucket_count = len(score_map.get(symbol, {}))
-        no_next_open_bucket_count = sum(1 for ts in score_map.get(symbol, {}) if ts not in next_open_keys)
+        symbol_score_map = score_map.get(symbol, {})
+        aggregated_bucket_count = len(symbol_score_map)
+        no_next_open_bucket_count = sum(1 for ts in symbol_score_map if ts not in next_open_keys)
         invalid_signal_count = max(0, len(symbol_signals) - len(valid_symbol_signals))
-        dropped_signal_count = invalid_signal_count
+        dropped_signal_count = invalid_signal_count + sum(
+            1 for ev in valid_symbol_signals if floor_minute(ev.timestamp) not in next_open_keys
+        )
 
         total_signal_count += len(symbol_signals)
         total_aggregated_bucket_count += aggregated_bucket_count

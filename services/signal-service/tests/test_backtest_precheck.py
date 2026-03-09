@@ -201,15 +201,54 @@ def test_build_input_quality_report_tracks_gaps_and_no_next_open() -> None:
     assert report.candle_count == 3
     assert report.expected_candle_count == 4
     assert report.no_next_open_bucket_count == 1
-    assert report.dropped_signal_count == 0
-    assert report.quality_score == pytest.approx(56.0)
+    assert report.dropped_signal_count == 1
+    assert report.quality_score == pytest.approx(48.5)
     assert report.quality_status == "fail"
     assert report.quality_breakdown["missing_candle_penalty"] == pytest.approx(5.0)
     assert report.quality_breakdown["gap_penalty"] == pytest.approx(1.5)
     assert report.quality_breakdown["no_next_open_penalty"] == pytest.approx(12.5)
-    assert report.quality_breakdown["dropped_signal_penalty"] == pytest.approx(0.0)
+    assert report.quality_breakdown["dropped_signal_penalty"] == pytest.approx(7.5)
     assert report.symbol_rows[0].gap_count == 1
     assert report.symbol_rows[0].missing_candle_count == 1
     assert report.symbol_rows[0].no_next_open_bucket_count == 1
-    assert report.symbol_rows[0].quality_score == pytest.approx(56.0)
+    assert report.symbol_rows[0].dropped_signal_count == 1
+    assert report.symbol_rows[0].quality_score == pytest.approx(48.5)
     assert report.symbol_rows[0].quality_status == "fail"
+
+
+def test_build_input_quality_report_treats_gap_before_later_bar_as_missing_next_open() -> None:
+    from src.backtest.models import BacktestConfig, Bar, DateRange, SignalEvent
+
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=1)
+    t3 = t0 + timedelta(minutes=3)
+
+    cfg = BacktestConfig(
+        symbols=["BTCUSDT"],
+        timeframe="1m",
+        date_range=DateRange(start="2026-01-01 00:00:00", end="2026-01-01 00:03:00"),
+    )
+    signals = [
+        SignalEvent(1, t1, "BTCUSDT", "BUY", 80, "test", "1m", "sqlite", 100.0),
+    ]
+    bars = {
+        "BTCUSDT": [
+            Bar("BTCUSDT", t0, 100, 101, 99, 100, 1),
+            Bar("BTCUSDT", t1, 100, 102, 99, 101, 1),
+            Bar("BTCUSDT", t3, 101, 103, 100, 102, 1),
+        ]
+    }
+
+    report = build_input_quality_report(
+        cfg,
+        run_id="iq-gap-unit",
+        mode="history_signal",
+        signals=signals,
+        bars_by_symbol=bars,
+    )
+
+    assert report.aggregated_signal_bucket_count == 1
+    assert report.no_next_open_bucket_count == 1
+    assert report.dropped_signal_count == 1
+    assert report.symbol_rows[0].no_next_open_bucket_count == 1
+    assert report.symbol_rows[0].dropped_signal_count == 1
