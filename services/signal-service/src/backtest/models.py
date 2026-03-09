@@ -253,7 +253,15 @@ class Metrics:
     partial_fill_trade_count: int = 0
     buy_hold_final_equity: float = 0.0
     buy_hold_return_pct: float = 0.0
+    risk_parity_final_equity: float = 0.0
+    risk_parity_return_pct: float = 0.0
+    momentum_final_equity: float = 0.0
+    momentum_return_pct: float = 0.0
     excess_return_pct: float = 0.0
+    excess_return_vs_risk_parity_pct: float = 0.0
+    excess_return_vs_momentum_pct: float = 0.0
+    best_baseline_name: str = ""
+    best_baseline_return_pct: float = 0.0
     symbol_contributions: list[SymbolContribution] = field(default_factory=list)
     signal_type_counts: dict[str, int] = field(default_factory=dict)
     direction_counts: dict[str, int] = field(default_factory=dict)

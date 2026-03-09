@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.backtest.models import BacktestConfig, DateRange, Metrics, WalkForwardConfig
+from src.backtest.models import AggregationConfig, BacktestConfig, DateRange, Metrics, WalkForwardConfig
 from src.backtest.walkforward import build_walk_forward_windows, run_walk_forward
 
 
@@ -68,7 +68,7 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
 
     calls = []
 
-    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None):
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None, ephemeral=False):
         calls.append((cfg.date_range.start, cfg.date_range.end, mode, run_id))
         idx = len(calls)
         return SimpleNamespace(
@@ -90,7 +90,7 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
         walk_forward=WalkForwardConfig(train_days=7, test_days=5, step_days=5),
     )
 
-    summary = run_walk_forward(cfg, mode="history_signal", run_id="wf-unit", max_folds=2)
+    summary = run_walk_forward(cfg, mode="history_signal", run_id="wf-unit", max_folds=2, select_train_params=False)
 
     assert summary.fold_count == 2
     assert summary.avg_return_pct > 0
@@ -106,10 +106,25 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
     assert payload["fold_count"] == 2
     assert len(payload["folds"]) == 2
     assert payload["avg_excess_return_pct"] < 0
+    assert payload["best_baseline_name"] == "buy_hold"
+    assert payload["best_baseline_return_pct"] == 1.0
+    assert payload["folds"][0]["selected_params"]["selection_source"] == "base_config"
+    assert payload["folds"][0]["selected_params"]["aggregation"]["long_open_threshold"] == 70
+    assert payload["folds"][0]["selected_params"]["execution"]["neutral_confirm_minutes"] == 1
+
+    csv_text = (output_dir / "walk_forward_folds.csv").read_text(encoding="utf-8")
+    assert "selected_params_json" in csv_text
+    assert "selection_source" in csv_text
+    assert "base_config" in csv_text
 
     metrics_payload = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics_payload["mode"] == "walk_forward"
+    assert metrics_payload["best_baseline_name"] == "buy_hold"
+    assert metrics_payload["best_baseline_return_pct"] == 1.0
     assert metrics_payload["walk_forward_summary"]["fold_count"] == 2
+    assert metrics_payload["walk_forward_summary"]["best_baseline_name"] == "buy_hold"
+    assert metrics_payload["walk_forward_summary"]["best_baseline_return_pct"] == 1.0
+    assert metrics_payload["walk_forward_summary"]["folds"][0]["selected_params"]["selection_source"] == "base_config"
 
     latest = tmp_path / "artifacts" / "backtest" / "latest"
     assert latest.exists()
@@ -135,7 +150,7 @@ def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) 
 
     mode_calls = []
 
-    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None):
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None, ephemeral=False):
         mode_calls.append(mode)
         idx = len(mode_calls)
         return SimpleNamespace(
@@ -154,6 +169,7 @@ def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) 
         symbols=["BTCUSDT", "ETHUSDT"],
         timeframe="1m",
         date_range=DateRange(start="2026-01-01 00:00:00", end="2026-02-01 00:00:00"),
+        aggregation=AggregationConfig(long_open_threshold=120, short_open_threshold=110, close_threshold=25),
         walk_forward=WalkForwardConfig(train_days=7, test_days=5, step_days=5),
     )
 
@@ -165,6 +181,7 @@ def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) 
         auto_fallback=True,
         min_signal_days=1,
         min_signal_count=1,
+        select_train_params=False,
     )
 
     assert mode_calls == ["offline_replay", "offline_replay"]
@@ -179,3 +196,55 @@ def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) 
     )
     assert payload["fallback_fold_count"] == 2
     assert payload["folds"][0]["fallback_reason"]
+    assert payload["folds"][0]["selected_params"]["selection_source"] == "offline_replay_fallback"
+    assert payload["folds"][0]["selected_params"]["aggregation"]["long_open_threshold"] == 84
+    assert payload["folds"][0]["selected_params"]["aggregation"]["short_open_threshold"] == 77
+    assert payload["folds"][0]["selected_params"]["aggregation"]["close_threshold"] == 25
+
+
+def test_run_walk_forward_selects_params_from_train_window(monkeypatch, tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("src.backtest.walkforward.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("src.backtest.walkforward.resolve_range", lambda _: (start, end))
+
+    calls = []
+
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None, ephemeral=False):
+        calls.append((run_id, mode, ephemeral, cfg.date_range.start, cfg.date_range.end, cfg.aggregation.long_open_threshold))
+        long_th = int(cfg.aggregation.long_open_threshold)
+        if ephemeral:
+            if long_th <= 85:
+                return SimpleNamespace(metrics=_mk_metrics(run_id, ret=6.0, max_dd=2.0, excess=7.0, mode=mode))
+            if long_th >= 115:
+                return SimpleNamespace(metrics=_mk_metrics(run_id, ret=-1.0, max_dd=1.0, excess=-0.5, mode=mode))
+            return SimpleNamespace(metrics=_mk_metrics(run_id, ret=1.0, max_dd=1.5, excess=1.2, mode=mode))
+        return SimpleNamespace(metrics=_mk_metrics(run_id, ret=2.5, max_dd=1.8, excess=3.0, mode=mode))
+
+    monkeypatch.setattr("src.backtest.walkforward.run_backtest", _fake_run_backtest)
+
+    cfg = BacktestConfig(
+        symbols=["BTCUSDT", "ETHUSDT"],
+        timeframe="1m",
+        date_range=DateRange(start="2026-01-01 00:00:00", end="2026-02-01 00:00:00"),
+        aggregation=AggregationConfig(long_open_threshold=100, short_open_threshold=100, close_threshold=20),
+        walk_forward=WalkForwardConfig(train_days=7, test_days=5, step_days=5),
+    )
+
+    summary = run_walk_forward(cfg, mode="history_signal", run_id="wf-train-select", max_folds=1, select_train_params=True)
+
+    assert summary.fold_count == 1
+    payload = json.loads((tmp_path / "artifacts" / "backtest" / "wf-train-select" / "walk_forward_summary.json").read_text(encoding="utf-8"))
+    selected = payload["folds"][0]["selected_params"]
+    assert selected["selection_source"] == "train_window_search"
+    assert selected["candidate_name"] == "aggressive"
+    assert selected["aggregation"]["long_open_threshold"] == 85
+    assert selected["train_eval_mode"] == "history_signal"
+    assert selected["train_score"]["excess_return_pct"] == 7.0
+
+    ephemeral_calls = [row for row in calls if row[2]]
+    live_calls = [row for row in calls if not row[2]]
+    assert len(ephemeral_calls) == 3
+    assert len(live_calls) == 1
+    assert live_calls[0][5] == 85

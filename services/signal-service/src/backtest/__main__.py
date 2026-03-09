@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,71 @@ from .walkforward import run_walk_forward
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+
+_ALIGNMENT_RISK_LEVEL_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+_ALIGNMENT_GATE_EXIT_CODE = 2
+
+
+def _coerce_optional_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_alignment_risk_level(raw: object) -> str:
+    level = str(raw or "").strip().lower()
+    if level in _ALIGNMENT_RISK_LEVEL_ORDER:
+        return level
+    return "unknown"
+
+
+def _load_alignment_payload(compare_dir: Path) -> dict[str, object]:
+    payload_path = Path(compare_dir) / "comparison.json"
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"comparison payload must be a JSON object: {payload_path}")
+    return payload
+
+
+def _collect_alignment_gate_failures(
+    payload: dict[str, object],
+    *,
+    min_alignment_score: float | None = None,
+    max_alignment_risk_level: str | None = None,
+) -> list[str]:
+    failures: list[str] = []
+
+    score = _coerce_optional_float(payload.get("alignment_score"))
+    risk_level = _normalize_alignment_risk_level(payload.get("alignment_risk_level"))
+    status = str(payload.get("alignment_status") or "--").strip().lower() or "--"
+
+    if min_alignment_score is not None:
+        threshold = float(min_alignment_score)
+        if score is None:
+            failures.append("alignment_score is missing; cannot evaluate --alignment-min-score gate")
+        elif score < threshold:
+            failures.append(f"alignment score gate failed: {score:.2f} < {threshold:.2f}")
+
+    if max_alignment_risk_level is not None:
+        max_level = _normalize_alignment_risk_level(max_alignment_risk_level)
+        if max_level == "unknown":
+            failures.append(f"invalid max alignment risk level: {max_alignment_risk_level}")
+        elif risk_level == "unknown":
+            failures.append("alignment_risk_level is missing; cannot evaluate --alignment-max-risk-level gate")
+        elif _ALIGNMENT_RISK_LEVEL_ORDER[risk_level] > _ALIGNMENT_RISK_LEVEL_ORDER[max_level]:
+            failures.append(
+                f"alignment risk gate failed: level={risk_level} exceeds max={max_level} (status={status})"
+            )
+
+    return failures
+
+
+def _alignment_gate_requested(*, min_alignment_score: float | None, max_alignment_risk_level: str | None) -> bool:
+    return min_alignment_score is not None or max_alignment_risk_level is not None
 
 
 def _collect_precheck_failures(
@@ -158,6 +224,18 @@ def main() -> int:
         default=True,
         help="Auto fallback to offline_replay for thin history-signal folds",
     )
+    parser.add_argument(
+        "--alignment-min-score",
+        type=float,
+        default=None,
+        help="Compare-mode gate: fail when alignment_score is below this threshold",
+    )
+    parser.add_argument(
+        "--alignment-max-risk-level",
+        choices=["low", "medium", "high", "critical"],
+        default=None,
+        help="Compare-mode gate: fail when alignment_risk_level is above this threshold",
+    )
     args = parser.parse_args()
 
     config_path: Path | None
@@ -191,6 +269,14 @@ def main() -> int:
     )
 
     mode = _normalize_mode(args.mode)
+
+    if _alignment_gate_requested(
+        min_alignment_score=args.alignment_min_score,
+        max_alignment_risk_level=args.alignment_max_risk_level,
+    ) and mode != "compare_history_rule":
+        raise ValueError(
+            "--alignment-min-score/--alignment-max-risk-level only work with --mode compare_history_rule"
+        )
 
     coverage = compute_coverage_report(cfg)
     for line in format_coverage_lines(coverage):
@@ -278,22 +364,50 @@ def main() -> int:
             )
             raise
 
-        mark_done(
-            state_path,
-            run_id=base_run_id,
-            mode=mode,
-            latest_run_id=rule_result.run_id,
-            message=(
-                f"compare done history={history_result.metrics.total_return_pct:+.2f}% "
-                f"rule={rule_result.metrics.total_return_pct:+.2f}%"
-            ),
+        gate_failures = _collect_alignment_gate_failures(
+            _load_alignment_payload(compare_dir),
+            min_alignment_score=args.alignment_min_score,
+            max_alignment_risk_level=args.alignment_max_risk_level,
         )
+        gate_failed = bool(gate_failures)
+        if gate_failed:
+            for msg in gate_failures:
+                logger.error("alignment gate: %s", msg)
+
+        done_message = (
+            f"compare done history={history_result.metrics.total_return_pct:+.2f}% "
+            f"rule={rule_result.metrics.total_return_pct:+.2f}%"
+        )
+        if gate_failed:
+            done_message = f"{done_message} | alignment_gate=failed"
+
+        if gate_failed:
+            mark_error(
+                state_path,
+                run_id=base_run_id,
+                mode=mode,
+                stage="compare_modes",
+                error="; ".join(gate_failures),
+                message=done_message,
+                latest_run_id=rule_result.run_id,
+            )
+        else:
+            mark_done(
+                state_path,
+                run_id=base_run_id,
+                mode=mode,
+                latest_run_id=rule_result.run_id,
+                message=done_message,
+            )
 
         logger.info("compare run_id=%s", base_run_id)
         logger.info("history run=%s return=%+.2f%%", history_result.run_id, history_result.metrics.total_return_pct)
         logger.info("rule run=%s return=%+.2f%%", rule_result.run_id, rule_result.metrics.total_return_pct)
         logger.info("session=%s", session_dir)
         logger.info("comparison output=%s", compare_dir)
+        if gate_failed:
+            logger.error("alignment gate blocked compare run with exit code %d", _ALIGNMENT_GATE_EXIT_CODE)
+            return _ALIGNMENT_GATE_EXIT_CODE
         return 0
 
     if args.walk_forward:

@@ -134,6 +134,24 @@ def test_write_comparison_artifacts(tmp_path: Path) -> None:
     assert payload["history_timeframe_profile"]["dominant"] == "1m"
     assert payload["rule_timeframe_profile"]["dominant"] == "1m"
     assert payload["missing_history_rules_diagnostics"] == []
+    assert round(payload["alignment_score"], 2) == 49.71
+    assert payload["alignment_status"] == "fail"
+    assert payload["alignment_risk_level"] == "critical"
+    assert payload["alignment_risk_summary"] == (
+        "Alignment is unsafe for parameter decisions; inspect the top blocking rules first."
+    )
+    assert payload["alignment_warning_counts"]["error"] >= 1
+    assert payload["alignment_warning_counts"]["warn"] >= 1
+    assert payload["alignment_warning_counts"]["info"] == 0
+    assert round(payload["alignment_breakdown"]["rule_overlap_score"], 2) == 52.22
+    assert round(payload["alignment_breakdown"]["top_rule_score"], 2) == 38.10
+    assert round(payload["alignment_inputs"]["signal_count_delta_pct"], 2) == 40.00
+    assert round(payload["timeframe_overlap_pct"], 2) == 33.33
+    assert any(
+        row["kind"] == "top_rule_missing_in_rule_replay" and row["subject"] == "rule_c"
+        for row in payload["alignment_warnings"]
+    )
+    assert any(row["kind"] == "buy_ratio_delta_above_threshold" for row in payload["alignment_warnings"])
 
     md_text = (out_dir / "comparison.md").read_text(encoding="utf-8")
     assert "Rule Alignment" in md_text
@@ -142,6 +160,54 @@ def test_write_comparison_artifacts(tmp_path: Path) -> None:
     assert "Top Signal-Type Delta" in md_text
     assert "Timeframe Delta" in md_text
     assert "Direction Delta" in md_text
+
+
+def test_write_comparison_artifacts_alignment_pass_when_profiles_match(tmp_path: Path) -> None:
+    history = RunnerResult(
+        run_id="cmp-001-pass-history",
+        output_dir=tmp_path / "history-pass",
+        latest_dir=tmp_path / "latest",
+        metrics=_mk_metrics(
+            "cmp-001-pass-history",
+            "history_signal",
+            ret=3.0,
+            dd=4.0,
+            trades=18,
+            excess=8.0,
+            signal_count=90,
+            signal_type_counts={"rule_a": 60, "rule_b": 30},
+            direction_counts={"BUY": 54, "SELL": 36},
+            timeframe_counts={"1m": 90},
+        ),
+    )
+    rule = RunnerResult(
+        run_id="cmp-001-pass-rules",
+        output_dir=tmp_path / "rules-pass",
+        latest_dir=tmp_path / "latest",
+        metrics=_mk_metrics(
+            "cmp-001-pass-rules",
+            "offline_rule_replay",
+            ret=3.0,
+            dd=4.0,
+            trades=18,
+            excess=8.0,
+            signal_count=90,
+            signal_type_counts={"rule_a": 60, "rule_b": 30},
+            direction_counts={"BUY": 54, "SELL": 36},
+            timeframe_counts={"1m": 90},
+        ),
+    )
+
+    summary = build_comparison_summary("cmp-001-pass", history, rule)
+    out_dir = write_comparison_artifacts(tmp_path, summary)
+
+    payload = json.loads((out_dir / "comparison.json").read_text(encoding="utf-8"))
+    assert payload["alignment_score"] == 100.0
+    assert payload["alignment_status"] == "pass"
+    assert payload["alignment_risk_level"] == "low"
+    assert payload["alignment_risk_summary"] == "Alignment looks stable for a first-pass decision screen."
+    assert payload["alignment_warning_counts"] == {"error": 0, "warn": 0, "info": 0}
+    assert payload["alignment_warnings"] == []
 
 
 def test_write_comparison_artifacts_with_rule_diagnostics(tmp_path: Path) -> None:
@@ -297,3 +363,10 @@ def test_write_comparison_artifacts_marks_timeframe_no_data_reason(tmp_path: Pat
     assert row["configured_timeframes"] == ["1m"]
     assert row["observed_timeframes"] == ["1h", "4h"]
     assert row["overlap_timeframes"] == []
+    assert payload["alignment_status"] == "fail"
+    assert payload["alignment_risk_level"] == "critical"
+    assert payload["alignment_warning_counts"]["error"] >= 1
+    assert any(
+        warning["kind"] == "top_rule_timeframe_no_data" and warning["subject"] == "rule_missing"
+        for warning in payload["alignment_warnings"]
+    )

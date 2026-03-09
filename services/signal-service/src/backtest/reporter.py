@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .models import Bar, EquityPoint, Metrics, SignalEvent, SymbolContribution, Trade
 from .precheck import InputQualityReport, input_quality_to_payload
+from .retention import collect_recent_comparable_metrics
 
 
 def _fmt_ts(dt: datetime) -> str:
@@ -151,33 +152,63 @@ def _build_signal_profile(signals: list[SignalEvent] | None) -> tuple[dict[str, 
     )
 
 
-def _calc_buy_hold_baseline(
-    bars_by_symbol: dict[str, list[Bar]] | None,
-    initial_equity: float,
-) -> tuple[float, float]:
-    """Estimate equal-weight buy-and-hold baseline over selected symbols."""
+def _stddev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    var = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(max(var, 0.0))
 
-    initial = float(initial_equity)
-    if initial <= 0:
-        return 0.0, 0.0
+
+def _prepare_baseline_symbol_data(bars_by_symbol: dict[str, list[Bar]] | None) -> list[dict[str, object]]:
     if not bars_by_symbol:
-        return initial, 0.0
+        return []
 
-    symbol_returns: list[float] = []
-    for bars in bars_by_symbol.values():
-        if not bars:
+    prepared: list[dict[str, object]] = []
+    for symbol, bars in sorted(bars_by_symbol.items()):
+        ordered = [bar for bar in sorted(bars, key=lambda x: x.timestamp) if float(bar.close) > 0]
+        if len(ordered) < 2:
             continue
-        ordered = sorted(bars, key=lambda x: x.timestamp)
+
         first_close = float(ordered[0].close)
         last_close = float(ordered[-1].close)
         if first_close <= 0:
             continue
-        symbol_returns.append((last_close - first_close) / first_close)
 
-    if not symbol_returns:
+        close_map = {bar.timestamp: float(bar.close) for bar in ordered}
+        timestamps = [bar.timestamp for bar in ordered]
+        step_returns: list[float] = []
+        prev_close = first_close
+        for bar in ordered[1:]:
+            close = float(bar.close)
+            if prev_close > 0:
+                step_returns.append((close - prev_close) / prev_close)
+            prev_close = close
+
+        prepared.append(
+            {
+                "symbol": symbol,
+                "total_return": float((last_close - first_close) / first_close),
+                "volatility": float(_stddev(step_returns)),
+                "close_map": close_map,
+                "timestamps": timestamps,
+            }
+        )
+
+    return prepared
+
+
+def _calc_buy_hold_baseline(
+    prepared_rows: list[dict[str, object]],
+    initial_equity: float,
+) -> tuple[float, float]:
+    initial = float(initial_equity)
+    if initial <= 0:
+        return 0.0, 0.0
+    if not prepared_rows:
         return initial, 0.0
 
-    avg_return = sum(symbol_returns) / len(symbol_returns)
+    avg_return = sum(float(row["total_return"]) for row in prepared_rows) / len(prepared_rows)
     final_equity = initial * (1.0 + avg_return)
     return float(final_equity), float(avg_return * 100.0)
 
@@ -395,8 +426,18 @@ def build_metrics(
     avg_holding_minutes = _calc_avg_holding_minutes(trades)
     symbol_contributions = _build_symbol_contributions(trades)
     signal_type_counts, direction_counts, timeframe_counts = _build_signal_profile(signals)
-    buy_hold_final_equity, buy_hold_return_pct = _calc_buy_hold_baseline(bars_by_symbol, initial_equity)
+    prepared_baselines = _prepare_baseline_symbol_data(bars_by_symbol)
+    buy_hold_final_equity, buy_hold_return_pct = _calc_buy_hold_baseline(prepared_baselines, initial_equity)
+    risk_parity_final_equity, risk_parity_return_pct = _calc_risk_parity_baseline(prepared_baselines, initial_equity)
+    momentum_final_equity, momentum_return_pct = _calc_simple_momentum_baseline(prepared_baselines, initial_equity)
     excess_return_pct = total_return_pct - buy_hold_return_pct
+    excess_return_vs_risk_parity_pct = total_return_pct - risk_parity_return_pct
+    excess_return_vs_momentum_pct = total_return_pct - momentum_return_pct
+    best_baseline_name, best_baseline_return_pct = _resolve_best_baseline(
+        buy_hold_return_pct=buy_hold_return_pct,
+        risk_parity_return_pct=risk_parity_return_pct,
+        momentum_return_pct=momentum_return_pct,
+    )
 
     return Metrics(
         run_id=run_id,
@@ -434,7 +475,15 @@ def build_metrics(
         partial_fill_trade_count=int(partial_fill_trade_count),
         buy_hold_final_equity=float(buy_hold_final_equity),
         buy_hold_return_pct=float(buy_hold_return_pct),
+        risk_parity_final_equity=float(risk_parity_final_equity),
+        risk_parity_return_pct=float(risk_parity_return_pct),
+        momentum_final_equity=float(momentum_final_equity),
+        momentum_return_pct=float(momentum_return_pct),
         excess_return_pct=float(excess_return_pct),
+        excess_return_vs_risk_parity_pct=float(excess_return_vs_risk_parity_pct),
+        excess_return_vs_momentum_pct=float(excess_return_vs_momentum_pct),
+        best_baseline_name=str(best_baseline_name),
+        best_baseline_return_pct=float(best_baseline_return_pct),
         symbol_contributions=symbol_contributions,
         signal_type_counts=signal_type_counts,
         direction_counts=direction_counts,
@@ -578,7 +627,15 @@ def _write_metrics_json(path: Path, metrics: Metrics) -> None:
         "partial_fill_trade_count": metrics.partial_fill_trade_count,
         "buy_hold_final_equity": metrics.buy_hold_final_equity,
         "buy_hold_return_pct": metrics.buy_hold_return_pct,
+        "risk_parity_final_equity": metrics.risk_parity_final_equity,
+        "risk_parity_return_pct": metrics.risk_parity_return_pct,
+        "momentum_final_equity": metrics.momentum_final_equity,
+        "momentum_return_pct": metrics.momentum_return_pct,
         "excess_return_pct": metrics.excess_return_pct,
+        "excess_return_vs_risk_parity_pct": metrics.excess_return_vs_risk_parity_pct,
+        "excess_return_vs_momentum_pct": metrics.excess_return_vs_momentum_pct,
+        "best_baseline_name": metrics.best_baseline_name,
+        "best_baseline_return_pct": metrics.best_baseline_return_pct,
         "signal_type_counts": metrics.signal_type_counts,
         "direction_counts": metrics.direction_counts,
         "timeframe_counts": metrics.timeframe_counts,
@@ -600,10 +657,316 @@ def _write_metrics_json(path: Path, metrics: Metrics) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(v) for v in values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def _coerce_float(raw: object) -> float:
+    try:
+        return float(raw)
+    except Exception:
+        return 0.0
+
+
+def _coerce_int(raw: object) -> int:
+    try:
+        return int(raw)
+    except Exception:
+        return 0
+
+
+def _relative_delta_pct(current: float, baseline: float) -> float:
+    base = abs(float(baseline))
+    if base <= 1e-12:
+        return 0.0 if abs(float(current)) <= 1e-12 else 100.0
+    return float((float(current) - float(baseline)) / base * 100.0)
+
+
+def _append_stability_warning(
+    warnings: list[dict[str, object]],
+    *,
+    kind: str,
+    severity: str,
+    message: str,
+    current: float | int,
+    baseline: float | int,
+) -> None:
+    warnings.append(
+        {
+            "kind": kind,
+            "severity": severity,
+            "message": message,
+            "current": float(current) if isinstance(current, float) or isinstance(baseline, float) else int(current),
+            "baseline": float(baseline) if isinstance(current, float) or isinstance(baseline, float) else int(baseline),
+        }
+    )
+
+
+def _build_stability_report(
+    output_dir: Path,
+    metrics: Metrics,
+    *,
+    backtest_root: Path | None = None,
+    lookback: int = 5,
+) -> dict[str, object]:
+    history_root = Path(backtest_root) if backtest_root is not None else output_dir.parent
+    history_rows = collect_recent_comparable_metrics(
+        history_root,
+        current_metrics=metrics,
+        exclude_run_dir=output_dir,
+        limit=lookback,
+    )
+
+    current_payload = {
+        "run_id": metrics.run_id,
+        "total_return_pct": float(metrics.total_return_pct),
+        "max_drawdown_pct": float(metrics.max_drawdown_pct),
+        "sharpe": float(metrics.sharpe),
+        "win_rate_pct": float(metrics.win_rate_pct),
+        "excess_return_pct": float(metrics.excess_return_pct),
+        "trade_count": int(metrics.trade_count),
+        "signal_count": int(metrics.signal_count),
+    }
+
+    if not history_rows:
+        return {
+            "run_id": metrics.run_id,
+            "generated_at": _fmt_ts(datetime.now(tz=timezone.utc)),
+            "mode": metrics.mode,
+            "start": metrics.start,
+            "end": metrics.end,
+            "symbols": list(metrics.symbols),
+            "timeframe": metrics.timeframe,
+            "lookback_runs": int(lookback),
+            "comparable_run_count": 0,
+            "stability_status": "insufficient_history",
+            "stability_summary": "Need at least one prior comparable run to measure cross-run stability.",
+            "current": current_payload,
+            "baseline": {},
+            "drift": {},
+            "warnings": [],
+            "recent_runs": [],
+        }
+
+    baseline = {
+        "total_return_pct": _median([_coerce_float(row.get("total_return_pct")) for row in history_rows]),
+        "max_drawdown_pct": _median([_coerce_float(row.get("max_drawdown_pct")) for row in history_rows]),
+        "sharpe": _median([_coerce_float(row.get("sharpe")) for row in history_rows]),
+        "win_rate_pct": _median([_coerce_float(row.get("win_rate_pct")) for row in history_rows]),
+        "excess_return_pct": _median([_coerce_float(row.get("excess_return_pct")) for row in history_rows]),
+        "trade_count": _median([_coerce_int(row.get("trade_count")) for row in history_rows]),
+        "signal_count": _median([_coerce_int(row.get("signal_count")) for row in history_rows]),
+    }
+
+    drift = {
+        "total_return_pct_delta": float(current_payload["total_return_pct"] - baseline["total_return_pct"]),
+        "max_drawdown_pct_delta": float(current_payload["max_drawdown_pct"] - baseline["max_drawdown_pct"]),
+        "sharpe_delta": float(current_payload["sharpe"] - baseline["sharpe"]),
+        "win_rate_pct_delta": float(current_payload["win_rate_pct"] - baseline["win_rate_pct"]),
+        "excess_return_pct_delta": float(current_payload["excess_return_pct"] - baseline["excess_return_pct"]),
+        "trade_count_delta_pct": float(_relative_delta_pct(current_payload["trade_count"], baseline["trade_count"])),
+        "signal_count_delta_pct": float(_relative_delta_pct(current_payload["signal_count"], baseline["signal_count"])),
+    }
+
+    warnings: list[dict[str, object]] = []
+    return_drop_threshold = max(5.0, abs(float(baseline["total_return_pct"])) * 0.5)
+    excess_drop_threshold = max(5.0, abs(float(baseline["excess_return_pct"])) * 0.5)
+    sharpe_drop_threshold = max(0.5, abs(float(baseline["sharpe"])) * 0.5)
+    drawdown_expand_threshold = max(3.0, abs(float(baseline["max_drawdown_pct"])) * 0.5)
+
+    if float(drift["total_return_pct_delta"]) <= -return_drop_threshold:
+        _append_stability_warning(
+            warnings,
+            kind="return_collapse",
+            severity="error",
+            message="Current total return is materially below the recent comparable baseline.",
+            current=float(current_payload["total_return_pct"]),
+            baseline=float(baseline["total_return_pct"]),
+        )
+    if float(drift["excess_return_pct_delta"]) <= -excess_drop_threshold:
+        _append_stability_warning(
+            warnings,
+            kind="excess_return_collapse",
+            severity="error",
+            message="Excess return vs buy-and-hold collapsed versus recent comparable runs.",
+            current=float(current_payload["excess_return_pct"]),
+            baseline=float(baseline["excess_return_pct"]),
+        )
+    if float(drift["sharpe_delta"]) <= -sharpe_drop_threshold:
+        _append_stability_warning(
+            warnings,
+            kind="sharpe_collapse",
+            severity="warn",
+            message="Risk-adjusted return is materially weaker than recent comparable runs.",
+            current=float(current_payload["sharpe"]),
+            baseline=float(baseline["sharpe"]),
+        )
+    if float(drift["max_drawdown_pct_delta"]) >= drawdown_expand_threshold:
+        _append_stability_warning(
+            warnings,
+            kind="drawdown_expansion",
+            severity="warn",
+            message="Drawdown expanded materially versus recent comparable runs.",
+            current=float(current_payload["max_drawdown_pct"]),
+            baseline=float(baseline["max_drawdown_pct"]),
+        )
+    if abs(float(drift["win_rate_pct_delta"])) >= 10.0:
+        _append_stability_warning(
+            warnings,
+            kind="win_rate_drift",
+            severity="warn",
+            message="Win-rate drift exceeds 10 percentage points versus baseline.",
+            current=float(current_payload["win_rate_pct"]),
+            baseline=float(baseline["win_rate_pct"]),
+        )
+    if abs(float(drift["trade_count_delta_pct"])) >= 50.0:
+        _append_stability_warning(
+            warnings,
+            kind="trade_count_drift",
+            severity="warn",
+            message="Trade-count drift exceeds 50% versus baseline.",
+            current=int(current_payload["trade_count"]),
+            baseline=float(baseline["trade_count"]),
+        )
+    if abs(float(drift["signal_count_delta_pct"])) >= 50.0:
+        _append_stability_warning(
+            warnings,
+            kind="signal_count_drift",
+            severity="warn",
+            message="Signal-count drift exceeds 50% versus baseline.",
+            current=int(current_payload["signal_count"]),
+            baseline=float(baseline["signal_count"]),
+        )
+
+    error_count = sum(1 for row in warnings if str(row.get("severity")) == "error")
+    warn_count = sum(1 for row in warnings if str(row.get("severity")) == "warn")
+    if error_count > 0:
+        status = "critical"
+        summary = "Performance collapsed versus recent comparable runs; overfit risk is high."
+    elif warn_count > 0:
+        status = "warn"
+        summary = "Cross-run drift is visible; review stability warnings before trusting this result."
+    else:
+        status = "stable"
+        summary = "Recent comparable runs look stable; no major drift was detected."
+
+    recent_runs = [
+        {
+            "run_id": str(row.get("run_id") or ""),
+            "artifact_dir": str(row.get("artifact_dir") or ""),
+            "generated_at": str(row.get("generated_at") or ""),
+            "total_return_pct": _coerce_float(row.get("total_return_pct")),
+            "max_drawdown_pct": _coerce_float(row.get("max_drawdown_pct")),
+            "sharpe": _coerce_float(row.get("sharpe")),
+            "win_rate_pct": _coerce_float(row.get("win_rate_pct")),
+            "excess_return_pct": _coerce_float(row.get("excess_return_pct")),
+            "trade_count": _coerce_int(row.get("trade_count")),
+            "signal_count": _coerce_int(row.get("signal_count")),
+        }
+        for row in history_rows
+    ]
+
+    return {
+        "run_id": metrics.run_id,
+        "generated_at": _fmt_ts(datetime.now(tz=timezone.utc)),
+        "mode": metrics.mode,
+        "start": metrics.start,
+        "end": metrics.end,
+        "symbols": list(metrics.symbols),
+        "timeframe": metrics.timeframe,
+        "lookback_runs": int(lookback),
+        "comparable_run_count": len(history_rows),
+        "stability_status": status,
+        "stability_summary": summary,
+        "current": current_payload,
+        "baseline": baseline,
+        "drift": drift,
+        "warnings": warnings,
+        "recent_runs": recent_runs,
+    }
+
+
+def _render_stability_markdown(report: dict[str, object]) -> str:
+    status = str(report.get("stability_status") or "unknown").upper()
+    summary = str(report.get("stability_summary") or "")
+    baseline = report.get("baseline") if isinstance(report.get("baseline"), dict) else {}
+    drift = report.get("drift") if isinstance(report.get("drift"), dict) else {}
+    recent_runs = report.get("recent_runs") if isinstance(report.get("recent_runs"), list) else []
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+
+    lines = [
+        "# Stability Report",
+        "",
+        f"- run_id: `{report.get('run_id')}`",
+        f"- status: `{status}`",
+        f"- summary: `{summary}`",
+        f"- comparable_runs: `{int(report.get('comparable_run_count') or 0)}`",
+        "",
+    ]
+
+    if baseline:
+        current = report.get("current") if isinstance(report.get("current"), dict) else {}
+        lines.extend(
+            [
+                "## Baseline vs Current",
+                "",
+                f"- Return: current `{float(current.get('total_return_pct', 0.0)):+.2f}%` vs baseline `{float(baseline.get('total_return_pct', 0.0)):+.2f}%`",
+                f"- Excess Return: current `{float(current.get('excess_return_pct', 0.0)):+.2f}%` vs baseline `{float(baseline.get('excess_return_pct', 0.0)):+.2f}%`",
+                f"- Max Drawdown: current `{float(current.get('max_drawdown_pct', 0.0)):.2f}%` vs baseline `{float(baseline.get('max_drawdown_pct', 0.0)):.2f}%`",
+                f"- Sharpe: current `{float(current.get('sharpe', 0.0)):.2f}` vs baseline `{float(baseline.get('sharpe', 0.0)):.2f}`",
+                f"- Win Rate: current `{float(current.get('win_rate_pct', 0.0)):.2f}%` vs baseline `{float(baseline.get('win_rate_pct', 0.0)):.2f}%`",
+                "",
+                "## Drift",
+                "",
+                f"- Return Delta: `{float(drift.get('total_return_pct_delta', 0.0)):+.2f}%`",
+                f"- Excess Return Delta: `{float(drift.get('excess_return_pct_delta', 0.0)):+.2f}%`",
+                f"- Drawdown Delta: `{float(drift.get('max_drawdown_pct_delta', 0.0)):+.2f}%`",
+                f"- Sharpe Delta: `{float(drift.get('sharpe_delta', 0.0)):+.2f}`",
+                f"- Win Rate Delta: `{float(drift.get('win_rate_pct_delta', 0.0)):+.2f}%`",
+                f"- Trade Count Delta: `{float(drift.get('trade_count_delta_pct', 0.0)):+.2f}%`",
+                f"- Signal Count Delta: `{float(drift.get('signal_count_delta_pct', 0.0)):+.2f}%`",
+                "",
+            ]
+        )
+
+    lines.extend(["## Warnings", ""])
+    if warnings:
+        for row in warnings:
+            lines.append(
+                f"- `{str(row.get('severity') or 'warn').upper()}` `{row.get('kind')}`: {row.get('message')} "
+                f"(current=`{row.get('current')}`, baseline=`{row.get('baseline')}`)"
+            )
+    else:
+        lines.append("- none")
+    lines.append("")
+
+    lines.extend(["## Recent Comparable Runs", "", "| run_id | return | max_dd | sharpe | win_rate | excess | dir |", "|---|---:|---:|---:|---:|---:|---|",])
+    if recent_runs:
+        for row in recent_runs:
+            lines.append(
+                "| "
+                f"{row.get('run_id') or '--'} | {float(row.get('total_return_pct', 0.0)):+.2f}% | "
+                f"{float(row.get('max_drawdown_pct', 0.0)):.2f}% | {float(row.get('sharpe', 0.0)):.2f} | "
+                f"{float(row.get('win_rate_pct', 0.0)):.2f}% | {float(row.get('excess_return_pct', 0.0)):+.2f}% | "
+                f"{row.get('artifact_dir') or '--'} |"
+            )
+    else:
+        lines.append('| -- | -- | -- | -- | -- | -- | -- |')
+    lines.append('')
+    return "\n".join(lines)
+
+
 def _render_markdown_report(
     metrics: Metrics,
     trades: list[Trade],
     input_quality: InputQualityReport | None = None,
+    stability_report: dict[str, object] | None = None,
 ) -> str:
     recent = sorted(trades, key=lambda x: x.exit_ts, reverse=True)[:10]
     lines = [
@@ -645,7 +1008,12 @@ def _render_markdown_report(
         f"- Impact Cost vs Initial Equity: `{metrics.impact_cost_pct_of_initial:+.2f}%`",
         f"- Partial Fill Trades: `{metrics.partial_fill_trade_count}`",
         f"- Buy & Hold Return: `{metrics.buy_hold_return_pct:+.2f}%`",
+        f"- Risk Parity Return: `{metrics.risk_parity_return_pct:+.2f}%`",
+        f"- Simple Momentum Return: `{metrics.momentum_return_pct:+.2f}%`",
         f"- Excess Return vs Buy & Hold: `{metrics.excess_return_pct:+.2f}%`",
+        f"- Excess Return vs Risk Parity: `{metrics.excess_return_vs_risk_parity_pct:+.2f}%`",
+        f"- Excess Return vs Momentum: `{metrics.excess_return_vs_momentum_pct:+.2f}%`",
+        f"- Strongest Baseline: `{metrics.best_baseline_name}` `{metrics.best_baseline_return_pct:+.2f}%`",
         "",
     ]
 
@@ -684,18 +1052,31 @@ def _render_markdown_report(
             lines.append("| -- | -- | -- | -- | -- | -- | -- | -- |")
         lines.append("")
 
+    if stability_report is not None:
+        lines.extend(
+            [
+                "## Stability",
+                "",
+                f"- Stability Status: `{str(stability_report.get('stability_status') or '--').upper()}`",
+                f"- Stability Summary: `{str(stability_report.get('stability_summary') or '')}`",
+                f"- Comparable Runs: `{int(stability_report.get('comparable_run_count') or 0)}`",
+                "",
+            ]
+        )
+
     lines.extend(
         [
             "## Signal Profile",
-        "",
-        f"- Direction Mix: `{metrics.direction_counts}`",
-        f"- Timeframe Mix: `{metrics.timeframe_counts}`",
-        "",
-        "## Symbol Contributions",
-        "",
-        "| symbol | pnl_net | trades | win_rate | avg_hold_min |",
-        "|---|---:|---:|---:|---:|",
-    ]
+            "",
+            f"- Direction Mix: `{metrics.direction_counts}`",
+            f"- Timeframe Mix: `{metrics.timeframe_counts}`",
+            "",
+            "## Symbol Contributions",
+            "",
+            "| symbol | pnl_net | trades | win_rate | avg_hold_min |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
 
     for row in metrics.symbol_contributions:
         lines.append(
@@ -737,6 +1118,7 @@ def write_artifacts(
     curve: list[EquityPoint],
     metrics: Metrics,
     input_quality: InputQualityReport | None = None,
+    backtest_root: Path | None = None,
 ) -> None:
     """Write run artifacts under output_dir."""
 
@@ -744,9 +1126,18 @@ def write_artifacts(
     _write_trades_csv(output_dir / "trades.csv", trades)
     _write_curve_csv(output_dir / "equity_curve.csv", curve)
     _write_metrics_json(output_dir / "metrics.json", metrics)
+    stability_report = _build_stability_report(output_dir, metrics, backtest_root=backtest_root)
+    (output_dir / "stability_report.json").write_text(
+        json.dumps(stability_report, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "stability_report.md").write_text(
+        _render_stability_markdown(stability_report),
+        encoding="utf-8",
+    )
     if input_quality is not None:
         _write_input_quality_json(output_dir / "input_quality.json", input_quality)
     (output_dir / "report.md").write_text(
-        _render_markdown_report(metrics, trades, input_quality=input_quality),
+        _render_markdown_report(metrics, trades, input_quality=input_quality, stability_report=stability_report),
         encoding="utf-8",
     )

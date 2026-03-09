@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,9 +40,15 @@ class WalkForwardFoldResult:
     trade_count: int
     win_rate_pct: float
     excess_return_pct: float
+    buy_hold_return_pct: float
+    risk_parity_return_pct: float
+    momentum_return_pct: float
+    excess_return_vs_risk_parity_pct: float
+    excess_return_vs_momentum_pct: float
     signal_count: int
     signal_days: int
     fallback_reason: str = ""
+    selected_params: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,17 +142,37 @@ def build_walk_forward_windows(
     return windows
 
 
-def _clone_config_for_test_window(config: BacktestConfig, test_start: datetime, test_end: datetime) -> BacktestConfig:
+def _clone_config_for_window(config: BacktestConfig, start_dt: datetime, end_dt: datetime) -> BacktestConfig:
     return BacktestConfig(
         market=config.market,
         symbols=list(config.symbols),
         timeframe=config.timeframe,
         strategy_label=config.strategy_label,
         strategy_config_path=config.strategy_config_path,
-        date_range=DateRange(start=_fmt_ts(test_start), end=_fmt_ts(test_end)),
+        date_range=DateRange(start=_fmt_ts(start_dt), end=_fmt_ts(end_dt)),
         execution=config.execution,
         risk=config.risk,
         aggregation=config.aggregation,
+        walk_forward=config.walk_forward,
+        retention=config.retention,
+    )
+
+
+def _clone_config_for_test_window(config: BacktestConfig, test_start: datetime, test_end: datetime) -> BacktestConfig:
+    return _clone_config_for_window(config, test_start, test_end)
+
+
+def _clone_config_with_aggregation(config: BacktestConfig, aggregation: AggregationConfig) -> BacktestConfig:
+    return BacktestConfig(
+        market=config.market,
+        symbols=list(config.symbols),
+        timeframe=config.timeframe,
+        strategy_label=config.strategy_label,
+        strategy_config_path=config.strategy_config_path,
+        date_range=config.date_range,
+        execution=config.execution,
+        risk=config.risk,
+        aggregation=aggregation,
         walk_forward=config.walk_forward,
         retention=config.retention,
     )
@@ -191,12 +217,243 @@ def _strategy_side_text(config: BacktestConfig) -> str:
 def _strategy_summary(config: BacktestConfig) -> str:
     ag = config.aggregation
     ex = config.execution
+    maker_fee = float(ex.maker_fee_bps if ex.maker_fee_bps is not None else ex.fee_bps)
+    taker_fee = float(ex.taker_fee_bps if ex.taker_fee_bps is not None else ex.fee_bps)
+    funding_rate = float(getattr(ex, "funding_rate_bps_per_8h", 0.0) or 0.0)
+    slippage_model = str(getattr(ex, "slippage_model", "fixed") or "fixed").strip().lower()
+    slippage_text = f"slip={float(ex.slippage_bps):.1f}bps"
+    if slippage_model == "layered":
+        cap_bps = getattr(ex, "slippage_max_bps", None)
+        cap_text = float(cap_bps) if cap_bps is not None else max(float(ex.slippage_bps), float(ex.slippage_bps) * 3.0)
+        slippage_text = (
+            f"slip={float(ex.slippage_bps):.1f}bps(layered cap={cap_text:.1f} "
+            f"vol={float(getattr(ex, 'slippage_volatility_weight', 0.0) or 0.0):.2f} "
+            f"liq={float(getattr(ex, 'slippage_volume_weight', 0.0) or 0.0):.2f} "
+            f"session={float(getattr(ex, 'slippage_session_weight', 0.0) or 0.0):.2f})"
+        )
+    participation = float(getattr(ex, "max_bar_participation_rate", 1.0) or 0.0) * 100.0
+    min_order_notional = float(getattr(ex, "min_order_notional", 0.0) or 0.0)
+    impact_bps = float(getattr(ex, "impact_bps_per_bar_participation", 0.0) or 0.0)
     return (
         f"side={_strategy_side_text(config)} "
         f"L/S/C={int(ag.long_open_threshold)}/{int(ag.short_open_threshold)}/{int(ag.close_threshold)} "
-        f"fee={float(ex.fee_bps):.1f}bps slip={float(ex.slippage_bps):.1f}bps "
-        f"hold>={int(ex.min_hold_minutes)}m neutral={int(ex.neutral_confirm_minutes)}m"
+        f"maker={maker_fee:.1f}bps taker={taker_fee:.1f}bps funding={funding_rate:+.2f}bps/8h "
+        f"{slippage_text} hold>={int(ex.min_hold_minutes)}m neutral={int(ex.neutral_confirm_minutes)}m "
+        f"part<={participation:.1f}% min_notional={min_order_notional:.2f} impact={impact_bps:.1f}bps/100%bar"
     )
+
+
+def _build_selected_params(config: BacktestConfig, *, selection_source: str) -> dict[str, object]:
+    ag = config.aggregation
+    ex = config.execution
+    risk = config.risk
+    maker_fee = float(ex.maker_fee_bps if ex.maker_fee_bps is not None else ex.fee_bps)
+    taker_fee = float(ex.taker_fee_bps if ex.taker_fee_bps is not None else ex.fee_bps)
+    return {
+        "selection_source": str(selection_source or "base_config"),
+        "strategy_side": _strategy_side_text(config),
+        "aggregation": {
+            "long_open_threshold": int(ag.long_open_threshold),
+            "short_open_threshold": int(ag.short_open_threshold),
+            "close_threshold": int(ag.close_threshold),
+        },
+        "execution": {
+            "allow_long": bool(ex.allow_long),
+            "allow_short": bool(ex.allow_short),
+            "slippage_bps": float(ex.slippage_bps),
+            "slippage_model": str(getattr(ex, "slippage_model", "fixed") or "fixed"),
+            "slippage_max_bps": (
+                float(getattr(ex, "slippage_max_bps", 0.0))
+                if getattr(ex, "slippage_max_bps", None) is not None
+                else None
+            ),
+            "slippage_volatility_weight": float(getattr(ex, "slippage_volatility_weight", 0.0) or 0.0),
+            "slippage_volume_weight": float(getattr(ex, "slippage_volume_weight", 0.0) or 0.0),
+            "slippage_session_weight": float(getattr(ex, "slippage_session_weight", 0.0) or 0.0),
+            "slippage_volume_window": int(getattr(ex, "slippage_volume_window", 20) or 20),
+            "max_bar_participation_rate": float(getattr(ex, "max_bar_participation_rate", 1.0) or 0.0),
+            "min_order_notional": float(getattr(ex, "min_order_notional", 0.0) or 0.0),
+            "impact_bps_per_bar_participation": float(getattr(ex, "impact_bps_per_bar_participation", 0.0) or 0.0),
+            "fee_bps": float(ex.fee_bps),
+            "maker_fee_bps": maker_fee,
+            "taker_fee_bps": taker_fee,
+            "funding_rate_bps_per_8h": float(getattr(ex, "funding_rate_bps_per_8h", 0.0) or 0.0),
+            "min_hold_minutes": int(ex.min_hold_minutes),
+            "neutral_confirm_minutes": int(ex.neutral_confirm_minutes),
+        },
+        "risk": {
+            "initial_equity": float(risk.initial_equity),
+            "leverage": float(risk.leverage),
+            "position_size_pct": float(risk.position_size_pct),
+            "maintenance_margin_ratio": float(risk.maintenance_margin_ratio),
+            "liquidation_fee_bps": float(risk.liquidation_fee_bps),
+            "liquidation_buffer_bps": float(risk.liquidation_buffer_bps),
+        },
+        "strategy_summary": _strategy_summary(config),
+    }
+
+
+def _aggregation_signature(aggregation: AggregationConfig) -> tuple[int, int, int]:
+    return (
+        int(aggregation.long_open_threshold),
+        int(aggregation.short_open_threshold),
+        int(aggregation.close_threshold),
+    )
+
+
+def _aggregation_distance(base: AggregationConfig, candidate: AggregationConfig) -> int:
+    return int(
+        abs(int(base.long_open_threshold) - int(candidate.long_open_threshold))
+        + abs(int(base.short_open_threshold) - int(candidate.short_open_threshold))
+        + abs(int(base.close_threshold) - int(candidate.close_threshold))
+    )
+
+
+def _build_train_window_candidates(config: BacktestConfig) -> list[tuple[str, AggregationConfig]]:
+    base = config.aggregation
+    raw = [
+        (
+            "base",
+            AggregationConfig(
+                long_open_threshold=int(base.long_open_threshold),
+                short_open_threshold=int(base.short_open_threshold),
+                close_threshold=int(base.close_threshold),
+            ),
+        ),
+        (
+            "aggressive",
+            AggregationConfig(
+                long_open_threshold=max(70, int(round(float(base.long_open_threshold) * 0.85))),
+                short_open_threshold=max(70, int(round(float(base.short_open_threshold) * 0.85))),
+                close_threshold=max(10, int(round(float(base.close_threshold) * 0.85))),
+            ),
+        ),
+        (
+            "conservative",
+            AggregationConfig(
+                long_open_threshold=max(int(base.long_open_threshold) + 5, int(round(float(base.long_open_threshold) * 1.15))),
+                short_open_threshold=max(int(base.short_open_threshold) + 5, int(round(float(base.short_open_threshold) * 1.15))),
+                close_threshold=max(int(base.close_threshold) + 2, int(round(float(base.close_threshold) * 1.15))),
+            ),
+        ),
+    ]
+
+    out: list[tuple[str, AggregationConfig]] = []
+    seen: set[tuple[int, int, int]] = set()
+    for name, aggregation in raw:
+        sig = _aggregation_signature(aggregation)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append((name, aggregation))
+    return out
+
+
+def _candidate_rank(
+    metrics: Metrics,
+    *,
+    base_aggregation: AggregationConfig,
+    candidate_aggregation: AggregationConfig,
+    candidate_name: str,
+) -> tuple[float, float, float, float, float, float, int, int]:
+    return (
+        1.0 if int(metrics.trade_count) > 0 else 0.0,
+        float(metrics.excess_return_pct),
+        float(metrics.total_return_pct),
+        float(metrics.sharpe),
+        -float(metrics.max_drawdown_pct),
+        float(metrics.win_rate_pct),
+        -_aggregation_distance(base_aggregation, candidate_aggregation),
+        1 if candidate_name == "base" else 0,
+    )
+
+
+def _select_train_window_params(
+    train_cfg: BacktestConfig,
+    test_cfg: BacktestConfig,
+    *,
+    mode: str,
+    fold_run_id: str,
+    base_selection_source: str,
+) -> tuple[BacktestConfig, dict[str, object]]:
+    candidates = _build_train_window_candidates(train_cfg)
+    errors: list[str] = []
+    evaluations: list[tuple[tuple[float, float, float, float, float, float, int, int], str, AggregationConfig, Metrics]] = []
+
+    for candidate_name, aggregation in candidates:
+        candidate_train_cfg = _clone_config_with_aggregation(train_cfg, aggregation)
+        try:
+            result = run_backtest(
+                candidate_train_cfg,
+                mode=mode,
+                run_id=f"{fold_run_id}-train-{candidate_name}",
+                ephemeral=True,
+            )
+        except Exception as exc:
+            errors.append(f"{candidate_name}:{type(exc).__name__}")
+            continue
+
+        evaluations.append(
+            (
+                _candidate_rank(
+                    result.metrics,
+                    base_aggregation=train_cfg.aggregation,
+                    candidate_aggregation=aggregation,
+                    candidate_name=candidate_name,
+                ),
+                candidate_name,
+                aggregation,
+                result.metrics,
+            )
+        )
+
+    if not evaluations:
+        selected_cfg = test_cfg
+        selected_params = _build_selected_params(selected_cfg, selection_source=base_selection_source)
+        selected_params["train_window"] = {"start": str(train_cfg.date_range.start), "end": str(train_cfg.date_range.end)}
+        selected_params["train_eval_mode"] = str(mode)
+        selected_params["candidate_count"] = len(candidates)
+        if errors:
+            selected_params["selection_errors"] = errors
+        return selected_cfg, selected_params
+
+    evaluations.sort(key=lambda item: item[0], reverse=True)
+    _, candidate_name, aggregation, metrics = evaluations[0]
+    selected_cfg = _clone_config_with_aggregation(test_cfg, aggregation)
+    selected_params = _build_selected_params(selected_cfg, selection_source="train_window_search")
+    selected_params["base_selection_source"] = str(base_selection_source or "base_config")
+    selected_params["candidate_name"] = candidate_name
+    selected_params["candidate_count"] = len(candidates)
+    selected_params["train_eval_mode"] = str(mode)
+    selected_params["train_window"] = {"start": str(train_cfg.date_range.start), "end": str(train_cfg.date_range.end)}
+    selected_params["train_score"] = {
+        "excess_return_pct": float(metrics.excess_return_pct),
+        "total_return_pct": float(metrics.total_return_pct),
+        "sharpe": float(metrics.sharpe),
+        "max_drawdown_pct": float(metrics.max_drawdown_pct),
+        "win_rate_pct": float(metrics.win_rate_pct),
+        "trade_count": int(metrics.trade_count),
+        "signal_count": int(metrics.signal_count),
+    }
+    selected_params["candidate_scores"] = [
+        {
+            "candidate_name": name,
+            "aggregation": {
+                "long_open_threshold": int(agg.long_open_threshold),
+                "short_open_threshold": int(agg.short_open_threshold),
+                "close_threshold": int(agg.close_threshold),
+            },
+            "excess_return_pct": float(item_metrics.excess_return_pct),
+            "total_return_pct": float(item_metrics.total_return_pct),
+            "sharpe": float(item_metrics.sharpe),
+            "max_drawdown_pct": float(item_metrics.max_drawdown_pct),
+            "trade_count": int(item_metrics.trade_count),
+        }
+        for _, name, agg, item_metrics in evaluations
+    ]
+    if errors:
+        selected_params["selection_errors"] = errors
+    return selected_cfg, selected_params
 
 
 def _select_fold_mode(
@@ -250,9 +507,15 @@ def _write_fold_csv(path: Path, rows: list[WalkForwardFoldResult]) -> None:
         "trade_count",
         "win_rate_pct",
         "excess_return_pct",
+        "buy_hold_return_pct",
+        "risk_parity_return_pct",
+        "momentum_return_pct",
+        "excess_return_vs_risk_parity_pct",
+        "excess_return_vs_momentum_pct",
         "signal_count",
         "signal_days",
         "fallback_reason",
+        "selected_params_json",
     ]
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -273,9 +536,15 @@ def _write_fold_csv(path: Path, rows: list[WalkForwardFoldResult]) -> None:
                     "trade_count": row.trade_count,
                     "win_rate_pct": f"{row.win_rate_pct:.8f}",
                     "excess_return_pct": f"{row.excess_return_pct:.8f}",
+                    "buy_hold_return_pct": f"{row.buy_hold_return_pct:.8f}",
+                    "risk_parity_return_pct": f"{row.risk_parity_return_pct:.8f}",
+                    "momentum_return_pct": f"{row.momentum_return_pct:.8f}",
+                    "excess_return_vs_risk_parity_pct": f"{row.excess_return_vs_risk_parity_pct:.8f}",
+                    "excess_return_vs_momentum_pct": f"{row.excess_return_vs_momentum_pct:.8f}",
                     "signal_count": row.signal_count,
                     "signal_days": row.signal_days,
                     "fallback_reason": row.fallback_reason,
+                    "selected_params_json": json.dumps(row.selected_params, ensure_ascii=True, sort_keys=True),
                 }
             )
 
@@ -327,6 +596,15 @@ def _summary_from_folds(run_id: str, mode: str, output_dir: Path, rows: list[Wal
 
 
 def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[WalkForwardFoldResult]) -> None:
+    avg_buy_hold = float(sum(row.buy_hold_return_pct for row in rows) / len(rows)) if rows else 0.0
+    avg_risk_parity = float(sum(row.risk_parity_return_pct for row in rows) / len(rows)) if rows else 0.0
+    avg_momentum = float(sum(row.momentum_return_pct for row in rows) / len(rows)) if rows else 0.0
+    avg_excess_vs_risk_parity = float(sum(row.excess_return_vs_risk_parity_pct for row in rows) / len(rows)) if rows else 0.0
+    avg_excess_vs_momentum = float(sum(row.excess_return_vs_momentum_pct for row in rows) / len(rows)) if rows else 0.0
+    best_baseline_name, best_baseline_return_pct = max(
+        (('buy_hold', avg_buy_hold), ('risk_parity', avg_risk_parity), ('momentum', avg_momentum)),
+        key=lambda item: item[1],
+    )
     payload = {
         "run_id": summary.run_id,
         "mode": summary.mode,
@@ -338,6 +616,13 @@ def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[Walk
         "positive_fold_rate_pct": summary.positive_fold_rate_pct,
         "avg_max_drawdown_pct": summary.avg_max_drawdown_pct,
         "avg_excess_return_pct": summary.avg_excess_return_pct,
+        "avg_buy_hold_return_pct": avg_buy_hold,
+        "avg_risk_parity_return_pct": avg_risk_parity,
+        "avg_momentum_return_pct": avg_momentum,
+        "avg_excess_return_vs_risk_parity_pct": avg_excess_vs_risk_parity,
+        "avg_excess_return_vs_momentum_pct": avg_excess_vs_momentum,
+        "best_baseline_name": str(best_baseline_name),
+        "best_baseline_return_pct": float(best_baseline_return_pct),
         "history_fold_count": summary.history_fold_count,
         "replay_fold_count": summary.replay_fold_count,
         "fallback_fold_count": summary.fallback_fold_count,
@@ -356,9 +641,15 @@ def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[Walk
                 "trade_count": row.trade_count,
                 "win_rate_pct": row.win_rate_pct,
                 "excess_return_pct": row.excess_return_pct,
+                "buy_hold_return_pct": row.buy_hold_return_pct,
+                "risk_parity_return_pct": row.risk_parity_return_pct,
+                "momentum_return_pct": row.momentum_return_pct,
+                "excess_return_vs_risk_parity_pct": row.excess_return_vs_risk_parity_pct,
+                "excess_return_vs_momentum_pct": row.excess_return_vs_momentum_pct,
                 "signal_count": row.signal_count,
                 "signal_days": row.signal_days,
                 "fallback_reason": row.fallback_reason,
+                "selected_params": row.selected_params,
             }
             for row in rows
         ],
@@ -372,21 +663,38 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
         end_txt = rows[-1].test_end
         avg_sharpe = float(sum(row.sharpe for row in rows) / len(rows))
         avg_win_rate = float(sum(row.win_rate_pct for row in rows) / len(rows))
-        avg_buy_hold = float(sum(row.total_return_pct - row.excess_return_pct for row in rows) / len(rows))
+        avg_buy_hold = float(sum(row.buy_hold_return_pct for row in rows) / len(rows))
+        avg_risk_parity = float(sum(row.risk_parity_return_pct for row in rows) / len(rows))
+        avg_momentum = float(sum(row.momentum_return_pct for row in rows) / len(rows))
+        avg_excess_vs_risk_parity = float(sum(row.excess_return_vs_risk_parity_pct for row in rows) / len(rows))
+        avg_excess_vs_momentum = float(sum(row.excess_return_vs_momentum_pct for row in rows) / len(rows))
         trade_count = int(sum(row.trade_count for row in rows))
         signal_count = int(sum(row.signal_count for row in rows))
         final_equity = float(config.risk.initial_equity) * (1.0 + float(summary.avg_return_pct) / 100.0)
         buy_hold_final = float(config.risk.initial_equity) * (1.0 + float(avg_buy_hold) / 100.0)
+        risk_parity_final = float(config.risk.initial_equity) * (1.0 + float(avg_risk_parity) / 100.0)
+        momentum_final = float(config.risk.initial_equity) * (1.0 + float(avg_momentum) / 100.0)
     else:
         start_txt = ""
         end_txt = ""
         avg_sharpe = 0.0
         avg_win_rate = 0.0
         avg_buy_hold = 0.0
+        avg_risk_parity = 0.0
+        avg_momentum = 0.0
+        avg_excess_vs_risk_parity = 0.0
+        avg_excess_vs_momentum = 0.0
         trade_count = 0
         signal_count = 0
         final_equity = float(config.risk.initial_equity)
         buy_hold_final = float(config.risk.initial_equity)
+        risk_parity_final = float(config.risk.initial_equity)
+        momentum_final = float(config.risk.initial_equity)
+
+    best_baseline_name, best_baseline_return_pct = max(
+        (('buy_hold', avg_buy_hold), ('risk_parity', avg_risk_parity), ('momentum', avg_momentum)),
+        key=lambda item: item[1],
+    )
 
     payload = {
         "run_id": summary.run_id,
@@ -411,7 +719,15 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
         "strategy_summary": _strategy_summary(config),
         "buy_hold_final_equity": float(buy_hold_final),
         "buy_hold_return_pct": float(avg_buy_hold),
+        "risk_parity_final_equity": float(risk_parity_final),
+        "risk_parity_return_pct": float(avg_risk_parity),
+        "momentum_final_equity": float(momentum_final),
+        "momentum_return_pct": float(avg_momentum),
         "excess_return_pct": float(summary.avg_excess_return_pct),
+        "excess_return_vs_risk_parity_pct": float(avg_excess_vs_risk_parity),
+        "excess_return_vs_momentum_pct": float(avg_excess_vs_momentum),
+        "best_baseline_name": str(best_baseline_name),
+        "best_baseline_return_pct": float(best_baseline_return_pct),
         "symbol_contributions": [],
         "walk_forward_summary": {
             "fold_count": int(summary.fold_count),
@@ -421,6 +737,13 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
             "avg_return_pct": float(summary.avg_return_pct),
             "avg_max_drawdown_pct": float(summary.avg_max_drawdown_pct),
             "avg_excess_return_pct": float(summary.avg_excess_return_pct),
+            "avg_buy_hold_return_pct": float(avg_buy_hold),
+            "avg_risk_parity_return_pct": float(avg_risk_parity),
+            "avg_momentum_return_pct": float(avg_momentum),
+            "avg_excess_return_vs_risk_parity_pct": float(avg_excess_vs_risk_parity),
+            "avg_excess_return_vs_momentum_pct": float(avg_excess_vs_momentum),
+            "best_baseline_name": str(best_baseline_name),
+            "best_baseline_return_pct": float(best_baseline_return_pct),
             "positive_fold_rate_pct": float(summary.positive_fold_rate_pct),
             "folds": [
                 {
@@ -432,6 +755,7 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
                     "total_return_pct": float(row.total_return_pct),
                     "max_drawdown_pct": float(row.max_drawdown_pct),
                     "trade_count": int(row.trade_count),
+                    "selected_params": row.selected_params,
                 }
                 for row in rows
             ],
@@ -463,6 +787,7 @@ def _to_fold_row(
     signal_count: int,
     signal_days: int,
     fallback_reason: str,
+    selected_params: dict[str, object],
 ) -> WalkForwardFoldResult:
     return WalkForwardFoldResult(
         fold=window.fold,
@@ -478,9 +803,15 @@ def _to_fold_row(
         trade_count=int(metrics.trade_count),
         win_rate_pct=float(metrics.win_rate_pct),
         excess_return_pct=float(metrics.excess_return_pct),
+        buy_hold_return_pct=float(metrics.buy_hold_return_pct),
+        risk_parity_return_pct=float(metrics.risk_parity_return_pct),
+        momentum_return_pct=float(metrics.momentum_return_pct),
+        excess_return_vs_risk_parity_pct=float(metrics.excess_return_vs_risk_parity_pct),
+        excess_return_vs_momentum_pct=float(metrics.excess_return_vs_momentum_pct),
         signal_count=int(signal_count),
         signal_days=int(signal_days),
         fallback_reason=str(fallback_reason or ""),
+        selected_params=dict(selected_params or {}),
     )
 
 
@@ -494,6 +825,7 @@ def run_walk_forward(
     auto_fallback: bool = True,
     min_signal_days: int = 0,
     min_signal_count: int = 0,
+    select_train_params: bool = True,
 ) -> WalkForwardSummary:
     """Run walk-forward test windows and write summary artifacts."""
 
@@ -522,9 +854,24 @@ def run_walk_forward(
         )
         fold_run_id = f"{run_id}-wf{window.fold:02d}"
         run_cfg = fold_cfg
+        train_cfg = _clone_config_for_window(config, window.train_start, window.train_end)
+        selection_source = "base_config"
         if effective_mode == "offline_replay" and fallback_reason:
             run_cfg = _adapt_config_for_offline_replay(fold_cfg)
+            train_cfg = _adapt_config_for_offline_replay(train_cfg)
             fallback_reason = f"{fallback_reason}; replay_threshold=70%"
+            selection_source = "offline_replay_fallback"
+
+        if select_train_params:
+            run_cfg, selected_params = _select_train_window_params(
+                train_cfg,
+                run_cfg,
+                mode=effective_mode,
+                fold_run_id=fold_run_id,
+                base_selection_source=selection_source,
+            )
+        else:
+            selected_params = _build_selected_params(run_cfg, selection_source=selection_source)
 
         res = run_backtest(
             run_cfg,
@@ -539,6 +886,7 @@ def run_walk_forward(
                 signal_count=sig_count,
                 signal_days=sig_days,
                 fallback_reason=fallback_reason,
+                selected_params=selected_params,
             )
         )
 

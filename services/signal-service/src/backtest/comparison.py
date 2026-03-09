@@ -9,6 +9,23 @@ from pathlib import Path
 
 from .runner import RunnerResult
 
+_ALIGNMENT_TOP_N = 5
+_ALIGNMENT_WEIGHTS = {
+    "rule_overlap_score": 0.35,
+    "top_rule_score": 0.35,
+    "signal_count_score": 0.15,
+    "direction_score": 0.10,
+    "timeframe_score": 0.05,
+}
+_ALIGNMENT_THRESHOLDS = {
+    "min_jaccard_pct": 60.0,
+    "min_history_coverage_pct": 70.0,
+    "max_signal_count_delta_pct": 20.0,
+    "max_buy_ratio_delta_pct": 20.0,
+    "max_top_rule_delta_pct": 35.0,
+    "max_new_rule_share_pct": 15.0,
+}
+
 
 @dataclass(frozen=True)
 class ComparisonSummary:
@@ -338,6 +355,326 @@ def _build_missing_rule_diagnostics(
     return out
 
 
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(100.0, float(value)))
+
+
+def _round2(value: float) -> float:
+    return round(float(value), 2)
+
+
+def _relative_delta_pct(left: int | float, right: int | float, *, baseline: int | float | None = None) -> float:
+    lhs = float(left)
+    rhs = float(right)
+    denominator = float(baseline) if baseline is not None else max(abs(lhs), abs(rhs), 1.0)
+    if denominator <= 0:
+        denominator = 1.0
+    return float(abs(rhs - lhs) / denominator * 100.0)
+
+
+def _timeframe_overlap_pct(history: dict[str, int], rule: dict[str, int]) -> float:
+    history_set = {key for key, count in history.items() if int(count) > 0}
+    rule_set = {key for key, count in rule.items() if int(count) > 0}
+    union = history_set | rule_set
+    if not union:
+        return 100.0
+    return _safe_pct(len(history_set & rule_set), len(union))
+
+
+def _build_top_rule_alignment(
+    history: dict[str, int],
+    rule: dict[str, int],
+    *,
+    top_n: int,
+) -> list[dict[str, int | float | str]]:
+    ranked_history = sorted(
+        ((str(key), int(value)) for key, value in history.items() if int(value) > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    top_rows = ranked_history[: max(0, int(top_n))]
+    total_history = sum(count for _, count in top_rows)
+    out: list[dict[str, int | float | str]] = []
+
+    for key, history_count in top_rows:
+        rule_count = int(rule.get(key, 0))
+        delta = rule_count - history_count
+        delta_pct = _relative_delta_pct(history_count, rule_count)
+        weight = (history_count / total_history * 100.0) if total_history > 0 else 0.0
+        out.append(
+            {
+                "key": key,
+                "history_count": history_count,
+                "rule_count": rule_count,
+                "delta": delta,
+                "delta_pct": _round2(delta_pct),
+                "weight_pct": _round2(weight),
+                "score": _round2(_clamp_score(100.0 - delta_pct)),
+            }
+        )
+
+    return out
+
+
+def _weighted_top_rule_score(rows: list[dict[str, int | float | str]]) -> float:
+    if not rows:
+        return 100.0
+
+    total_weight = sum(float(row.get("weight_pct") or 0.0) for row in rows)
+    if total_weight <= 0:
+        return 100.0
+
+    weighted = sum((float(row.get("weight_pct") or 0.0) / total_weight) * float(row.get("score") or 0.0) for row in rows)
+    return _clamp_score(weighted)
+
+
+def _append_alignment_warning(
+    warnings: list[dict[str, object]],
+    seen: set[tuple[str, str]],
+    *,
+    kind: str,
+    severity: str,
+    subject: str,
+    actual: float | None = None,
+    threshold: float | None = None,
+    message: str,
+) -> None:
+    dedupe_key = (kind, subject)
+    if dedupe_key in seen:
+        return
+    seen.add(dedupe_key)
+
+    row: dict[str, object] = {
+        "kind": kind,
+        "severity": severity,
+        "subject": subject,
+        "message": message,
+    }
+    if actual is not None:
+        row["actual"] = _round2(actual)
+    if threshold is not None:
+        row["threshold"] = _round2(threshold)
+    warnings.append(row)
+
+
+def _summarize_alignment_risk(
+    *,
+    alignment_score: float,
+    alignment_status: str,
+    warnings: list[dict[str, object]],
+) -> tuple[str, dict[str, int], str]:
+    warning_counts = {"error": 0, "warn": 0, "info": 0}
+    for row in warnings:
+        severity = str(row.get("severity") or "warn").strip().lower() or "warn"
+        if severity not in warning_counts:
+            warning_counts[severity] = 0
+        warning_counts[severity] += 1
+
+    score = float(alignment_score)
+    status = str(alignment_status or "").strip().lower()
+    error_count = int(warning_counts.get("error", 0))
+    warn_count = int(warning_counts.get("warn", 0))
+
+    if error_count > 0 or score < 50.0:
+        level = "critical"
+        summary = "Alignment is unsafe for parameter decisions; inspect the top blocking rules first."
+    elif status == "fail" or score < 70.0:
+        level = "high"
+        summary = "Alignment drift is high; replay and history differ enough to bias conclusions."
+    elif status == "warn" or warn_count > 0 or score < 85.0:
+        level = "medium"
+        summary = "Alignment is usable with caution; review warnings before trusting the run."
+    else:
+        level = "low"
+        summary = "Alignment looks stable for a first-pass decision screen."
+
+    return level, warning_counts, summary
+
+
+def _build_alignment_assessment(
+    summary: ComparisonSummary,
+    *,
+    rule_overlap: dict[str, int | float],
+    delta_buy_ratio_pct: float,
+    new_rule_types_top: list[dict[str, int | str]],
+    missing_history_rules_diagnostics: list[dict[str, int | float | str | list[str]]],
+    timeframe_overlap_pct: float,
+) -> dict[str, object]:
+    signal_count_delta_pct = _relative_delta_pct(
+        summary.history_signal_count,
+        summary.rule_signal_count,
+        baseline=max(summary.history_signal_count, 1),
+    )
+    top_rule_alignment = _build_top_rule_alignment(
+        summary.history_signal_type_counts,
+        summary.rule_signal_type_counts,
+        top_n=_ALIGNMENT_TOP_N,
+    )
+    top_rule_score = _weighted_top_rule_score(top_rule_alignment)
+    rule_overlap_score = (
+        float(rule_overlap.get("jaccard_pct") or 0.0)
+        + float(rule_overlap.get("history_coverage_pct") or 0.0)
+        + float(rule_overlap.get("rule_overlap_pct") or 0.0)
+    ) / 3.0
+    signal_count_score = _clamp_score(100.0 - signal_count_delta_pct)
+    direction_score = _clamp_score(100.0 - abs(float(delta_buy_ratio_pct)))
+    timeframe_score = _clamp_score(timeframe_overlap_pct)
+
+    breakdown = {
+        "rule_overlap_score": _round2(rule_overlap_score),
+        "top_rule_score": _round2(top_rule_score),
+        "signal_count_score": _round2(signal_count_score),
+        "direction_score": _round2(direction_score),
+        "timeframe_score": _round2(timeframe_score),
+    }
+    alignment_score = _clamp_score(
+        sum(breakdown[key] * float(weight) for key, weight in _ALIGNMENT_WEIGHTS.items())
+    )
+
+    warnings: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+
+    jaccard_pct = float(rule_overlap.get("jaccard_pct") or 0.0)
+    if jaccard_pct < _ALIGNMENT_THRESHOLDS["min_jaccard_pct"]:
+        _append_alignment_warning(
+            warnings,
+            seen,
+            kind="rule_type_jaccard_below_threshold",
+            severity="warn",
+            subject="rule_types",
+            actual=jaccard_pct,
+            threshold=float(_ALIGNMENT_THRESHOLDS["min_jaccard_pct"]),
+            message="Rule-type overlap is too low; history and replay trigger sets are drifting.",
+        )
+
+    history_coverage_pct = float(rule_overlap.get("history_coverage_pct") or 0.0)
+    if history_coverage_pct < _ALIGNMENT_THRESHOLDS["min_history_coverage_pct"]:
+        _append_alignment_warning(
+            warnings,
+            seen,
+            kind="history_rule_coverage_below_threshold",
+            severity="warn",
+            subject="history_rule_coverage",
+            actual=history_coverage_pct,
+            threshold=float(_ALIGNMENT_THRESHOLDS["min_history_coverage_pct"]),
+            message="Too many history rule types are missing in rule replay output.",
+        )
+
+    if signal_count_delta_pct > _ALIGNMENT_THRESHOLDS["max_signal_count_delta_pct"]:
+        _append_alignment_warning(
+            warnings,
+            seen,
+            kind="signal_count_delta_above_threshold",
+            severity="warn",
+            subject="signal_count",
+            actual=signal_count_delta_pct,
+            threshold=float(_ALIGNMENT_THRESHOLDS["max_signal_count_delta_pct"]),
+            message="Total signal count drift is above the acceptable threshold.",
+        )
+
+    buy_ratio_delta_abs = abs(float(delta_buy_ratio_pct))
+    if buy_ratio_delta_abs > _ALIGNMENT_THRESHOLDS["max_buy_ratio_delta_pct"]:
+        _append_alignment_warning(
+            warnings,
+            seen,
+            kind="buy_ratio_delta_above_threshold",
+            severity="warn",
+            subject="direction_mix",
+            actual=buy_ratio_delta_abs,
+            threshold=float(_ALIGNMENT_THRESHOLDS["max_buy_ratio_delta_pct"]),
+            message="Direction mix drift is above the acceptable threshold.",
+        )
+
+    for row in top_rule_alignment:
+        key = str(row.get("key") or "--")
+        history_count = int(row.get("history_count") or 0)
+        rule_count = int(row.get("rule_count") or 0)
+        delta_pct = float(row.get("delta_pct") or 0.0)
+        if history_count > 0 and rule_count <= 0:
+            _append_alignment_warning(
+                warnings,
+                seen,
+                kind="top_rule_missing_in_rule_replay",
+                severity="error",
+                subject=key,
+                actual=delta_pct,
+                threshold=float(_ALIGNMENT_THRESHOLDS["max_top_rule_delta_pct"]),
+                message="A key history rule is completely missing in rule replay output.",
+            )
+            continue
+
+        if delta_pct > _ALIGNMENT_THRESHOLDS["max_top_rule_delta_pct"]:
+            _append_alignment_warning(
+                warnings,
+                seen,
+                kind="top_rule_delta_above_threshold",
+                severity="warn",
+                subject=key,
+                actual=delta_pct,
+                threshold=float(_ALIGNMENT_THRESHOLDS["max_top_rule_delta_pct"]),
+                message="A key history rule has excessive trigger-count drift.",
+            )
+
+    for row in new_rule_types_top:
+        key = str(row.get("key") or "--")
+        rule_count = int(row.get("rule_count") or 0)
+        share_pct = _safe_pct(rule_count, max(summary.rule_signal_count, 1))
+        if share_pct > _ALIGNMENT_THRESHOLDS["max_new_rule_share_pct"]:
+            _append_alignment_warning(
+                warnings,
+                seen,
+                kind="new_rule_share_above_threshold",
+                severity="warn",
+                subject=key,
+                actual=share_pct,
+                threshold=float(_ALIGNMENT_THRESHOLDS["max_new_rule_share_pct"]),
+                message="Rule replay is creating a large signal block for a rule absent from history.",
+            )
+
+    for row in missing_history_rules_diagnostics:
+        key = str(row.get("key") or "--")
+        reason = str(row.get("primary_block_reason") or "")
+        if reason != "timeframe_no_data":
+            continue
+        _append_alignment_warning(
+            warnings,
+            seen,
+            kind="top_rule_timeframe_no_data",
+            severity="error",
+            subject=key,
+            message="Rule replay lacks overlapping timeframe data for a key history rule.",
+        )
+
+    if any(str(row.get("severity") or "") == "error" for row in warnings):
+        status = "fail"
+    elif warnings:
+        status = "warn"
+    else:
+        status = "pass"
+
+    risk_level, warning_counts, risk_summary = _summarize_alignment_risk(
+        alignment_score=alignment_score,
+        alignment_status=status,
+        warnings=warnings,
+    )
+
+    return {
+        "alignment_score": _round2(alignment_score),
+        "alignment_status": status,
+        "alignment_risk_level": risk_level,
+        "alignment_risk_summary": risk_summary,
+        "alignment_warning_counts": warning_counts,
+        "alignment_breakdown": breakdown,
+        "alignment_inputs": {
+            "signal_count_delta_pct": _round2(signal_count_delta_pct),
+            "buy_ratio_delta_pct": _round2(buy_ratio_delta_abs),
+            "timeframe_overlap_pct": _round2(timeframe_score),
+        },
+        "alignment_top_rules": top_rule_alignment,
+        "alignment_thresholds": {key: _round2(float(value)) for key, value in _ALIGNMENT_THRESHOLDS.items()},
+        "alignment_warnings": warnings,
+    }
+
+
 def build_comparison_summary(run_id: str, history: RunnerResult, rule_replay: RunnerResult) -> ComparisonSummary:
     return ComparisonSummary(
         run_id=run_id,
@@ -417,6 +754,20 @@ def write_comparison_artifacts(
             rule_timeframe_profiles,
         )
 
+    delta_buy_ratio_pct = float(rule_direction_mix["buy_ratio_pct"] - history_direction_mix["buy_ratio_pct"])
+    timeframe_overlap_pct = _timeframe_overlap_pct(
+        summary.history_timeframe_counts,
+        summary.rule_timeframe_counts,
+    )
+    alignment_assessment = _build_alignment_assessment(
+        summary,
+        rule_overlap=rule_overlap,
+        delta_buy_ratio_pct=delta_buy_ratio_pct,
+        new_rule_types_top=new_rule_types_top,
+        missing_history_rules_diagnostics=missing_history_rules_diagnostics,
+        timeframe_overlap_pct=timeframe_overlap_pct,
+    )
+
     payload = {
         **asdict(summary),
         "generated_at": _utc_now_iso(),
@@ -427,7 +778,7 @@ def write_comparison_artifacts(
         "delta_signal_count": summary.rule_signal_count - summary.history_signal_count,
         "history_direction_mix": history_direction_mix,
         "rule_direction_mix": rule_direction_mix,
-        "delta_buy_ratio_pct": float(rule_direction_mix["buy_ratio_pct"] - history_direction_mix["buy_ratio_pct"]),
+        "delta_buy_ratio_pct": delta_buy_ratio_pct,
         "direction_delta": direction_delta,
         "timeframe_delta_top": timeframe_delta_top,
         "signal_type_delta_top": signal_type_delta_top,
@@ -435,12 +786,19 @@ def write_comparison_artifacts(
         "history_timeframe_profile": history_timeframe_profile,
         "rule_timeframe_profile": rule_timeframe_profile,
         "timeframe_overlap": timeframe_overlap,
+        "timeframe_overlap_pct": _round2(timeframe_overlap_pct),
         "missing_history_rules_top": missing_history_rules_top,
         "new_rule_types_top": new_rule_types_top,
         "missing_history_rules_diagnostics": missing_history_rules_diagnostics,
+        **alignment_assessment,
     }
 
     (out_dir / "comparison.json").write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    alignment_breakdown = payload["alignment_breakdown"]
+    alignment_inputs = payload["alignment_inputs"]
+    alignment_warnings = payload["alignment_warnings"]
+    alignment_warning_counts = payload["alignment_warning_counts"]
 
     md = [
         "# Backtest Mode Comparison",
@@ -476,23 +834,68 @@ def write_comparison_artifacts(
         "## Rule Alignment",
         "",
         (
+            f"- Alignment Score: `{float(payload['alignment_score']):.2f}` / 100 "
+            f"(status=`{payload['alignment_status']}`, risk=`{payload['alignment_risk_level']}`)"
+        ),
+        (
+            f"- Risk Summary: `{payload['alignment_risk_summary']}` | "
+            f"warnings=error:{int(alignment_warning_counts.get('error', 0))} "
+            f"warn:{int(alignment_warning_counts.get('warn', 0))}"
+        ),
+        (
+            f"- Breakdown: overlap `{float(alignment_breakdown['rule_overlap_score']):.2f}` | "
+            f"top-rules `{float(alignment_breakdown['top_rule_score']):.2f}` | "
+            f"signal-count `{float(alignment_breakdown['signal_count_score']):.2f}` | "
+            f"direction `{float(alignment_breakdown['direction_score']):.2f}` | "
+            f"timeframe `{float(alignment_breakdown['timeframe_score']):.2f}`"
+        ),
+        (
             f"- Rule Type Overlap: shared `{rule_overlap['shared_rule_types']}` / "
             f"history `{rule_overlap['history_rule_types']}` / rule `{rule_overlap['rule_rule_types']}`"
         ),
         (
             f"- Jaccard: `{float(rule_overlap['jaccard_pct']):.2f}%` | "
-            f"history coverage: `{float(rule_overlap['history_coverage_pct']):.2f}%`"
+            f"history coverage: `{float(rule_overlap['history_coverage_pct']):.2f}%` | "
+            f"rule overlap: `{float(rule_overlap['rule_overlap_pct']):.2f}%`"
         ),
         (
-            f"- rule overlap in history: `{float(rule_overlap['rule_overlap_pct']):.2f}%` | "
-            f"timeframe overlap: `{', '.join(timeframe_overlap) if timeframe_overlap else '--'}`"
+            f"- Signal Count Delta Pct: `{float(alignment_inputs['signal_count_delta_pct']):.2f}%` | "
+            f"Buy Ratio Delta: `{float(alignment_inputs['buy_ratio_delta_pct']):.2f}%` | "
+            f"Timeframe Set Overlap: `{float(payload['timeframe_overlap_pct']):.2f}%`"
         ),
-        "",
-        "### Missing in Rule Replay (history>0, rule=0)",
-        "",
-        "| signal_type | history | rule | delta |",
-        "|---|---:|---:|---:|",
+        (
+            f"- Timeframe overlap keys: `{', '.join(timeframe_overlap) if timeframe_overlap else '--'}` | "
+            f"history dominant={history_timeframe_profile['dominant']} | "
+            f"rule dominant={rule_timeframe_profile['dominant']}"
+        ),
     ]
+
+    md.extend(["", "### Threshold Warnings", ""])
+    if alignment_warnings:
+        for row in alignment_warnings:
+            actual = row.get("actual")
+            threshold = row.get("threshold")
+            detail = []
+            if actual is not None:
+                detail.append(f"actual={float(actual):.2f}")
+            if threshold is not None:
+                detail.append(f"threshold={float(threshold):.2f}")
+            detail_text = f" ({', '.join(detail)})" if detail else ""
+            md.append(
+                f"- [{row['severity']}] {row['kind']} / {row['subject']}: {row['message']}{detail_text}"
+            )
+    else:
+        md.append("- none")
+
+    md.extend(
+        [
+            "",
+            "### Missing in Rule Replay (history>0, rule=0)",
+            "",
+            "| signal_type | history | rule | delta |",
+            "|---|---:|---:|---:|",
+        ]
+    )
 
     if missing_history_rules_top:
         for row in missing_history_rules_top:

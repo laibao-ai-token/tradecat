@@ -176,7 +176,7 @@ def _load_inputs_history(
     symbols: list[str],
     start: datetime,
     end: datetime,
-    state_path: Path,
+    state_path: Path | None,
     run_id: str,
     mode: str,
 ) -> tuple[list[SignalEvent], dict[str, list[Bar]], int, str, object | None]:
@@ -189,15 +189,16 @@ def _load_inputs_history(
     )
 
     current_stage = "loading_candles"
-    _safe_state_update(
-        "running",
-        mark_running,
-        state_path,
-        run_id=run_id,
-        mode=mode,
-        stage=current_stage,
-        message=f"loading candles from pg symbols={len(symbols)}",
-    )
+    if state_path is not None:
+        _safe_state_update(
+            "running",
+            mark_running,
+            state_path,
+            run_id=run_id,
+            mode=mode,
+            stage=current_stage,
+            message=f"loading candles from pg symbols={len(symbols)}",
+        )
 
     bars_by_symbol = load_candles_from_pg(
         get_database_url(),
@@ -216,7 +217,7 @@ def _load_inputs_offline_rule_replay(
     symbols: list[str],
     start: datetime,
     end: datetime,
-    state_path: Path,
+    state_path: Path | None,
     run_id: str,
     mode: str,
 ) -> tuple[list[SignalEvent], dict[str, list[Bar]], int, str, object | None]:
@@ -230,18 +231,19 @@ def _load_inputs_offline_rule_replay(
     )
 
     current_stage = "loading_candles"
-    _safe_state_update(
-        "running",
-        mark_running,
-        state_path,
-        run_id=run_id,
-        mode=mode,
-        stage=current_stage,
-        message=(
-            f"rule replay done tables={replay_stats.table_count} "
-            f"rows={replay_stats.row_count} signals={replay_stats.signal_count}; loading candles"
-        ),
-    )
+    if state_path is not None:
+        _safe_state_update(
+            "running",
+            mark_running,
+            state_path,
+            run_id=run_id,
+            mode=mode,
+            stage=current_stage,
+            message=(
+                f"rule replay done tables={replay_stats.table_count} "
+                f"rows={replay_stats.row_count} signals={replay_stats.signal_count}; loading candles"
+            ),
+        )
 
     bars_by_symbol = load_candles_from_pg(
         get_database_url(),
@@ -260,7 +262,7 @@ def _load_inputs_offline_replay(
     symbols: list[str],
     start: datetime,
     end: datetime,
-    state_path: Path,
+    state_path: Path | None,
     run_id: str,
     mode: str,
 ) -> tuple[list[SignalEvent], dict[str, list[Bar]], int, str, object | None]:
@@ -274,15 +276,16 @@ def _load_inputs_offline_replay(
     bar_count = sum(len(v) for v in bars_by_symbol.values())
 
     current_stage = "replaying_signals"
-    _safe_state_update(
-        "running",
-        mark_running,
-        state_path,
-        run_id=run_id,
-        mode=mode,
-        stage=current_stage,
-        message=f"replaying signals from bars={bar_count}",
-    )
+    if state_path is not None:
+        _safe_state_update(
+            "running",
+            mark_running,
+            state_path,
+            run_id=run_id,
+            mode=mode,
+            stage=current_stage,
+            message=f"replaying signals from bars={bar_count}",
+        )
 
     signals = replay_signals_from_bars(
         bars_by_symbol,
@@ -307,11 +310,29 @@ def _strategy_side_text(config: BacktestConfig) -> str:
 def _strategy_summary(config: BacktestConfig) -> str:
     ag = config.aggregation
     ex = config.execution
+    maker_fee = float(ex.maker_fee_bps if ex.maker_fee_bps is not None else ex.fee_bps)
+    taker_fee = float(ex.taker_fee_bps if ex.taker_fee_bps is not None else ex.fee_bps)
+    funding_rate = float(getattr(ex, "funding_rate_bps_per_8h", 0.0) or 0.0)
+    slippage_model = str(getattr(ex, "slippage_model", "fixed") or "fixed").strip().lower()
+    slippage_text = f"slip={float(ex.slippage_bps):.1f}bps"
+    if slippage_model == "layered":
+        cap_bps = getattr(ex, "slippage_max_bps", None)
+        cap_text = float(cap_bps) if cap_bps is not None else max(float(ex.slippage_bps), float(ex.slippage_bps) * 3.0)
+        slippage_text = (
+            f"slip={float(ex.slippage_bps):.1f}bps(layered cap={cap_text:.1f} "
+            f"vol={float(getattr(ex, 'slippage_volatility_weight', 0.0) or 0.0):.2f} "
+            f"liq={float(getattr(ex, 'slippage_volume_weight', 0.0) or 0.0):.2f} "
+            f"session={float(getattr(ex, 'slippage_session_weight', 0.0) or 0.0):.2f})"
+        )
+    participation = float(getattr(ex, "max_bar_participation_rate", 1.0) or 0.0) * 100.0
+    min_order_notional = float(getattr(ex, "min_order_notional", 0.0) or 0.0)
+    impact_bps = float(getattr(ex, "impact_bps_per_bar_participation", 0.0) or 0.0)
     return (
         f"side={_strategy_side_text(config)} "
         f"L/S/C={int(ag.long_open_threshold)}/{int(ag.short_open_threshold)}/{int(ag.close_threshold)} "
-        f"fee={float(ex.fee_bps):.1f}bps slip={float(ex.slippage_bps):.1f}bps "
-        f"hold>={int(ex.min_hold_minutes)}m neutral={int(ex.neutral_confirm_minutes)}m"
+        f"maker={maker_fee:.1f}bps taker={taker_fee:.1f}bps funding={funding_rate:+.2f}bps/8h "
+        f"{slippage_text} hold>={int(ex.min_hold_minutes)}m neutral={int(ex.neutral_confirm_minutes)}m "
+        f"part<={participation:.1f}% min_notional={min_order_notional:.2f} impact={impact_bps:.1f}bps/100%bar"
     )
 
 
@@ -321,8 +342,9 @@ def run_backtest(
     mode: str = "history_signal",
     run_id: str | None = None,
     output_dir: Path | None = None,
+    ephemeral: bool = False,
 ) -> RunnerResult:
-    """Run one backtest and write artifacts to output_dir (or artifacts/backtest/<run_id>)."""
+    """Run one backtest; optionally skip state/artifact side effects for ephemeral evaluation."""
 
     rid = (run_id or "").strip() or _make_run_id()
     backtest_root = Path(REPO_ROOT) / "artifacts" / "backtest"
@@ -330,15 +352,16 @@ def run_backtest(
     mode = _normalize_mode(mode)
     current_stage = _state_stage_for_mode(mode)
 
-    _safe_state_update(
-        "running",
-        mark_running,
-        state_path,
-        run_id=rid,
-        mode=mode,
-        stage=current_stage,
-        message=_state_message_for_mode(mode),
-    )
+    if not ephemeral:
+        _safe_state_update(
+            "running",
+            mark_running,
+            state_path,
+            run_id=rid,
+            mode=mode,
+            stage=current_stage,
+            message=_state_message_for_mode(mode),
+        )
 
     try:
         if mode not in {"history_signal", "offline_replay", "offline_rule_replay"}:
@@ -357,7 +380,7 @@ def run_backtest(
                 symbols=symbols,
                 start=start,
                 end=end,
-                state_path=state_path,
+                state_path=None if ephemeral else state_path,
                 run_id=rid,
                 mode=mode,
             )
@@ -367,7 +390,7 @@ def run_backtest(
                 symbols=symbols,
                 start=start,
                 end=end,
-                state_path=state_path,
+                state_path=None if ephemeral else state_path,
                 run_id=rid,
                 mode=mode,
             )
@@ -377,7 +400,7 @@ def run_backtest(
                 symbols=symbols,
                 start=start,
                 end=end,
-                state_path=state_path,
+                state_path=None if ephemeral else state_path,
                 run_id=rid,
                 mode=mode,
             )
@@ -395,17 +418,17 @@ def run_backtest(
             score_map=score_map,
         )
 
-
         current_stage = "executing"
-        _safe_state_update(
-            "running",
-            mark_running,
-            state_path,
-            run_id=rid,
-            mode=mode,
-            stage=current_stage,
-            message=f"executing with bars={bar_count} signals={len(signals)}",
-        )
+        if not ephemeral:
+            _safe_state_update(
+                "running",
+                mark_running,
+                state_path,
+                run_id=rid,
+                mode=mode,
+                stage=current_stage,
+                message=f"executing with bars={bar_count} signals={len(signals)}",
+            )
 
         result = run_execution(
             bars_by_symbol=bars_by_symbol,
@@ -418,15 +441,16 @@ def run_backtest(
         resolved_output_dir = Path(output_dir) if output_dir is not None else (backtest_root / rid)
 
         current_stage = "writing"
-        _safe_state_update(
-            "running",
-            mark_running,
-            state_path,
-            run_id=rid,
-            mode=mode,
-            stage=current_stage,
-            message=f"writing artifacts trades={len(result.trades)}",
-        )
+        if not ephemeral:
+            _safe_state_update(
+                "running",
+                mark_running,
+                state_path,
+                run_id=rid,
+                mode=mode,
+                stage=current_stage,
+                message=f"writing artifacts trades={len(result.trades)}",
+            )
 
         metrics = build_metrics(
             run_id=rid,
@@ -448,45 +472,51 @@ def run_backtest(
             strategy_summary=_strategy_summary(config),
         )
 
-        write_artifacts(
-            resolved_output_dir,
-            result.trades,
-            result.equity_curve,
-            metrics,
-            input_quality=input_quality,
-        )
-        if mode == "offline_rule_replay" and replay_stats is not None:
-            _write_rule_replay_diagnostics(resolved_output_dir, replay_stats)
+        if not ephemeral:
+            write_artifacts(
+                resolved_output_dir,
+                result.trades,
+                result.equity_curve,
+                metrics,
+                input_quality=input_quality,
+                backtest_root=backtest_root,
+            )
+            if mode == "offline_rule_replay" and replay_stats is not None:
+                _write_rule_replay_diagnostics(resolved_output_dir, replay_stats)
 
-        current_stage = "retention"
-        _safe_state_update(
-            "running",
-            mark_running,
-            state_path,
-            run_id=rid,
-            mode=mode,
-            stage=current_stage,
-            message="updating latest pointer and retention",
-        )
+        latest_dir = backtest_root / "latest"
+        removed: list[str] = []
+        if not ephemeral:
+            current_stage = "retention"
+            _safe_state_update(
+                "running",
+                mark_running,
+                state_path,
+                run_id=rid,
+                mode=mode,
+                stage=current_stage,
+                message="updating latest pointer and retention",
+            )
 
-        latest_dir = update_latest_link(backtest_root, resolved_output_dir)
-        removed = cleanup_old_runs(backtest_root, config.retention.keep_runs)
+            latest_dir = update_latest_link(backtest_root, resolved_output_dir)
+            removed = cleanup_old_runs(backtest_root, config.retention.keep_runs)
 
-        _safe_state_update(
-            "done",
-            mark_done,
-            state_path,
-            run_id=rid,
-            mode=mode,
-            latest_run_id=rid,
-            message=f"completed trades={len(result.trades)} return={metrics.total_return_pct:+.2f}%",
-        )
+            _safe_state_update(
+                "done",
+                mark_done,
+                state_path,
+                run_id=rid,
+                mode=mode,
+                latest_run_id=rid,
+                message=f"completed trades={len(result.trades)} return={metrics.total_return_pct:+.2f}%",
+            )
 
         logger.info(
-            "Backtest completed run_id=%s trades=%d final_equity=%.2f",
+            "Backtest completed run_id=%s trades=%d final_equity=%.2f%s",
             rid,
             len(result.trades),
             result.final_equity,
+            " [ephemeral]" if ephemeral else "",
         )
         if removed:
             logger.info("Retention removed %d old runs", len(removed))
@@ -500,14 +530,15 @@ def run_backtest(
 
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
-        _safe_state_update(
-            "error",
-            mark_error,
-            state_path,
-            run_id=rid,
-            mode=mode,
-            stage=current_stage,
-            error=err,
-            message="backtest failed",
-        )
+        if not ephemeral:
+            _safe_state_update(
+                "error",
+                mark_error,
+                state_path,
+                run_id=rid,
+                mode=mode,
+                stage=current_stage,
+                error=err,
+                message="backtest failed",
+            )
         raise

@@ -143,6 +143,7 @@ def mark_error(
     stage: str,
     error: str,
     message: str = "",
+    latest_run_id: str | None = None,
 ) -> BacktestRunState:
     """Persist error state and the stage that failed."""
 
@@ -159,7 +160,7 @@ def mark_error(
         started_at=started_at,
         updated_at=now_txt,
         finished_at=now_txt,
-        latest_run_id=prev.latest_run_id,
+        latest_run_id=_clean_text(latest_run_id) or prev.latest_run_id,
         message=_clean_text(message),
         error=err_txt,
     )
