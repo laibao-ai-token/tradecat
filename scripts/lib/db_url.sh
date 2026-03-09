@@ -93,3 +93,61 @@ database = (p.path or "/market_data").lstrip("/") or "market_data"
 sys.stdout.write(f"{host}:{port}/{database}")
 PY
 }
+
+tc_db_url_with_local_fallback() {
+    local db_url="$1"
+    python3 - "$db_url" <<'PY'
+import socket
+import sys
+from urllib.parse import urlparse, urlunparse
+
+raw = (sys.argv[1] or "").strip()
+if not raw:
+    sys.stdout.write("")
+    raise SystemExit(0)
+
+try:
+    parsed = urlparse(raw)
+except Exception:
+    sys.stdout.write(raw)
+    raise SystemExit(0)
+
+host = (parsed.hostname or "").strip().lower()
+if host not in {"localhost", "127.0.0.1", "::1"}:
+    sys.stdout.write(raw)
+    raise SystemExit(0)
+
+try:
+    current_port = parsed.port or 5432
+except ValueError:
+    current_port = 5432
+
+def build_netloc(port: int) -> str:
+    auth = ""
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        auth = f"{auth}@"
+    name = parsed.hostname or "localhost"
+    if ":" in name and not name.startswith("["):
+        name = f"[{name}]"
+    return f"{auth}{name}:{int(port)}"
+
+ports = [current_port]
+for port in (5434, 5433, 5432):
+    if port not in ports:
+        ports.append(port)
+
+for port in ports:
+    try:
+        with socket.create_connection((parsed.hostname or "localhost", int(port)), timeout=0.35):
+            candidate = urlunparse(parsed._replace(netloc=build_netloc(port)))
+            sys.stdout.write(candidate)
+            raise SystemExit(0)
+    except Exception:
+        continue
+
+sys.stdout.write(raw)
+PY
+}

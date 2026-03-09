@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>TradeCat Demo News</title>
+    <description>Offline demo feed for TUI news page</description>
+    <item>
+      <title>Breaking: BTC 突破关键阻力位，市场风险偏好回升</title>
+      <link>https://demo.tradecat.local/news/btc-breakout</link>
+      <pubDate>Thu, 06 Mar 2026 12:20:00 GMT</pubDate>
+      <description><![CDATA[比特币放量上行，带动 ETH 与高 beta 山寨币走强，短线风险偏好明显改善。]]></description>
+      <category>crypto</category>
+      <category>macro</category>
+    </item>
+    <item>
+      <title>Fed 官员讲话偏鹰，美元与美债收益率同步走高</title>
+      <link>https://demo.tradecat.local/news/fed-hawkish</link>
+      <pubDate>Thu, 06 Mar 2026 11:45:00 GMT</pubDate>
+      <description><![CDATA[市场重新定价年内降息预期，纳指期货承压，黄金短线回落。]]></description>
+      <category>policy</category>
+      <category>macro</category>
+    </item>
+    <item>
+      <title>NVIDIA 供应链消息提振，AI 板块盘前情绪升温</title>
+      <link>https://demo.tradecat.local/news/nvda-supply-chain</link>
+      <pubDate>Thu, 06 Mar 2026 10:50:00 GMT</pubDate>
+      <description><![CDATA[渠道消息显示高端 GPU 交付节奏改善，相关算力与服务器链条同步活跃。]]></description>
+      <category>company</category>
+      <category>ai</category>
+    </item>
+    <item>
+      <title>金价高位震荡，避险与利率交易出现拉扯</title>
+      <link>https://demo.tradecat.local/news/gold-range</link>
+      <pubDate>Thu, 06 Mar 2026 09:30:00 GMT</pubDate>
+      <description><![CDATA[地缘风险支撑贵金属，但强美元与高利率抑制进一步上冲空间。]]></description>
+      <category>macro</category>
+      <category>commodities</category>
+    </item>
+    <item>
+      <title>港股互联网板块反弹，南向资金回流头部平台</title>
+      <link>https://demo.tradecat.local/news/hk-tech-rebound</link>
+      <pubDate>Thu, 06 Mar 2026 08:40:00 GMT</pubDate>
+      <description><![CDATA[腾讯、美团等龙头获得增量资金关注，情绪修复仍需观察成交持续性。]]></description>
+      <category>company</category>
+      <category>hk</category>
+    </item>
+  </channel>
+</rss>

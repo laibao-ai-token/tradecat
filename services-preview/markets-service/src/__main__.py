@@ -10,6 +10,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _coerce_positive_int(value: object, fallback: int, *, minimum: int = 1) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        resolved = int(fallback)
+    return max(int(minimum), resolved)
+
+
 def _ensure_provider_loaded(provider: str) -> bool:
     """按需导入 provider，避免因未安装的依赖导致整个 CLI 启动失败。"""
     import importlib
@@ -24,9 +32,13 @@ def _ensure_provider_loaded(provider: str) -> bool:
 
 
 def main():
+    from .config import settings
+
     parser = argparse.ArgumentParser(description="Markets Data Service")
     parser.add_argument("command", choices=[
         "test", "collect", "pricing",
+        # 新闻资讯（RSS/Atom）
+        "collect-news", "collect-news-poll",
         # 股票/港股/A股 分钟线调度
         "equity-test", "equity-poll",
         # 加密货币采集命令 (移植自 data-service)
@@ -39,8 +51,12 @@ def main():
     parser.add_argument("--market", default="us_stock", help="市场类型")
     parser.add_argument("--interval", default="1d", help="K线周期: 1m/5m/15m/30m/60m/1d...")
     parser.add_argument("--days", type=int, default=30, help="回溯天数")
-    parser.add_argument("--sleep", type=int, default=60, help="轮询间隔秒数（分钟线默认 60）")
+    parser.add_argument("--sleep", type=int, default=None, help="轮询间隔秒数（分钟线默认 60；新闻默认读取 NEWS_RSS_POLL_INTERVAL_SECONDS）")
     parser.add_argument("--limit", type=int, default=5, help="单次拉取条数（AllTick 单次最多 500）")
+    parser.add_argument("--news-limit", type=int, default=None, help="新闻: 单次最多条数（默认读取 NEWS_RSS_LIMIT）")
+    parser.add_argument("--feeds", default="", help="RSS/Atom feed URLs（逗号或换行分隔；为空则读 NEWS_RSS_FEEDS）")
+    parser.add_argument("--window-hours", type=int, default=None, help="新闻时间窗口（小时，默认读取 NEWS_RSS_WINDOW_HOURS）")
+    parser.add_argument("--timeout", type=int, default=None, help="HTTP 超时（秒，默认读取 NEWS_RSS_TIMEOUT_SECONDS）")
     parser.add_argument("--klines", action="store_true", help="补齐K线")
     parser.add_argument("--metrics", action="store_true", help="补齐期货指标")
     parser.add_argument("--all", action="store_true", help="补齐全部")
@@ -60,6 +76,86 @@ def main():
                 logger.info("  %s", d)
         else:
             logger.error("未找到 Provider: %s", args.provider)
+
+    elif args.command in {"collect-news", "collect-news-poll"}:
+        import asyncio
+
+        from .core.registry import ProviderRegistry
+        from .storage import batch as batch_mgr
+        from .storage.news_writer import TimescaleNewsWriter
+
+        # Default provider for news is rss, without breaking other commands.
+        if args.provider == "yfinance":
+            args.provider = "rss"
+
+        if not _ensure_provider_loaded(args.provider):
+            return
+
+        fetcher_cls = ProviderRegistry.get(args.provider, "news")
+        if not fetcher_cls:
+            logger.error("未找到 news Provider: %s", args.provider)
+            return
+
+        fetcher = fetcher_cls()
+        writer = TimescaleNewsWriter()
+        news_sleep = _coerce_positive_int(args.sleep, settings.news_rss_poll_interval_seconds)
+        news_limit = _coerce_positive_int(args.news_limit, settings.news_rss_limit)
+        news_window_hours = _coerce_positive_int(args.window_hours, settings.news_rss_window_hours)
+        news_timeout = _coerce_positive_int(args.timeout, settings.news_rss_timeout_seconds)
+
+        async def _run_once() -> None:
+            batch_id = batch_mgr.start_batch(source=f"{args.provider}_news", data_type="news_articles", market="news")
+            articles = await fetcher.fetch(
+                feeds=args.feeds,
+                limit=news_limit,
+                window_hours=news_window_hours,
+                timeout_s=news_timeout,
+            )
+            n = writer.insert_articles(articles, ingest_batch_id=batch_id)
+            logger.info(
+                "collect-news: provider=%s feeds=%s -> fetched=%d inserted=%d batch_id=%s",
+                args.provider,
+                len(getattr(fetcher.transform_query({"feeds": args.feeds}), "feeds", [])),
+                len(articles),
+                n,
+                batch_id,
+            )
+
+            health_summary_getter = getattr(fetcher, "get_feed_health_summary", None)
+            if callable(health_summary_getter):
+                health = health_summary_getter()
+                logger.info(
+                    "collect-news health: total=%d healthy=%d failing=%d cooldown=%d new=%d",
+                    int(health.get("total", 0)),
+                    int(health.get("healthy", 0)),
+                    int(health.get("failing", 0)),
+                    int(health.get("cooldown", 0)),
+                    int(health.get("new", 0)),
+                )
+
+            health_snapshot_getter = getattr(fetcher, "get_feed_health_snapshot", None)
+            if callable(health_snapshot_getter):
+                snapshot = [row for row in health_snapshot_getter() if row.get("status") in {"failing", "cooldown"}]
+                if snapshot:
+                    sample = ", ".join(
+                        f"{row.get('source') or 'rss'}:{row.get('status')}:{row.get('feed_url')}"
+                        for row in snapshot[:3]
+                    )
+                    logger.warning("collect-news unhealthy sample: %s", sample)
+
+        async def _loop() -> None:
+            while True:
+                try:
+                    await _run_once()
+                except Exception as e:
+                    logger.error("collect-news failed: provider=%s error=%s", args.provider, e, exc_info=True)
+                    if args.command == "collect-news":
+                        raise
+                if args.command == "collect-news":
+                    return
+                await asyncio.sleep(news_sleep)
+
+        asyncio.run(_loop())
 
     elif args.command == "equity-test":
         from .core.registry import ProviderRegistry
@@ -103,9 +199,9 @@ def main():
 
         batch_id = batch_mgr.start_batch(source=f"{args.provider}_equity_poll", data_type="equity_1m", market=args.market)
         logger.info(
-            "启动 equity-poll: provider=%s market=%s interval=%s symbols=%d sleep=%ss batch_id=%s",
-            args.provider, args.market, args.interval, len(symbols), args.sleep, batch_id,
-        )
+                "启动 equity-poll: provider=%s market=%s interval=%s symbols=%d sleep=%ss batch_id=%s",
+                args.provider, args.market, args.interval, len(symbols), _coerce_positive_int(args.sleep, 60), batch_id,
+            )
 
         async def _fetch_one(sym: str):
             try:
@@ -151,7 +247,7 @@ def main():
                     logger.info("无数据 (symbols=%d)", len(symbols))
 
                 # 固定间隔轮询（简单稳）
-                await asyncio.sleep(max(1, int(args.sleep)))
+                await asyncio.sleep(_coerce_positive_int(args.sleep, 60))
 
         asyncio.run(_loop())
 

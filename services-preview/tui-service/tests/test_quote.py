@@ -393,7 +393,15 @@ class TestTencentQuoteParse(unittest.TestCase):
         from src.tui import ServiceStatus, _format_service_status_bar
 
         bar = _format_service_status_bar(
-            ServiceStatus(data_running=4, data_total=4, signal_up=True, trading_up=True, checked_at=0.0)
+            ServiceStatus(
+                data_running=4,
+                data_total=4,
+                signal_up=True,
+                trading_up=True,
+                signal_data_fresh=True,
+                trading_data_fresh=True,
+                checked_at=0.0,
+            )
         )
         self.assertEqual(bar, "服务 数据在线 | 信号在线 | 交易在线")
 
@@ -401,9 +409,35 @@ class TestTencentQuoteParse(unittest.TestCase):
         from src.tui import ServiceStatus, _format_service_status_bar
 
         bar = _format_service_status_bar(
-            ServiceStatus(data_running=2, data_total=4, signal_up=False, trading_up=True, checked_at=0.0)
+            ServiceStatus(
+                data_running=2,
+                data_total=4,
+                signal_up=False,
+                trading_up=True,
+                signal_data_fresh=False,
+                trading_data_fresh=True,
+                checked_at=0.0,
+            )
         )
         self.assertEqual(bar, "服务 数据2/4 | 信号离线 | 交易在线")
+
+    def test_format_service_status_bar_stale(self) -> None:
+        from src.tui import ServiceStatus, _format_service_status_bar
+
+        bar = _format_service_status_bar(
+            ServiceStatus(
+                data_running=4,
+                data_total=4,
+                signal_up=True,
+                trading_up=True,
+                signal_data_fresh=False,
+                trading_data_fresh=False,
+                signal_data_age_s=2 * 24 * 60 * 60,
+                trading_data_age_s=2 * 60 * 60,
+                checked_at=0.0,
+            )
+        )
+        self.assertEqual(bar, "服务 数据在线 | 信号陈旧 | 交易陈旧")
 
     def test_build_header_line_keeps_service_tail(self) -> None:
         from src.tui import _build_header_line
@@ -490,6 +524,29 @@ class TestTencentQuoteParse(unittest.TestCase):
                 "timestamp,symbol,side,pnl\n2026-02-02 00:00:00,BTCUSDT,BUY,12.5\n",
                 encoding="utf-8",
             )
+            (base / "input_quality.json").write_text(
+                json.dumps(
+                    {
+                        "quality_score": 82.5,
+                        "quality_status": "warn",
+                        "candle_coverage_pct": 96.2,
+                        "gap_count": 2,
+                        "no_next_open_bucket_count": 1,
+                        "dropped_signal_count": 3,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (base / "stability_report.json").write_text(
+                json.dumps(
+                    {
+                        "stability_status": "critical",
+                        "stability_summary": "Performance collapsed versus recent comparable runs; overfit risk is high.",
+                        "comparable_run_count": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             snap = _load_backtest_snapshot(base)
             self.assertTrue(snap.available)
@@ -504,6 +561,12 @@ class TestTencentQuoteParse(unittest.TestCase):
             self.assertGreaterEqual(len(snap.symbol_contributions), 1)
             self.assertEqual(snap.symbol_contributions[0].symbol, "BTCUSDT")
             self.assertAlmostEqual(snap.symbol_contributions[0].pnl_net or 0.0, 23.4, places=2)
+            self.assertAlmostEqual(snap.quality_score or 0.0, 82.5, places=6)
+            self.assertEqual(snap.quality_status, "warn")
+            self.assertIn("coverage=96.2%", snap.quality_summary)
+            self.assertEqual(snap.stability_status, "critical")
+            self.assertEqual(snap.stability_comparable_run_count, 2)
+            self.assertIn("overfit risk is high", snap.stability_summary)
 
     def test_load_backtest_compare_snapshot_with_compare_run_state(self) -> None:
         from src.tui import BacktestRunStateSnapshot, _load_backtest_compare_snapshot
@@ -525,6 +588,16 @@ class TestTencentQuoteParse(unittest.TestCase):
                         "delta_excess_return_pct": 2.2,
                         "delta_signal_count": -15,
                         "delta_buy_ratio_pct": -4.5,
+                        "alignment_score": 48.6,
+                        "alignment_status": "fail",
+                        "alignment_risk_level": "critical",
+                        "alignment_risk_summary": "Alignment is unsafe for parameter decisions; inspect the top blocking rules first.",
+                        "alignment_warnings": [
+                            {
+                                "kind": "top_rule_missing_in_rule_replay",
+                                "subject": "MACD死叉",
+                            }
+                        ],
                         "rule_overlap": {
                             "history_rule_types": 12,
                             "rule_rule_types": 9,
@@ -567,6 +640,15 @@ class TestTencentQuoteParse(unittest.TestCase):
             self.assertEqual(snap.rule_rule_types, 9)
             self.assertEqual(snap.rule_shared_types, 6)
             self.assertAlmostEqual(snap.rule_jaccard_pct or 0.0, 40.0, places=6)
+            self.assertAlmostEqual(snap.alignment_score or 0.0, 48.6, places=6)
+            self.assertEqual(snap.alignment_status, "fail")
+            self.assertEqual(snap.alignment_risk_level, "critical")
+            self.assertEqual(
+                snap.alignment_risk_summary,
+                "Alignment is unsafe for parameter decisions; inspect the top blocking rules first.",
+            )
+            self.assertEqual(snap.alignment_warning_count, 1)
+            self.assertEqual(snap.alignment_warning_summary, "top_rule_missing_in_rule_replay: MACD死叉")
             self.assertEqual(snap.missing_rule_reason, "MACD死叉: condition_failed")
             self.assertEqual(len(snap.signal_type_delta_top), 1)
             self.assertEqual(snap.signal_type_delta_top[0].key, "KDJ金叉")
@@ -599,6 +681,11 @@ class TestTencentQuoteParse(unittest.TestCase):
             self.assertAlmostEqual(snap.delta_return_pct or 0.0, -0.5, places=6)
             self.assertEqual(snap.delta_trade_count, 2)
             self.assertIsNone(snap.rule_jaccard_pct)
+            self.assertEqual(snap.alignment_status, "--")
+            self.assertEqual(snap.alignment_risk_level, "--")
+            self.assertEqual(snap.alignment_risk_summary, "")
+            self.assertEqual(snap.alignment_warning_count, 0)
+            self.assertEqual(snap.alignment_warning_summary, "")
             self.assertEqual(snap.missing_rule_reason, "")
 
     def test_load_backtest_run_state_defaults(self) -> None:
@@ -738,6 +825,38 @@ class TestTencentQuoteParse(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0][0].symbol, "NVDA")
         self.assertEqual(out[0][1], 10)
+
+    def test_recent_signal_panel_title_marks_stale_history(self) -> None:
+        from src.db import SignalRow
+        from src.tui import _build_recent_signal_panel_title, _count_recent_signal_rows
+
+        now = datetime(2026, 3, 7, 17, 43, 37)
+        rows = [
+            SignalRow(1, "2026-03-05 11:59:13", "BTCUSDT", "macd", "BUY", 70, None, "1m", 68800.0, "sqlite"),
+        ]
+
+        self.assertEqual(_count_recent_signal_rows(rows, now, max_age_s=12 * 60 * 60), 0)
+        title = _build_recent_signal_panel_title(rows, now)
+        self.assertIn("近12h无信号", title)
+        self.assertIn("26-03-05 11:59:13", title)
+
+    def test_split_signal_rows_by_age_windows(self) -> None:
+        from src.db import SignalRow
+        from src.tui import _count_recent_signal_rows, _split_signal_rows_by_age
+
+        now = datetime(2026, 3, 7, 17, 43, 37)
+        rows = [
+            SignalRow(1, "2026-03-07 17:42:30", "BTCUSDT", "macd", "BUY", 70, None, "1m", 1.0, "sqlite"),
+            SignalRow(2, "2026-03-07 17:20:00", "BTCUSDT", "macd", "SELL", 70, None, "1m", 1.0, "sqlite"),
+            SignalRow(3, "2026-03-07 12:00:00", "BTCUSDT", "macd", "ALERT", 60, None, "1m", 1.0, "sqlite"),
+            SignalRow(4, "2026-03-06 23:00:00", "BTCUSDT", "macd", "BUY", 80, None, "1m", 1.0, "sqlite"),
+        ]
+
+        realtime_rows, h1_rows, h12_rows = _split_signal_rows_by_age(rows, now)
+        self.assertEqual(len(realtime_rows), 1)
+        self.assertEqual(len(h1_rows), 1)
+        self.assertEqual(len(h12_rows), 1)
+        self.assertEqual(_count_recent_signal_rows(rows, now, max_age_s=12 * 60 * 60), 3)
 
     def test_curve_update_ts_uses_quote_ts_for_stale_market(self) -> None:
         from src.quote import Quote

@@ -3,13 +3,59 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 SERVICE_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$(dirname "$SERVICE_DIR")")"
 source "$REPO_ROOT/scripts/lib/db_url.sh"
 
 # NOTE: tui-service does not require config/.env.
 # Do NOT source it here, because template values may include spaces/parentheses and break bash parsing.
+# If specific optional keys are needed, read them via tc_read_env_key (Python parser) instead.
+
+_export_env_key_if_missing() {
+  local key="$1"
+  local value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    return 0
+  fi
+
+  value="$(tc_read_env_key "$REPO_ROOT/config/.env" "$key" || true)"
+  if [[ -n "${value:-}" ]]; then
+    export "$key=$value"
+  fi
+}
+
+for _proxy_key in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+  _export_env_key_if_missing "$_proxy_key"
+done
+
+if [[ -n "${HTTP_PROXY:-}" && -z "${http_proxy:-}" ]]; then
+  export http_proxy="$HTTP_PROXY"
+fi
+if [[ -n "${HTTPS_PROXY:-}" && -z "${https_proxy:-}" ]]; then
+  export https_proxy="$HTTPS_PROXY"
+fi
+if [[ -n "${NO_PROXY:-}" && -z "${no_proxy:-}" ]]; then
+  export no_proxy="$NO_PROXY"
+fi
+
+for _news_preset_key in TUI_NEWS_RSS_PRESET NEWS_RSS_PRESET; do
+  _export_env_key_if_missing "$_news_preset_key"
+done
+
+# Optional: allow configuring RSS feeds in config/.env (without sourcing it).
+if [[ -z "${TUI_NEWS_RSS_FEEDS:-}" && -z "${NEWS_RSS_FEEDS:-}" ]]; then
+  _rss_from_env="$(tc_read_env_key "$REPO_ROOT/config/.env" "TUI_NEWS_RSS_FEEDS" || true)"
+  if [[ -n "${_rss_from_env:-}" ]]; then
+    export TUI_NEWS_RSS_FEEDS="$_rss_from_env"
+  else
+    _rss_from_env="$(tc_read_env_key "$REPO_ROOT/config/.env" "NEWS_RSS_FEEDS" || true)"
+    if [[ -n "${_rss_from_env:-}" ]]; then
+      export NEWS_RSS_FEEDS="$_rss_from_env"
+    fi
+  fi
+fi
 
 VENV_DIR="$SERVICE_DIR/.venv"
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -301,6 +347,47 @@ run_dev() {
   TUI_HOT_RELOAD=1 TUI_HOT_RELOAD_POLL="$poll" run "$@"
 }
 
+run_news() {
+  local sleep_s="${NEWS_RSS_POLL_INTERVAL_SECONDS:-2}"
+  if [[ $# -gt 0 && ! "${1:-}" =~ ^- ]]; then
+    sleep_s="$1"
+    shift
+  fi
+
+  local detach="0"
+  if [[ $# -gt 0 && "${1:-}" =~ ^[01]$ ]]; then
+    detach="$1"
+    shift
+  fi
+
+  local news_log_dir="$REPO_ROOT/services-preview/markets-service/logs"
+  local news_log_file="$news_log_dir/news_collect.log"
+
+  local markets_py
+  if ! markets_py="$(_markets_python)"; then
+    echo "❌ markets-service 未初始化（缺少 $REPO_ROOT/services-preview/markets-service/.venv/bin/python）"
+    echo "   先执行: ./scripts/init.sh --all  或  ./scripts/init.sh markets-service"
+    return 1
+  fi
+
+  mkdir -p "$news_log_dir"
+  echo "启动 7x24 新闻采集: sleep=${sleep_s}s"
+  (
+    cd "$REPO_ROOT/services-preview/markets-service"
+    exec "$markets_py" -m src collect-news-poll --provider rss --sleep "$sleep_s" >> "$news_log_file" 2>&1 < /dev/null
+  ) &
+  local pid=$!
+
+  if [[ "$detach" != "1" ]]; then
+    # Expand the child pid now; local variables are gone by the time the EXIT trap fires.
+    trap "kill '$pid' 2>/dev/null || true" EXIT INT TERM
+  else
+    echo "新闻采集进程已后台运行 (PID: $pid)；退出 TUI 不会停止采集。"
+  fi
+
+  run --view market_news "$@"
+}
+
 run_equity() {
   # Run a markets-service equity-poll in background, then run the TUI in foreground.
   # This keeps TUI stdlib-only while still providing "one-command collection + view".
@@ -347,7 +434,8 @@ run_equity() {
   local pid=$!
 
   if [[ "$detach" != "1" ]]; then
-    trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
+    # Expand the child pid now; local variables are gone by the time the EXIT trap fires.
+    trap "kill '$pid' 2>/dev/null || true" EXIT INT TERM
   else
     echo "采集进程已后台运行 (PID: $pid)；退出 TUI 不会停止采集。"
   fi
@@ -385,12 +473,13 @@ case "${1:-status}" in
   run) shift; run "$@" ;;
   run-dev) shift; run_dev "$@" ;;
   run-equity) shift; run_equity "$@" ;;
+  run-news) shift; run_news "$@" ;;
   start) start "$@" ;;
   stop) stop ;;
   status) status ;;
   restart) stop; sleep 1; start ;;
   *)
-    echo "用法: $0 {run|run-dev|run-equity|start|stop|status|restart}"
+    echo "用法: $0 {run|run-dev|run-equity|run-news|start|stop|status|restart}"
     echo ""
     echo "环境变量："
     echo "  TUI_AUTO_START_DATA=0        禁用 run/start 自动启动 data-service"
@@ -412,6 +501,7 @@ case "${1:-status}" in
     echo "  TUI_DATA_STOP_DELAY_SECONDS=0 TUI_SIGNAL_STOP_DELAY_SECONDS=0 $0 run"
     echo "  $0 run-equity us_stock nasdaq NVDA 60 5"
     echo "  $0 run-equity hk_stock eastmoney 1810.HK 60 5"
+    echo "  $0 run-news 2"
     exit 1
     ;;
 esac

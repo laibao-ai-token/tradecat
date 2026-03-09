@@ -83,6 +83,7 @@ def main() -> int:
             "market_fund_cn",
             "market_crypto",
             "market_micro",
+            "market_news",
             "market_backtest",
         ],
         help="Start view",
