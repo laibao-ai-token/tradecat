@@ -391,6 +391,7 @@ def build_metrics(
     strategy_label: str = "",
     strategy_config_path: str = "",
     strategy_summary: str = "",
+    strategy_context: dict[str, object] | None = None,
 ) -> Metrics:
     """Build summarized metrics from raw outputs."""
 
@@ -491,6 +492,7 @@ def build_metrics(
         strategy_label=str(strategy_label or ""),
         strategy_config_path=str(strategy_config_path or ""),
         strategy_summary=str(strategy_summary or ""),
+        strategy_context=dict(strategy_context or {}),
     )
 
 
@@ -642,6 +644,7 @@ def _write_metrics_json(path: Path, metrics: Metrics) -> None:
         "strategy_label": metrics.strategy_label,
         "strategy_config_path": metrics.strategy_config_path,
         "strategy_summary": metrics.strategy_summary,
+        "strategy_context": metrics.strategy_context,
         "symbol_contributions": [
             {
                 "symbol": row.symbol,

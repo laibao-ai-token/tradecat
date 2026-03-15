@@ -336,6 +336,50 @@ def _strategy_summary(config: BacktestConfig) -> str:
     )
 
 
+def _strategy_context(config: BacktestConfig) -> dict[str, object]:
+    ag = config.aggregation
+    ex = config.execution
+    risk = config.risk
+    return {
+        "aggregation": {
+            "long_open_threshold": int(ag.long_open_threshold),
+            "short_open_threshold": int(ag.short_open_threshold),
+            "close_threshold": int(ag.close_threshold),
+        },
+        "execution": {
+            "entry": str(getattr(ex, "entry", "next_open") or "next_open"),
+            "allow_long": bool(ex.allow_long),
+            "allow_short": bool(ex.allow_short),
+            "min_hold_minutes": int(ex.min_hold_minutes),
+            "neutral_confirm_minutes": int(ex.neutral_confirm_minutes),
+            "fee_bps": float(ex.fee_bps),
+            "maker_fee_bps": float(ex.maker_fee_bps if ex.maker_fee_bps is not None else ex.fee_bps),
+            "taker_fee_bps": float(ex.taker_fee_bps if ex.taker_fee_bps is not None else ex.fee_bps),
+            "funding_rate_bps_per_8h": float(getattr(ex, "funding_rate_bps_per_8h", 0.0) or 0.0),
+            "slippage_bps": float(ex.slippage_bps),
+            "slippage_model": str(getattr(ex, "slippage_model", "fixed") or "fixed").strip().lower(),
+            "slippage_max_bps": (
+                None if getattr(ex, "slippage_max_bps", None) is None else float(getattr(ex, "slippage_max_bps"))
+            ),
+            "slippage_volatility_weight": float(getattr(ex, "slippage_volatility_weight", 0.0) or 0.0),
+            "slippage_volume_weight": float(getattr(ex, "slippage_volume_weight", 0.0) or 0.0),
+            "slippage_session_weight": float(getattr(ex, "slippage_session_weight", 0.0) or 0.0),
+            "slippage_volume_window": int(getattr(ex, "slippage_volume_window", 20) or 20),
+            "max_bar_participation_rate": float(getattr(ex, "max_bar_participation_rate", 1.0) or 0.0),
+            "min_order_notional": float(getattr(ex, "min_order_notional", 0.0) or 0.0),
+            "impact_bps_per_bar_participation": float(getattr(ex, "impact_bps_per_bar_participation", 0.0) or 0.0),
+        },
+        "risk": {
+            "initial_equity": float(risk.initial_equity),
+            "leverage": float(risk.leverage),
+            "position_size_pct": float(risk.position_size_pct),
+            "maintenance_margin_ratio": float(getattr(risk, "maintenance_margin_ratio", 0.0) or 0.0),
+            "liquidation_fee_bps": float(getattr(risk, "liquidation_fee_bps", 0.0) or 0.0),
+            "liquidation_buffer_bps": float(getattr(risk, "liquidation_buffer_bps", 0.0) or 0.0),
+        },
+    }
+
+
 def run_backtest(
     config: BacktestConfig,
     *,
@@ -470,6 +514,7 @@ def run_backtest(
             strategy_label=config.strategy_label,
             strategy_config_path=config.strategy_config_path,
             strategy_summary=_strategy_summary(config),
+            strategy_context=_strategy_context(config),
         )
 
         if not ephemeral:

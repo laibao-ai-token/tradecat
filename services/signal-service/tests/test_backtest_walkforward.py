@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,17 @@ from src.backtest.models import AggregationConfig, BacktestConfig, DateRange, Me
 from src.backtest.walkforward import build_walk_forward_windows, run_walk_forward
 
 
-def _mk_metrics(run_id: str, ret: float, max_dd: float, excess: float, mode: str = "history_signal") -> Metrics:
+def _mk_metrics(
+    run_id: str,
+    ret: float,
+    max_dd: float,
+    excess: float,
+    mode: str = "history_signal",
+    *,
+    buy_hold_return_pct: float = 1.0,
+    risk_parity_return_pct: float = 0.0,
+    momentum_return_pct: float = 0.0,
+) -> Metrics:
     return Metrics(
         run_id=run_id,
         mode=mode,
@@ -30,9 +42,15 @@ def _mk_metrics(run_id: str, ret: float, max_dd: float, excess: float, mode: str
         avg_holding_minutes=5.0,
         signal_count=100,
         bar_count=1000,
-        buy_hold_final_equity=1010.0,
-        buy_hold_return_pct=1.0,
+        buy_hold_final_equity=1000.0 * (1.0 + buy_hold_return_pct / 100.0),
+        buy_hold_return_pct=buy_hold_return_pct,
+        risk_parity_final_equity=1000.0 * (1.0 + risk_parity_return_pct / 100.0),
+        risk_parity_return_pct=risk_parity_return_pct,
+        momentum_final_equity=1000.0 * (1.0 + momentum_return_pct / 100.0),
+        momentum_return_pct=momentum_return_pct,
         excess_return_pct=excess,
+        excess_return_vs_risk_parity_pct=ret - risk_parity_return_pct,
+        excess_return_vs_momentum_pct=ret - momentum_return_pct,
         symbol_contributions=[],
     )
 
@@ -107,7 +125,7 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
     assert len(payload["folds"]) == 2
     assert payload["avg_excess_return_pct"] < 0
     assert payload["best_baseline_name"] == "buy_hold"
-    assert payload["best_baseline_return_pct"] == 1.0
+    assert payload["best_baseline_return_pct"] == pytest.approx(2.01)
     assert payload["folds"][0]["selected_params"]["selection_source"] == "base_config"
     assert payload["folds"][0]["selected_params"]["aggregation"]["long_open_threshold"] == 70
     assert payload["folds"][0]["selected_params"]["execution"]["neutral_confirm_minutes"] == 1
@@ -120,10 +138,10 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
     metrics_payload = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics_payload["mode"] == "walk_forward"
     assert metrics_payload["best_baseline_name"] == "buy_hold"
-    assert metrics_payload["best_baseline_return_pct"] == 1.0
+    assert metrics_payload["best_baseline_return_pct"] == pytest.approx(2.01)
     assert metrics_payload["walk_forward_summary"]["fold_count"] == 2
     assert metrics_payload["walk_forward_summary"]["best_baseline_name"] == "buy_hold"
-    assert metrics_payload["walk_forward_summary"]["best_baseline_return_pct"] == 1.0
+    assert metrics_payload["walk_forward_summary"]["best_baseline_return_pct"] == pytest.approx(2.01)
     assert metrics_payload["walk_forward_summary"]["folds"][0]["selected_params"]["selection_source"] == "base_config"
 
     latest = tmp_path / "artifacts" / "backtest" / "latest"
@@ -132,6 +150,69 @@ def test_run_walk_forward_writes_summary(monkeypatch, tmp_path: Path) -> None:
         assert latest.resolve() == output_dir.resolve()
     else:
         assert (latest / "walk_forward_summary.json").exists()
+
+
+def test_run_walk_forward_ranks_baselines_by_compounded_return(monkeypatch, tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("src.backtest.walkforward.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("src.backtest.walkforward.resolve_range", lambda _: (start, end))
+
+    calls = []
+
+    def _fake_run_backtest(cfg, *, mode, run_id, output_dir=None, ephemeral=False):
+        calls.append(run_id)
+        if len(calls) == 1:
+            metrics = _mk_metrics(
+                run_id,
+                ret=5.0,
+                max_dd=2.0,
+                excess=-95.0,
+                mode=mode,
+                buy_hold_return_pct=100.0,
+                risk_parity_return_pct=20.0,
+                momentum_return_pct=10.0,
+            )
+        else:
+            metrics = _mk_metrics(
+                run_id,
+                ret=4.0,
+                max_dd=1.5,
+                excess=54.0,
+                mode=mode,
+                buy_hold_return_pct=-50.0,
+                risk_parity_return_pct=20.0,
+                momentum_return_pct=10.0,
+            )
+        return SimpleNamespace(metrics=metrics)
+
+    monkeypatch.setattr("src.backtest.walkforward.run_backtest", _fake_run_backtest)
+
+    cfg = BacktestConfig(
+        symbols=["BTCUSDT", "ETHUSDT"],
+        timeframe="1m",
+        date_range=DateRange(start="2026-01-01 00:00:00", end="2026-02-01 00:00:00"),
+        walk_forward=WalkForwardConfig(train_days=7, test_days=5, step_days=5),
+    )
+
+    run_walk_forward(cfg, mode="history_signal", run_id="wf-compound-rank", max_folds=2, select_train_params=False)
+
+    output_dir = tmp_path / "artifacts" / "backtest" / "wf-compound-rank"
+    payload = json.loads((output_dir / "walk_forward_summary.json").read_text(encoding="utf-8"))
+    assert payload["avg_buy_hold_return_pct"] == pytest.approx(25.0)
+    assert payload["buy_hold_compounded_return_pct"] == pytest.approx(0.0)
+    assert payload["risk_parity_compounded_return_pct"] == pytest.approx(44.0)
+    assert payload["best_baseline_name"] == "risk_parity"
+    assert payload["best_baseline_return_pct"] == pytest.approx(44.0)
+
+    metrics_payload = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics_payload["buy_hold_final_equity"] == pytest.approx(10000.0)
+    assert metrics_payload["risk_parity_final_equity"] == pytest.approx(14400.0)
+    assert metrics_payload["best_baseline_name"] == "risk_parity"
+    assert metrics_payload["best_baseline_return_pct"] == pytest.approx(44.0)
+    assert metrics_payload["walk_forward_summary"]["best_baseline_name"] == "risk_parity"
+    assert metrics_payload["walk_forward_summary"]["best_baseline_return_pct"] == pytest.approx(44.0)
 
 
 def test_run_walk_forward_auto_fallback_to_offline(monkeypatch, tmp_path: Path) -> None:

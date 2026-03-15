@@ -355,3 +355,79 @@ def test_write_artifacts_generates_cross_run_stability_report(tmp_path: Path) ->
     assert "Stability Report" in stability_md
     assert "CRITICAL" in stability_md
     assert "return_collapse" in stability_md
+
+
+def test_write_artifacts_stability_ignores_runs_with_different_strategy_context(tmp_path: Path) -> None:
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=1)
+    backtest_root = tmp_path / "artifacts" / "backtest"
+
+    def _mk_run(run_id: str, final_equity: float, *, leverage: float) -> None:
+        metrics = build_metrics(
+            run_id=run_id,
+            mode="history_signal",
+            start=t0,
+            end=t1,
+            symbols=["BTCUSDT"],
+            timeframe="1m",
+            initial_equity=1000,
+            final_equity=final_equity,
+            trades=[],
+            curve=[EquityPoint(timestamp=t0, equity=1000), EquityPoint(timestamp=t1, equity=final_equity)],
+            signal_count=100,
+            bar_count=2,
+            bars_by_symbol={
+                "BTCUSDT": [
+                    Bar("BTCUSDT", t0, 100, 101, 99, 100, 1),
+                    Bar("BTCUSDT", t1, 110, 111, 109, 110, 1),
+                ]
+            },
+            strategy_label="demo",
+            strategy_config_path="demo.yaml",
+            strategy_summary="demo-strategy",
+            strategy_context={
+                "aggregation": {"long_open_threshold": 70, "short_open_threshold": 70, "close_threshold": 20},
+                "execution": {"slippage_bps": 3.0, "maker_fee_bps": 4.0, "taker_fee_bps": 4.0},
+                "risk": {"initial_equity": 1000.0, "leverage": leverage, "position_size_pct": 0.25},
+            },
+        )
+        write_artifacts(backtest_root / run_id, trades=[], curve=[], metrics=metrics, backtest_root=backtest_root)
+
+    _mk_run("stable-same", 1120, leverage=2.0)
+    _mk_run("stable-other-leverage", 1110, leverage=3.0)
+
+    current_metrics = build_metrics(
+        run_id="stable-current",
+        mode="history_signal",
+        start=t0,
+        end=t1,
+        symbols=["BTCUSDT"],
+        timeframe="1m",
+        initial_equity=1000,
+        final_equity=1090,
+        trades=[],
+        curve=[EquityPoint(timestamp=t0, equity=1000), EquityPoint(timestamp=t1, equity=1090)],
+        signal_count=90,
+        bar_count=2,
+        bars_by_symbol={
+            "BTCUSDT": [
+                Bar("BTCUSDT", t0, 100, 101, 99, 100, 1),
+                Bar("BTCUSDT", t1, 110, 111, 109, 110, 1),
+            ]
+        },
+        strategy_label="demo",
+        strategy_config_path="demo.yaml",
+        strategy_summary="demo-strategy",
+        strategy_context={
+            "aggregation": {"long_open_threshold": 70, "short_open_threshold": 70, "close_threshold": 20},
+            "execution": {"slippage_bps": 3.0, "maker_fee_bps": 4.0, "taker_fee_bps": 4.0},
+            "risk": {"initial_equity": 1000.0, "leverage": 2.0, "position_size_pct": 0.25},
+        },
+    )
+
+    out_dir = backtest_root / "stable-current"
+    write_artifacts(out_dir, trades=[], curve=[], metrics=current_metrics, backtest_root=backtest_root)
+
+    stability_payload = json.loads((out_dir / "stability_report.json").read_text(encoding="utf-8"))
+    assert stability_payload["comparable_run_count"] == 1
+    assert round(stability_payload["baseline"]["total_return_pct"], 2) == 12.0

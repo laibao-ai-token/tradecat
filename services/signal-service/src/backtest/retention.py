@@ -78,6 +78,13 @@ def _clean_text(raw: object) -> str:
     return str(raw or "").strip()
 
 
+def _canonical_json(raw: object) -> str:
+    try:
+        return json.dumps(raw, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return ""
+
+
 def _is_same_context(payload: dict[str, Any], current_metrics: Metrics) -> bool:
     if _clean_text(payload.get("mode")) != _clean_text(current_metrics.mode):
         return False
@@ -93,6 +100,19 @@ def _is_same_context(payload: dict[str, Any], current_metrics: Metrics) -> bool:
         return False
     if _clean_text(payload.get("strategy_label")) != _clean_text(current_metrics.strategy_label):
         return False
+    if _clean_text(payload.get("strategy_summary")) != _clean_text(current_metrics.strategy_summary):
+        return False
+
+    payload_context = payload.get("strategy_context")
+    payload_context_dict = payload_context if isinstance(payload_context, dict) else None
+    current_context = getattr(current_metrics, "strategy_context", {}) or {}
+    has_payload_context = bool(payload_context_dict)
+    has_current_context = bool(current_context)
+    if has_payload_context or has_current_context:
+        if not has_payload_context or not has_current_context:
+            return False
+        if _canonical_json(payload_context_dict) != _canonical_json(current_context):
+            return False
     return True
 
 

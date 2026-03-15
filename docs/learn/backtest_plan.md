@@ -1,5 +1,8 @@
 # TradeCat 回测实施方案（Crypto，分两步）
 
+> 迁移说明（2026-03-07）：本文件保留为方案归档 / 背景设计文档；
+> 后续推进、状态跟踪与任务拆分统一迁移到 `.issues/open/006-backtest/006-feature-backtest-prod-readiness.md`。
+
 ## 1. 目标与原则
 
 本方案用于将 TradeCat 从“实时信号展示”推进到“可用于实盘前验证的回测系统”。

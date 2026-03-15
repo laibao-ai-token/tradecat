@@ -86,6 +86,57 @@ def _median(values: list[float]) -> float:
     return float((arr[mid - 1] + arr[mid]) / 2.0)
 
 
+def _avg(values: list[float]) -> float:
+    return float(sum(values) / len(values)) if values else 0.0
+
+
+def _compound_growth_multiplier(returns: list[float]) -> float:
+    growth = 1.0
+    for value in returns:
+        growth *= max(0.0, 1.0 + float(value) / 100.0)
+    return float(growth)
+
+
+def _compound_return_pct(returns: list[float]) -> float:
+    return float((_compound_growth_multiplier(returns) - 1.0) * 100.0)
+
+
+def _final_equity_after_returns(initial_equity: float, returns: list[float]) -> float:
+    return float(max(0.0, float(initial_equity)) * _compound_growth_multiplier(returns))
+
+
+def _build_baseline_rollup(rows: list[WalkForwardFoldResult]) -> dict[str, float | str]:
+    buy_hold_returns = [float(row.buy_hold_return_pct) for row in rows]
+    risk_parity_returns = [float(row.risk_parity_return_pct) for row in rows]
+    momentum_returns = [float(row.momentum_return_pct) for row in rows]
+
+    avg_buy_hold = _avg(buy_hold_returns)
+    avg_risk_parity = _avg(risk_parity_returns)
+    avg_momentum = _avg(momentum_returns)
+    buy_hold_compounded = _compound_return_pct(buy_hold_returns)
+    risk_parity_compounded = _compound_return_pct(risk_parity_returns)
+    momentum_compounded = _compound_return_pct(momentum_returns)
+
+    best_baseline_name, best_baseline_return_pct = max(
+        (
+            ("buy_hold", buy_hold_compounded),
+            ("risk_parity", risk_parity_compounded),
+            ("momentum", momentum_compounded),
+        ),
+        key=lambda item: item[1],
+    )
+    return {
+        "avg_buy_hold_return_pct": float(avg_buy_hold),
+        "avg_risk_parity_return_pct": float(avg_risk_parity),
+        "avg_momentum_return_pct": float(avg_momentum),
+        "buy_hold_compounded_return_pct": float(buy_hold_compounded),
+        "risk_parity_compounded_return_pct": float(risk_parity_compounded),
+        "momentum_compounded_return_pct": float(momentum_compounded),
+        "best_baseline_name": str(best_baseline_name),
+        "best_baseline_return_pct": float(best_baseline_return_pct),
+    }
+
+
 def build_walk_forward_windows(
     start: datetime,
     end: datetime,
@@ -596,15 +647,12 @@ def _summary_from_folds(run_id: str, mode: str, output_dir: Path, rows: list[Wal
 
 
 def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[WalkForwardFoldResult]) -> None:
-    avg_buy_hold = float(sum(row.buy_hold_return_pct for row in rows) / len(rows)) if rows else 0.0
-    avg_risk_parity = float(sum(row.risk_parity_return_pct for row in rows) / len(rows)) if rows else 0.0
-    avg_momentum = float(sum(row.momentum_return_pct for row in rows) / len(rows)) if rows else 0.0
-    avg_excess_vs_risk_parity = float(sum(row.excess_return_vs_risk_parity_pct for row in rows) / len(rows)) if rows else 0.0
-    avg_excess_vs_momentum = float(sum(row.excess_return_vs_momentum_pct for row in rows) / len(rows)) if rows else 0.0
-    best_baseline_name, best_baseline_return_pct = max(
-        (('buy_hold', avg_buy_hold), ('risk_parity', avg_risk_parity), ('momentum', avg_momentum)),
-        key=lambda item: item[1],
-    )
+    rollup = _build_baseline_rollup(rows)
+    avg_excess_vs_risk_parity = _avg([float(row.excess_return_vs_risk_parity_pct) for row in rows])
+    avg_excess_vs_momentum = _avg([float(row.excess_return_vs_momentum_pct) for row in rows])
+    compounded_return_pct = _compound_return_pct([float(row.total_return_pct) for row in rows])
+    compounded_excess_vs_risk_parity = compounded_return_pct - float(rollup["risk_parity_compounded_return_pct"])
+    compounded_excess_vs_momentum = compounded_return_pct - float(rollup["momentum_compounded_return_pct"])
     payload = {
         "run_id": summary.run_id,
         "mode": summary.mode,
@@ -616,13 +664,19 @@ def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[Walk
         "positive_fold_rate_pct": summary.positive_fold_rate_pct,
         "avg_max_drawdown_pct": summary.avg_max_drawdown_pct,
         "avg_excess_return_pct": summary.avg_excess_return_pct,
-        "avg_buy_hold_return_pct": avg_buy_hold,
-        "avg_risk_parity_return_pct": avg_risk_parity,
-        "avg_momentum_return_pct": avg_momentum,
-        "avg_excess_return_vs_risk_parity_pct": avg_excess_vs_risk_parity,
-        "avg_excess_return_vs_momentum_pct": avg_excess_vs_momentum,
-        "best_baseline_name": str(best_baseline_name),
-        "best_baseline_return_pct": float(best_baseline_return_pct),
+        "compounded_return_pct": float(compounded_return_pct),
+        "avg_buy_hold_return_pct": float(rollup["avg_buy_hold_return_pct"]),
+        "avg_risk_parity_return_pct": float(rollup["avg_risk_parity_return_pct"]),
+        "avg_momentum_return_pct": float(rollup["avg_momentum_return_pct"]),
+        "buy_hold_compounded_return_pct": float(rollup["buy_hold_compounded_return_pct"]),
+        "risk_parity_compounded_return_pct": float(rollup["risk_parity_compounded_return_pct"]),
+        "momentum_compounded_return_pct": float(rollup["momentum_compounded_return_pct"]),
+        "avg_excess_return_vs_risk_parity_pct": float(avg_excess_vs_risk_parity),
+        "avg_excess_return_vs_momentum_pct": float(avg_excess_vs_momentum),
+        "compounded_excess_return_vs_risk_parity_pct": float(compounded_excess_vs_risk_parity),
+        "compounded_excess_return_vs_momentum_pct": float(compounded_excess_vs_momentum),
+        "best_baseline_name": str(rollup["best_baseline_name"]),
+        "best_baseline_return_pct": float(rollup["best_baseline_return_pct"]),
         "history_fold_count": summary.history_fold_count,
         "replay_fold_count": summary.replay_fold_count,
         "fallback_fold_count": summary.fallback_fold_count,
@@ -658,43 +712,42 @@ def _write_summary_json(path: Path, summary: WalkForwardSummary, rows: list[Walk
 
 
 def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: WalkForwardSummary, rows: list[WalkForwardFoldResult]) -> None:
+    initial_equity = float(config.risk.initial_equity)
+    strategy_returns = [float(row.total_return_pct) for row in rows]
+    rollup = _build_baseline_rollup(rows)
+    compounded_return_pct = _compound_return_pct(strategy_returns)
+    compounded_buy_hold = float(rollup["buy_hold_compounded_return_pct"])
+    compounded_risk_parity = float(rollup["risk_parity_compounded_return_pct"])
+    compounded_momentum = float(rollup["momentum_compounded_return_pct"])
+    compounded_excess_vs_risk_parity = compounded_return_pct - compounded_risk_parity
+    compounded_excess_vs_momentum = compounded_return_pct - compounded_momentum
+
     if rows:
         start_txt = rows[0].test_start
         end_txt = rows[-1].test_end
-        avg_sharpe = float(sum(row.sharpe for row in rows) / len(rows))
-        avg_win_rate = float(sum(row.win_rate_pct for row in rows) / len(rows))
-        avg_buy_hold = float(sum(row.buy_hold_return_pct for row in rows) / len(rows))
-        avg_risk_parity = float(sum(row.risk_parity_return_pct for row in rows) / len(rows))
-        avg_momentum = float(sum(row.momentum_return_pct for row in rows) / len(rows))
-        avg_excess_vs_risk_parity = float(sum(row.excess_return_vs_risk_parity_pct for row in rows) / len(rows))
-        avg_excess_vs_momentum = float(sum(row.excess_return_vs_momentum_pct for row in rows) / len(rows))
+        avg_sharpe = _avg([float(row.sharpe) for row in rows])
+        avg_win_rate = _avg([float(row.win_rate_pct) for row in rows])
+        avg_excess_vs_risk_parity = _avg([float(row.excess_return_vs_risk_parity_pct) for row in rows])
+        avg_excess_vs_momentum = _avg([float(row.excess_return_vs_momentum_pct) for row in rows])
         trade_count = int(sum(row.trade_count for row in rows))
         signal_count = int(sum(row.signal_count for row in rows))
-        final_equity = float(config.risk.initial_equity) * (1.0 + float(summary.avg_return_pct) / 100.0)
-        buy_hold_final = float(config.risk.initial_equity) * (1.0 + float(avg_buy_hold) / 100.0)
-        risk_parity_final = float(config.risk.initial_equity) * (1.0 + float(avg_risk_parity) / 100.0)
-        momentum_final = float(config.risk.initial_equity) * (1.0 + float(avg_momentum) / 100.0)
+        final_equity = _final_equity_after_returns(initial_equity, strategy_returns)
+        buy_hold_final = _final_equity_after_returns(initial_equity, [float(row.buy_hold_return_pct) for row in rows])
+        risk_parity_final = _final_equity_after_returns(initial_equity, [float(row.risk_parity_return_pct) for row in rows])
+        momentum_final = _final_equity_after_returns(initial_equity, [float(row.momentum_return_pct) for row in rows])
     else:
         start_txt = ""
         end_txt = ""
         avg_sharpe = 0.0
         avg_win_rate = 0.0
-        avg_buy_hold = 0.0
-        avg_risk_parity = 0.0
-        avg_momentum = 0.0
         avg_excess_vs_risk_parity = 0.0
         avg_excess_vs_momentum = 0.0
         trade_count = 0
         signal_count = 0
-        final_equity = float(config.risk.initial_equity)
-        buy_hold_final = float(config.risk.initial_equity)
-        risk_parity_final = float(config.risk.initial_equity)
-        momentum_final = float(config.risk.initial_equity)
-
-    best_baseline_name, best_baseline_return_pct = max(
-        (('buy_hold', avg_buy_hold), ('risk_parity', avg_risk_parity), ('momentum', avg_momentum)),
-        key=lambda item: item[1],
-    )
+        final_equity = initial_equity
+        buy_hold_final = initial_equity
+        risk_parity_final = initial_equity
+        momentum_final = initial_equity
 
     payload = {
         "run_id": summary.run_id,
@@ -703,9 +756,9 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
         "end": end_txt,
         "symbols": list(config.symbols),
         "timeframe": config.timeframe,
-        "initial_equity": float(config.risk.initial_equity),
+        "initial_equity": initial_equity,
         "final_equity": float(final_equity),
-        "total_return_pct": float(summary.avg_return_pct),
+        "total_return_pct": float(compounded_return_pct),
         "max_drawdown_pct": float(summary.avg_max_drawdown_pct),
         "sharpe": float(avg_sharpe),
         "trade_count": trade_count,
@@ -718,16 +771,16 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
         "strategy_config_path": str(config.strategy_config_path or ""),
         "strategy_summary": _strategy_summary(config),
         "buy_hold_final_equity": float(buy_hold_final),
-        "buy_hold_return_pct": float(avg_buy_hold),
+        "buy_hold_return_pct": float(compounded_buy_hold),
         "risk_parity_final_equity": float(risk_parity_final),
-        "risk_parity_return_pct": float(avg_risk_parity),
+        "risk_parity_return_pct": float(compounded_risk_parity),
         "momentum_final_equity": float(momentum_final),
-        "momentum_return_pct": float(avg_momentum),
-        "excess_return_pct": float(summary.avg_excess_return_pct),
-        "excess_return_vs_risk_parity_pct": float(avg_excess_vs_risk_parity),
-        "excess_return_vs_momentum_pct": float(avg_excess_vs_momentum),
-        "best_baseline_name": str(best_baseline_name),
-        "best_baseline_return_pct": float(best_baseline_return_pct),
+        "momentum_return_pct": float(compounded_momentum),
+        "excess_return_pct": float(compounded_return_pct - compounded_buy_hold),
+        "excess_return_vs_risk_parity_pct": float(compounded_excess_vs_risk_parity),
+        "excess_return_vs_momentum_pct": float(compounded_excess_vs_momentum),
+        "best_baseline_name": str(rollup["best_baseline_name"]),
+        "best_baseline_return_pct": float(rollup["best_baseline_return_pct"]),
         "symbol_contributions": [],
         "walk_forward_summary": {
             "fold_count": int(summary.fold_count),
@@ -737,13 +790,19 @@ def _write_summary_metrics_json(path: Path, config: BacktestConfig, summary: Wal
             "avg_return_pct": float(summary.avg_return_pct),
             "avg_max_drawdown_pct": float(summary.avg_max_drawdown_pct),
             "avg_excess_return_pct": float(summary.avg_excess_return_pct),
-            "avg_buy_hold_return_pct": float(avg_buy_hold),
-            "avg_risk_parity_return_pct": float(avg_risk_parity),
-            "avg_momentum_return_pct": float(avg_momentum),
+            "compounded_return_pct": float(compounded_return_pct),
+            "avg_buy_hold_return_pct": float(rollup["avg_buy_hold_return_pct"]),
+            "avg_risk_parity_return_pct": float(rollup["avg_risk_parity_return_pct"]),
+            "avg_momentum_return_pct": float(rollup["avg_momentum_return_pct"]),
+            "buy_hold_compounded_return_pct": float(compounded_buy_hold),
+            "risk_parity_compounded_return_pct": float(compounded_risk_parity),
+            "momentum_compounded_return_pct": float(compounded_momentum),
             "avg_excess_return_vs_risk_parity_pct": float(avg_excess_vs_risk_parity),
             "avg_excess_return_vs_momentum_pct": float(avg_excess_vs_momentum),
-            "best_baseline_name": str(best_baseline_name),
-            "best_baseline_return_pct": float(best_baseline_return_pct),
+            "compounded_excess_return_vs_risk_parity_pct": float(compounded_excess_vs_risk_parity),
+            "compounded_excess_return_vs_momentum_pct": float(compounded_excess_vs_momentum),
+            "best_baseline_name": str(rollup["best_baseline_name"]),
+            "best_baseline_return_pct": float(rollup["best_baseline_return_pct"]),
             "positive_fold_rate_pct": float(summary.positive_fold_rate_pct),
             "folds": [
                 {

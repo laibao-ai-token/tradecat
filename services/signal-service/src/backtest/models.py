@@ -269,3 +269,4 @@ class Metrics:
     strategy_label: str = ""
     strategy_config_path: str = ""
     strategy_summary: str = ""
+    strategy_context: dict[str, object] = field(default_factory=dict)
