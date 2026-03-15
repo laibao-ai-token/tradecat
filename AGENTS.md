@@ -70,9 +70,11 @@ cd services/signal-service && ./scripts/start.sh start
 
 # markets-service（多市场采集）
 cd services-preview/markets-service && ./scripts/start.sh start
+cd services-preview/markets-service && ./scripts/start.sh start-news
 
 # tui-service（终端信号看板，默认自动拉起 data-service + signal-service）
 cd services-preview/tui-service && ./scripts/start.sh run
+cd services-preview/tui-service && ./scripts/start.sh run-news 15
 # 或在仓库根目录直接启动：
 ./scripts/start.sh run
 # 默认退出 TUI 后 1 小时自动停止由 TUI 启动的 data/signal 服务。
@@ -82,7 +84,29 @@ TUI_AUTO_START_DATA=0 TUI_AUTO_START_SIGNAL=0 ./scripts/start.sh run
 TUI_DATA_STOP_DELAY_SECONDS=0 TUI_SIGNAL_STOP_DELAY_SECONDS=0 ./scripts/start.sh run
 ```
 
-### 2.3 开发/修改流程
+### 2.3 双 TUI 工作台
+
+```bash
+# 需安装 tmux，并确保 openclaw CLI 可用
+./scripts/launch_trade_workbench.sh
+
+# 只打印双终端降级命令，不创建 tmux 会话
+./scripts/launch_trade_workbench.sh --print-manual
+
+# 重新连接默认会话
+tmux attach -t tradecat-workbench
+```
+
+最小 runbook：
+- 左 pane：原生 `TradeCat TUI`
+- 右 pane：原生 `openclaw tui`
+- 切 pane：`Ctrl+b` 后按方向键，或按 `o`
+- 暂离工作台：`Ctrl+b d`
+- 若缺少 `tmux`，launcher 会直接输出“两个终端分别执行”的降级命令
+- 若 `openclaw` 不在 PATH，可设置 `TRADE_WORKBENCH_OPENCLAW_CMD='...'`
+- 若右侧首次运行因本机未配置 openclaw 而退出，先执行 `openclaw configure`
+
+### 2.4 开发/修改流程
 
 ```bash
 # 1. 进入对应服务并激活虚拟环境
@@ -115,22 +139,31 @@ cd /path/to/tradecat
 | `./scripts/init.sh --all` | 初始化全部服务（含 preview） |
 | `./scripts/start.sh start\|stop\|status\|restart` | 核心服务管理 |
 | `./scripts/start.sh daemon\|daemon-stop` | 守护进程模式（自动重启崩溃服务） |
+| `./scripts/launch_trade_workbench.sh` | 通过 tmux 并排启动 TradeCat TUI + openclaw tui 工作台 |
+| `./scripts/install_openclaw_tradecat_skill.sh` | 安装当前仓库对应的 openclaw workspace skill（`tradecat-bridge`） |
 | `./scripts/check_env.sh` | 环境检查（Python/依赖/配置/网络/数据库） |
 | `./scripts/verify.sh` | 代码验证（ruff + py_compile + i18n） |
+| `python scripts/tradecat_get_quotes.py NVDA` | 只读行情 JSON 命令（支持单/多 symbol，必要时显式传 `--market`） |
+| `python scripts/tradecat_get_signals.py --symbol BTCUSDT --timeframe 1m --limit 5` | 只读最近信号 JSON 命令（默认读 `signal_history.db`） |
+| `python scripts/tradecat_get_news.py --symbol BTCUSDT --limit 5 --since-minutes 120` | 只读最近新闻 JSON 命令（默认读 `alternative.news_articles`） |
+| `python3 scripts/tradecat_get_backtest_summary.py --run-id <run_id>` | 只读已有回测摘要 JSON 命令（不触发重新回测） |
 | `python scripts/download_hf_data.py` | 从 HuggingFace 下载历史数据并导入 |
 | `python scripts/check_i18n_keys.py` | 检查 i18n 翻译键对齐 |
 | `python scripts/sync_market_data_to_rds.py` | 增量同步 SQLite `market_data.db` 到 PostgreSQL（RDS/Aurora） |
-| `cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml` | 回测 M1 最小闭环（输出到 artifacts/backtest/latest；每次运行会创建 `artifacts/backtest/YYYYMMDD-HHMMSS/` 时间戳目录） |
+| `cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml` | 回测 M1 最小闭环（输出到 artifacts/backtest/latest；每次运行会创建 `artifacts/backtest/YYYYMMDD-HHMMSS/` 时间戳目录；单次 run 会额外产出 `stability_report.json/.md`） |
 | `./scripts/backtest.sh` | 回测 M1 最小闭环（脚本转发） |
 | `./scripts/backtest.sh --run-id tune-b-strict --long-threshold 90 --short-threshold 90 --close-threshold 15` | 回测参数调优示例（阈值覆盖） |
 | `./scripts/backtest.sh --mode offline_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 覆盖不足时使用离线信号回放（基于 K 线生成信号） |
 | `./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 使用 SQLite 129 规则离线重放（不依赖 signal_history；当 timeframe=1m 时默认规则周期自动按 1m 对齐） |
 | `./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 输出历史信号 vs 129规则离线重放对比报告（comparison.json/.md，含 missing 规则未命中原因诊断；会输出 `rule_timeframe_profiles` 并标记 `timeframe_no_data`，默认不受 signal days/count 门槛限制） |
+| `./scripts/backtest.sh --mode compare_history_rule --alignment-min-score 70 --alignment-max-risk-level medium --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 对齐 gate 示例：若 `alignment_score` 低于阈值或 `alignment_risk_level` 高于阈值则返回退出码 2，适合本地检查 / CI |
 | `./scripts/backtest.sh --check-only --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | 回测前覆盖率检查（仅检查不执行） |
 | `./scripts/backtest.sh --check-only --min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95` | 覆盖率门槛防呆（不足时失败，可加 `--force` 继续） |
 | `./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2` | 回测资金口径覆盖示例（本金/杠杆/仓位） |
 | `./scripts/backtest.sh --config src/backtest/strategies/default.crypto.btc_eth.safe.yaml` | BTC/ETH 保守模板（阈值 200/200，低频） |
-| `./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | Walk-Forward（滚动窗口）回测摘要输出 |
+| `./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"` | Walk-Forward（滚动窗口）回测摘要输出；默认会在训练窗对 `base/aggressive/conservative` 候选做轻量选参，`walk_forward_summary.json/metrics.json` 会记录每折 `selected_params` |
+| `./scripts/backtest_real_window_validation.sh --dry-run` | 真实窗口校准闭环脚本（`check-only / compare gate / history_signal / walk-forward`）；`--dry-run` 可在 TimescaleDB 未恢复时先预览命令 |
+| `python3 scripts/backtest_issue_fill.py --run-prefix <run_prefix> --print` | 从真实窗口校准产物中提取 `#006-01/#006-02/#006-03/#006-04` 的 issue 回填草稿；加 `--apply-issues` 可直接写回 issue 文件 |
 | `./scripts/backtest.sh --walk-forward --walk-forward-auto-fallback --min-signal-days 7 --min-signal-count 200` | Walk-Forward 分折自动回放兜底（历史信号不足时切 offline_replay） |
 | `./scripts/export_timescaledb.sh` | 导出 TimescaleDB 数据（默认端口 5433） |
 | `./scripts/export_timescaledb_main4.sh` | 导出 Main4 精简数据集（默认端口 5433） |
@@ -328,11 +361,19 @@ tradecat/
 │   ├── install.sh                  # 一键安装
 │   ├── start.sh                    # 统一启动脚本
 │   ├── verify.sh                   # 验证脚本（ruff + py_compile + i18n）
+│   ├── launch_trade_workbench.sh   # 双 TUI 工作台启动脚本
+│   ├── install_openclaw_tradecat_skill.sh # 安装 openclaw workspace skill
 │   ├── check_env.sh                # 环境检查
+│   ├── tradecat_get_quotes.py      # 只读行情 JSON 命令
+│   ├── tradecat_get_signals.py     # 只读信号 JSON 命令
+│   ├── tradecat_get_news.py        # 只读新闻 JSON 命令
+│   ├── tradecat_get_backtest_summary.py # 只读回测摘要 JSON 命令
 │   ├── check_i18n_keys.py          # i18n 翻译键对齐检查
 │   ├── download_hf_data.py         # HuggingFace 数据下载
 │   ├── signal_correlation_analysis.py # 信号相关性分析（cooldown + PG）
 │   ├── sync_market_data_to_rds.py  # SQLite -> PostgreSQL 增量同步
+│   ├── backtest_real_window_validation.sh # 真实窗口回测校准闭环脚本
+│   ├── backtest_issue_fill.py    # 从回测产物提取 issue 回填草稿
 │   ├── export_timescaledb.sh       # 数据导出（默认端口 5433）
 │   ├── export_timescaledb_main4.sh # 导出 Main4 精简数据集（默认端口 5433）
 │   └── timescaledb_compression.sh  # 压缩管理（默认端口 5433）
@@ -693,6 +734,15 @@ CI（`.github/workflows/ci.yml`）仅执行：
 | `ORDER_BOOK_FULL_INTERVAL` | markets-service | L2 full 采样间隔（秒，默认 5） |
 | `ORDER_BOOK_DEPTH` | markets-service | 每侧档位数（默认 1000） |
 | `ORDER_BOOK_RETENTION_DAYS` | markets-service | 数据保留天数（默认 30） |
+| `NEWS_RSS_FEEDS` | markets-service / tui-service | 新闻源列表（支持 `direct://...` 与 RSS/Atom URL，逗号或换行分隔） |
+| `NEWS_RSS_POLL_INTERVAL_SECONDS` | markets-service | 新闻采集轮询间隔（秒，默认 2） |
+| `NEWS_RSS_LIMIT` | markets-service | 单轮最多入库文章数（默认 100） |
+| `NEWS_RSS_WINDOW_HOURS` | markets-service | 新闻时间窗口（小时，默认 72） |
+| `NEWS_RSS_TIMEOUT_SECONDS` | markets-service | RSS 抓取超时（秒，默认 20） |
+| `NEWS_RETENTION_HOURS` | markets-service | 原始新闻保留小时数（默认 24；0=不自动清理） |
+| `NEWS_RETENTION_CLEANUP_INTERVAL_SECONDS` | markets-service | 执行过期新闻清理的最小间隔（秒，默认 600） |
+| `NEWS_RSS_FAILURE_THRESHOLD` | markets-service | 单个 RSS 源连续失败多少次后进入冷却（默认 2） |
+| `NEWS_RSS_FAILURE_COOLDOWN_SECONDS` | markets-service | RSS 故障源冷却时长（秒，默认 300） |
 
 ---
 
@@ -708,11 +758,24 @@ CI（`.github/workflows/ci.yml`）仅执行：
 # 单服务管理
 cd services/<name> && make start|stop|status
 
+# 双 TUI 工作台（tmux）
+./scripts/launch_trade_workbench.sh
+# 或仅打印手工降级命令
+./scripts/launch_trade_workbench.sh --print-manual
+
 # 代码检查
 cd services/<name> && make lint format test
 
 # 验证
 ./scripts/verify.sh
+
+# Trade Agent 只读桥接命令
+./scripts/install_openclaw_tradecat_skill.sh
+python scripts/tradecat_get_quotes.py NVDA
+python scripts/tradecat_get_quotes.py --market crypto_spot BTC_USDT ETH_USDT
+python scripts/tradecat_get_signals.py --symbol BTCUSDT --timeframe 1m --limit 5
+python scripts/tradecat_get_news.py --symbol BTCUSDT --limit 5 --since-minutes 120
+python3 scripts/tradecat_get_backtest_summary.py --run-id <run_id>
 
 # 回测（M1 最小闭环）
 ./scripts/backtest.sh
@@ -726,6 +789,8 @@ cd services/signal-service && python -m src.backtest --config src/backtest/strat
 ./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
 # 历史信号 vs 129规则重放对比（生成 comparison.json/.md + missing规则未命中原因诊断；默认不受 signal days/count 门槛限制）
 ./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# 对齐 gate（适合本地检查 / CI；未达标返回退出码 2）
+./scripts/backtest.sh --mode compare_history_rule --alignment-min-score 70 --alignment-max-risk-level medium --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
 # 覆盖率门槛（默认可不写；需要强行跑可加 --force）
 ./scripts/backtest.sh --check-only --min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95
 # 资金口径覆盖（本金/杠杆/仓位）
@@ -734,6 +799,14 @@ cd services/signal-service && python -m src.backtest --config src/backtest/strat
 ./scripts/backtest.sh --config src/backtest/strategies/default.crypto.btc_eth.safe.yaml
 # Walk-Forward（滚动窗口）
 ./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"
+# 产物会在 walk_forward_summary.json / metrics.json 记录每折 selected_params（默认先做 train window 轻量选参）
+# 真实窗口校准闭环（PG 恢复后执行；未恢复可先 --dry-run）
+./scripts/backtest_real_window_validation.sh --dry-run
+# issue 回填草稿提取（校准完成后使用；若要直接写回 issue，可加 --apply-issues）
+python3 scripts/backtest_issue_fill.py --run-prefix <run_prefix> --print
+# 分层滑点：strategy YAML 可设置 execution.slippage_model=layered，并用 slippage_max_bps / slippage_*_weight / slippage_volume_window 控制动态滑点
+# 执行约束：strategy YAML 可设置 max_bar_participation_rate / min_order_notional / impact_bps_per_bar_participation，产物会输出 partial_fill / fill_ratio / impact_cost
+# 多基准对比：metrics/report/walk_forward_summary 会额外输出 buy_hold / risk_parity / momentum 三类基准收益，以及 excess_return_vs_* / best_baseline_name
 
 # 数据库（根据实际端口选择 5433 或 5434）
 PGPASSWORD=postgres psql -h localhost -p 5434 -U postgres -d market_data

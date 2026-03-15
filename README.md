@@ -181,9 +181,11 @@ vim config/.env
 ```
 
 > 说明：顶层 `./scripts/start.sh` 管理 `data-service`、`signal-service`、`trading-service`。  
-> 预览版服务保留：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）、`cd services-preview/tui-service && ./scripts/start.sh run`（终端 TUI 看板，默认会自动尝试拉起 data-service 与 signal-service，并在退出后 1 小时自动停止由 TUI 启动的 data/signal 服务；可用 `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS` 调整）。也可在根目录直接执行 `./scripts/start.sh run`。
+> 预览版服务保留：`cd services-preview/markets-service && ./scripts/start.sh start`（多市场采集）、`cd services-preview/markets-service && ./scripts/start.sh start-news`（7x24 新闻采集）、`cd services-preview/tui-service && ./scripts/start.sh run`（终端 TUI 看板，默认会自动尝试拉起 data-service 与 signal-service，并在退出后 1 小时自动停止由 TUI 启动的 data/signal 服务；可用 `TUI_AUTO_START_DATA=0` / `TUI_DATA_STOP_DELAY_SECONDS` / `TUI_AUTO_START_SIGNAL=0` / `TUI_SIGNAL_STOP_DELAY_SECONDS` 调整）。也可在根目录直接执行 `./scripts/start.sh run`；若要边看边跑新闻采集，可用 `cd services-preview/tui-service && ./scripts/start.sh run-news 2`。新闻链路默认已包含来自 worldmonitor 的一组精选交易/宏观补充 RSS 子集，并已剔除近期稳定返回 `403/超时/XML 异常` 的坏源；如只想保留原始高频主链路，可设置 `NEWS_RSS_PRESET=core`（TUI 可用 `TUI_NEWS_RSS_PRESET=core` 单独覆盖）。`markets-service` 默认链路现已下沉 TUI 里的 `direct://` 高频快讯源，并继承了 worldmonitor 风格的按源失败冷却与健康日志，坏源不会每轮都拖慢抓取。原始新闻默认只保留最近 `24h`（可通过 `NEWS_RETENTION_HOURS` / `NEWS_RETENTION_CLEANUP_INTERVAL_SECONDS` 调整），避免 `alternative.news_articles` 无限膨胀。TUI 资讯页现在默认优先读取统一库 `alternative.news_articles`，只有数据库不可用或暂时为空时才回退到本地直连/RSS 拉取。
+> 双 TUI 工作台：`./scripts/launch_trade_workbench.sh`（通过 `tmux` 左右并排启动原生 `TradeCat TUI` 与原生 `openclaw tui`；若缺少 `tmux` 会直接输出双终端降级命令）。
 > 回测（M1 最小闭环）：`cd services/signal-service && python -m src.backtest --config src/backtest/strategies/default.crypto.yaml`（产物输出到 `artifacts/backtest/latest`）。
 > 产物目录结构：每次回测会创建一个时间戳目录 `artifacts/backtest/YYYYMMDD-HHMMSS/`；单模式结果直接落在该目录，`compare_history_rule` 会在该目录下生成 `<base>-history` / `<base>-rules` / `<base>-compare` 三个子目录，`--walk-forward` 会在该目录写汇总文件并生成 `*-wfXX` 折子目录。
+> `input_quality.json` 现已显式区分 `signal_days`（历史信号覆盖天数）与 `aggregated_signal_bucket_count`（执行聚合 bucket 数）；顶层 `quality_status` 会合并 precheck gate 结果，而 `score_status` 保留原始质量打分状态。
 > 也可使用脚本：`./scripts/backtest.sh`（转发到 signal-service）。
 > 参数调优示例：`./scripts/backtest.sh --run-id tune-b-strict --long-threshold 90 --short-threshold 90 --close-threshold 15 --fee-bps 4 --slippage-bps 3`。
 > 默认阈值已调整为更保守：`long_open_threshold=130`、`short_open_threshold=130`、`close_threshold=20`。
@@ -193,12 +195,19 @@ vim config/.env
 > 129规则离线重放（SQLite 全规则）：`./scripts/backtest.sh --mode offline_rule_replay --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
 > 若回测 `timeframe=1m`，默认规则周期（1h/4h/1d）会自动按 1m 对齐，便于和历史信号口径比较。
 > 历史信号 vs 129规则对比：`./scripts/backtest.sh --mode compare_history_rule --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`（输出 `comparison.json/.md`，默认不受 signal days/count 门槛限制）。
+> 对齐 gate 示例：`./scripts/backtest.sh --mode compare_history_rule --alignment-min-score 70 --alignment-max-risk-level medium --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`（若对齐分过低或风险等级过高则返回退出码 `2`，适合本地检查/CI）。
 > 规则重放会写 `rule_replay_diagnostics.json`（含 `rule_timeframe_profiles`），对比报告会附带 missing 规则的未命中原因诊断（例如 `timeframe_no_data`）。
 > 预检查门槛（默认）：`--min-signal-days 7 --min-signal-count 200 --min-candle-coverage-pct 95`，必要时可用 `--force` 继续。
 > 资金口径可覆盖：`--initial-equity`、`--leverage`、`--position-size-pct`（例如 `./scripts/backtest.sh --symbols BTCUSDT,ETHUSDT --initial-equity 3000 --leverage 2 --position-size-pct 0.2`）。
-> 回测指标新增基准对比：`buy_hold_return_pct`（等权买入持有）与 `excess_return_pct`（策略超额收益）。
+> 回测指标现已包含多基准对比：`buy_hold_return_pct`（等权买入持有）、`risk_parity_return_pct`（逆波动权重）与 `momentum_return_pct`（简单时序动量），并输出 `excess_return_vs_risk_parity_pct` / `excess_return_vs_momentum_pct` / `best_baseline_name`。
 > 可选 Walk-Forward：`./scripts/backtest.sh --walk-forward --wf-train-days 7 --wf-test-days 3 --wf-step-days 3 --walk-forward-max-folds 6 --symbols BTCUSDT,ETHUSDT --start "2026-01-14 00:00:00" --end "2026-02-13 00:00:00"`。
+> 真实窗口校准闭环：`./scripts/backtest_real_window_validation.sh --dry-run` 可先预览命令；TimescaleDB 恢复后直接执行 `./scripts/backtest_real_window_validation.sh`，会串行跑 `check-only / compare gate / history_signal / walk-forward` 四步校准。
+> issue 回填草稿提取：校准完成后运行 `python3 scripts/backtest_issue_fill.py --run-prefix <你的 run_prefix> --print`，会按 `#006-01/#006-02/#006-03/#006-04` 模板生成可粘贴摘要；若要直接写回 issue 文件，可改为 `--apply-issues`。
+> `walk_forward_summary.json` / `metrics.json` 现会记录每个 fold 的 `selected_params`，默认会在训练窗对 `base/aggressive/conservative` 候选做轻量选参，便于追踪参数与收益关系。
+> 单次回测产物现还会输出 `stability_report.json/.md`，对最近可比 run 的收益/回撤/胜率漂移做摘要，帮助识别参数过拟合塌陷。
 > Walk-Forward 默认开启“历史信号不足自动回放” (`--walk-forward-auto-fallback`，可用 `--no-walk-forward-auto-fallback` 关闭)。
+> 可选分层滑点：在策略 YAML 的 `execution` 中设置 `slippage_model: layered`，并用 `slippage_max_bps / slippage_volatility_weight / slippage_volume_weight / slippage_session_weight / slippage_volume_window` 控制波动、成交量、时段三层惩罚；相关滑点侵蚀会写入 `trades.csv` 与 `metrics.json` 的 `slippage_cost`。
+> 可选执行约束：在 `execution` 中设置 `max_bar_participation_rate / min_order_notional / impact_bps_per_bar_participation`，启用后回测会按 fill bar 容量裁剪成交，并在 `trades.csv` 输出 `partial_fill / fill_ratio / constraint_flags`，在 `metrics.json` 输出 `impact_cost / partial_fill_trade_count`。
 
 ### ⚙️ 配置（必须）
 
@@ -218,6 +227,59 @@ vim config/.env
   - 展示过滤：`BINANCE_API_DISABLED`、`DISABLE_SINGLE_TOKEN_QUERY`、`SNAPSHOT_HIDDEN_FIELDS`、`BLOCKED_SYMBOLS`  
   - AI/交易：`AI_INDICATOR_TABLES`、`AI_INDICATOR_TABLES_DISABLED`、`LLM_BACKEND`、`LLM_API_BASE_URL`、`EXTERNAL_API_KEY`、`LLM_MODEL`、`LLM_MAX_TOKENS`、`AI_LARGE_PAYLOAD_CHAR_LIMIT`、`AI_FORCE_GEMINI_ON_LARGE_PAYLOAD`、`AI_DEFAULT_PROMPT`、`AI_RECORD_ENABLED`、`AI_RECORD_PAYLOAD`、`AI_RECORD_PROMPT`、`AI_RECORD_MESSAGES`、`AI_RECORD_ANALYSIS`、`AI_RECORD_MAX_DIRS`、`BINANCE_API_KEY`、`BINANCE_API_SECRET`
   - 国际化：`DEFAULT_LOCALE`（默认 en）、`SUPPORTED_LOCALES`（zh-CN,en）、`FALLBACK_LOCALE`
+
+### 🪟 双 TUI 工作台（TradeCat + openclaw）
+
+```bash
+# 需要 tmux，并确保本机可运行 openclaw tui
+./scripts/launch_trade_workbench.sh
+
+# 仅打印双终端降级命令（不启动 tmux）
+./scripts/launch_trade_workbench.sh --print-manual
+```
+
+最小 runbook：
+
+- 左 pane 启动原生 `TradeCat TUI`；右 pane 启动原生 `openclaw tui`
+- 切换 pane：`Ctrl+b` 后按方向键，或按 `o`
+- 临时离开工作台：`Ctrl+b d`
+- 重新进入：`tmux attach -t tradecat-workbench`
+- 结束工作台：分别退出两个 pane 内的程序后执行 `exit`，或在 tmux 中执行 `Ctrl+b :kill-session -t tradecat-workbench`
+- 若缺少 `tmux`，launcher 会直接打印“左/右两个终端分别执行”的降级命令
+- 若 `openclaw` 不在 `PATH`，可设置 `TRADE_WORKBENCH_OPENCLAW_CMD='你的 openclaw 启动命令'`
+- 若右侧 `openclaw tui` 因首次使用缺少配置而退出，请先执行 `openclaw configure`
+
+### 🔌 Trade Agent 只读桥接命令
+
+联调 `openclaw` 时，建议先看 runbook：`docs/learn/openclaw_tradecat_skill_runbook.md`
+
+```bash
+# 安装 TradeCat -> openclaw workspace skill
+./scripts/install_openclaw_tradecat_skill.sh
+
+# 行情
+python scripts/tradecat_get_quotes.py NVDA
+python scripts/tradecat_get_quotes.py --market crypto_spot BTC_USDT ETH_USDT
+
+# 最近信号
+python scripts/tradecat_get_signals.py --symbol BTCUSDT --timeframe 1m --limit 5
+
+# 最近新闻
+python scripts/tradecat_get_news.py --symbol BTCUSDT --limit 5 --since-minutes 120
+python scripts/tradecat_get_news.py --query "fed" --limit 10 --since-minutes 240
+
+# 读取已有回测摘要（不会重新跑回测）
+python3 scripts/tradecat_get_backtest_summary.py --run-id <run_id>
+```
+
+说明：
+
+- `./scripts/install_openclaw_tradecat_skill.sh` 会把当前仓库渲染成 `~/.openclaw/workspace/skills/tradecat-bridge/SKILL.md`
+- 四个命令都输出稳定 JSON，顶层固定包含 `ok`、`tool`、`ts`、`source`、`request`、`data`、`error`
+- `tradecat_get_quotes` 支持单/多 symbol；A 股/基金纯数字代码若存在歧义，请显式传 `--market`
+- `tradecat_get_signals` 只读 `signal_history.db`，无命中时返回 `ok=true` + `data=[]`
+- `tradecat_get_news` 只读 `alternative.news_articles`，支持 `symbol` / `query` / `limit` / `since_minutes`
+- `tradecat_get_backtest_summary` 仅读取 `artifacts/backtest/` 现有产物，支持附加 `--strategy` / `--symbols` 过滤
 
 ### 📦 下载历史数据（可选）
 
@@ -863,6 +925,11 @@ tradecat/
 │   ├── install.sh                  # 一键安装
 │   ├── init.sh                     # 初始化脚本
 │   ├── start.sh                    # 统一启动/守护脚本
+│   ├── launch_trade_workbench.sh   # 双 TUI 工作台启动
+│   ├── tradecat_get_quotes.py      # 只读行情 JSON 命令
+│   ├── tradecat_get_signals.py     # 只读信号 JSON 命令
+│   ├── tradecat_get_news.py        # 只读新闻 JSON 命令
+│   ├── tradecat_get_backtest_summary.py # 只读回测摘要 JSON 命令
 │   ├── verify.sh                   # 验证脚本
 │   ├── sync_market_data_to_rds.py  # SQLite -> PostgreSQL 增量同步
 │   ├── export_timescaledb.sh       # 数据导出

@@ -122,7 +122,7 @@ chmod 600 config/.env
 ```bash
 # 核心服务
 ./scripts/start.sh start|stop|status
-
+./scripts/launch_trade_workbench.sh
 # 单服务（稳定版/预览版都类似）
 cd services/<name> && make run|start|stop|status
 cd services-preview/<name> && make run|start|stop|status
