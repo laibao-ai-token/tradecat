@@ -139,7 +139,6 @@ WORLDMONITOR_TRADING_RSS_FEEDS: tuple[str, ...] = (
     "https://www.sec.gov/news/pressreleases.rss",
     "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
     "https://oilprice.com/rss/main",
-    "https://cointelegraph.com/rss",
 )
 
 

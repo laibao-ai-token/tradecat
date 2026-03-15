@@ -70,6 +70,8 @@ class TestNewsDefaults(unittest.TestCase):
         self.assertEqual(news_source_group("direct://jin10"), CORE_GROUP)
         self.assertEqual(news_source_tier("direct://jin10"), PRIMARY_TIER)
         self.assertEqual(news_source_group("https://www.federalreserve.gov/feeds/press_all.xml"), WORLDMONITOR_TRADING_GROUP)
+        self.assertEqual(news_source_group("https://cointelegraph.com/rss"), CORE_GROUP)
+        self.assertEqual(news_source_tier("https://cointelegraph.com/rss"), PRIMARY_TIER)
         self.assertEqual(news_source_tier("https://www.federalreserve.gov/feeds/press_all.xml"), SUPPLEMENTAL_TIER)
 
     def test_source_filter_options_and_filtering(self) -> None:

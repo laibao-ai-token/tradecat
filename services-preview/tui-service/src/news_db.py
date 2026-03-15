@@ -4,9 +4,9 @@ import csv
 import io
 import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 from urllib.parse import urlparse, urlunparse
 
 
@@ -56,6 +56,7 @@ def _read_env_value(env_file: Path, key: str) -> str:
 
 
 DEFAULT_NEWS_DATABASE_URL = "postgresql://postgres:postgres@localhost:5434/market_data"
+DEFAULT_NEWS_DATABASE_SCHEMA = "alternative"
 
 
 def resolve_news_database_url(repo_root: Path, env: Mapping[str, str] | None = None) -> str:
@@ -71,6 +72,25 @@ def resolve_news_database_url(repo_root: Path, env: Mapping[str, str] | None = N
         if value:
             return value
     return DEFAULT_NEWS_DATABASE_URL
+
+
+def resolve_news_database_schema(repo_root: Path, env: Mapping[str, str] | None = None) -> str:
+    data = os.environ if env is None else env
+    value = str(data.get("ALTERNATIVE_DB_SCHEMA", "") or "").strip()
+    if value:
+        return value
+
+    env_file = repo_root / "config" / ".env"
+    value = _read_env_value(env_file, "ALTERNATIVE_DB_SCHEMA").strip()
+    if value:
+        return value
+    return DEFAULT_NEWS_DATABASE_SCHEMA
+
+
+def _quote_sql_identifier(value: str, *, default: str = DEFAULT_NEWS_DATABASE_SCHEMA) -> str:
+    identifier = str(value or "").strip() or default
+    escaped = identifier.replace(chr(34), chr(34) * 2)
+    return f'"{escaped}"'
 
 
 def _split_pipe(value: str) -> tuple[str, ...]:
@@ -128,9 +148,10 @@ def _is_connection_error(detail: str) -> bool:
     return any(key in blob for key in keys)
 
 
-def _build_copy_sql(limit: int, window_hours: int) -> str:
+def _build_copy_sql(limit: int, window_hours: int, *, schema: str = DEFAULT_NEWS_DATABASE_SCHEMA) -> str:
     safe_limit = max(1, int(limit))
     safe_window_hours = max(1, int(window_hours))
+    schema_sql = _quote_sql_identifier(schema)
     return f"""
 COPY (
     SELECT
@@ -143,7 +164,7 @@ COPY (
         COALESCE(array_to_string(symbols, '|'), '') AS symbols,
         COALESCE(array_to_string(categories, '|'), '') AS categories,
         COALESCE(language, 'en') AS language
-    FROM alternative.news_articles
+    FROM {schema_sql}.news_articles
     WHERE published_at >= NOW() - INTERVAL '{safe_window_hours} hours'
     ORDER BY published_at DESC
     LIMIT {safe_limit}
@@ -157,6 +178,7 @@ def fetch_recent_news_articles(
     limit: int = 300,
     window_hours: int = 72,
     timeout_s: float = 5.0,
+    schema: str = DEFAULT_NEWS_DATABASE_SCHEMA,
 ) -> list[StoredNewsArticle]:
     target = str(db_url or "").strip()
     if not target:
@@ -175,7 +197,7 @@ def fetch_recent_news_articles(
             "-v",
             "ON_ERROR_STOP=1",
             "-c",
-            _build_copy_sql(limit=limit, window_hours=window_hours),
+            _build_copy_sql(limit=limit, window_hours=window_hours, schema=schema),
         ]
 
         try:

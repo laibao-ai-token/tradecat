@@ -59,6 +59,8 @@ def test_source_tier_group_metadata_matches_curated_presets() -> None:
     assert news_source_group("https://www.federalreserve.gov/feeds/press_all.xml") == WORLDMONITOR_TRADING_GROUP
     assert news_source_tier("https://www.federalreserve.gov/feeds/press_all.xml") == SUPPLEMENTAL_TIER
     assert news_source_alias("https://content-static.cctvnews.cctv.com/snow-book/index.html") == "CCTV"
+    assert news_source_group("https://cointelegraph.com/rss") == CORE_GROUP
+    assert news_source_tier("https://cointelegraph.com/rss") == PRIMARY_TIER
     assert news_source_alias("https://baijiahao.baidu.com/s?id=1") == "BJH"
     assert news_source_alias("https://weibo.com/123/abc") == "WB"
     assert news_source_alias("https://news.cn/world/20260308/abc.htm") == "XH"

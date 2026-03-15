@@ -370,9 +370,24 @@ run_news() {
     return 1
   fi
 
+  local resolved_markets_db_url
+  resolved_markets_db_url="$(
+    tc_db_url_with_local_fallback "$(
+      tc_resolve_db_url \
+        "$REPO_ROOT" \
+        "postgresql://postgres:postgres@localhost:5434/market_data" \
+        "MARKETS_SERVICE_DATABASE_URL" \
+        "DATABASE_URL"
+    )"
+  )"
+  local resolved_markets_db_target
+  resolved_markets_db_target="$(tc_db_url_target "$resolved_markets_db_url")"
+
   mkdir -p "$news_log_dir"
-  echo "启动 7x24 新闻采集: sleep=${sleep_s}s"
+  echo "启动 7x24 新闻采集: sleep=${sleep_s}s db=${resolved_markets_db_target}"
   (
+    export MARKETS_SERVICE_DATABASE_URL="$resolved_markets_db_url"
+    export DATABASE_URL="$resolved_markets_db_url"
     cd "$REPO_ROOT/services-preview/markets-service"
     exec "$markets_py" -m src collect-news-poll --provider rss --sleep "$sleep_s" >> "$news_log_file" 2>&1 < /dev/null
   ) &

@@ -397,6 +397,10 @@ python -m src test --provider ccxt --symbol BTCUSDT
 
 # 期权定价
 python -m src pricing
+
+# 新闻（Direct + RSS/Atom）
+python -m src collect-news --provider rss --news-limit 50
+python -m src collect-news-poll --provider rss --sleep 2
 ```
 
 ### 分钟线调度（US/CN/HK）
@@ -415,8 +419,35 @@ python -m src equity-poll \
 
 # 或使用启动脚本（按 env 启动 US/CN/HK 三个进程）
 ./scripts/start.sh start-equity
+./scripts/start.sh start-news
 ./scripts/start.sh status
 ```
+
+### 新闻 7x24 采集
+
+`collect-news-poll` 会持续拉取高频直连快讯源 + RSS/Atom 补充源，并写入 `alternative.news_articles`。
+
+```bash
+# 使用默认新闻源（高频直连 + 精选 RSS + worldmonitor 交易/宏观补充子集）
+./scripts/start.sh start-news
+
+# 若只想保留原始高频主链路，可切回 core 预设
+NEWS_RSS_PRESET="core" \
+python -m src collect-news-poll --provider rss --sleep 2
+
+# 或覆盖为自定义源
+NEWS_RSS_FEEDS="direct://jin10,direct://sina/7x24,https://www.fxstreet.com/rss/news" \
+python -m src collect-news-poll --provider rss --sleep 2
+```
+
+说明：
+- 默认 `NEWS_RSS_PRESET=default` 现在就是“高频直连 + 精选 RSS + worldmonitor 交易/宏观补充子集”的混合模式，已经把 TUI 里的 `direct://*` 快讯源和 curated worldmonitor 补充源一起纳入 `markets-service` 主链路；默认预设已剔除近期稳定返回 `403/超时/XML 异常` 的 RSS，减少坏源拖慢轮询。
+- `core` 预设保留旧的主链路口径，只包含原始高频直连 + 精选 RSS。
+- `worldmonitor_trading` 是从 `repository/worldmonitor` 已验证源池中挑出的交易/宏观补充源集合。
+- provider 现在会记录按源健康状态：连续失败达到 `NEWS_RSS_FAILURE_THRESHOLD` 后进入 `NEWS_RSS_FAILURE_COOLDOWN_SECONDS` 秒冷却，坏源不会在每一轮都反复重试。
+- `collect-news-poll` 日志会额外输出 `collect-news health` 与 `collect-news unhealthy sample`，便于观察哪些源正在失败或冷却。
+- 原始新闻默认只保留最近 `24h`：`TimescaleNewsWriter` 会按 `NEWS_RETENTION_HOURS=24` 定期删除过期行，避免 `alternative.news_articles` 无限膨胀；清理节奏由 `NEWS_RETENTION_CLEANUP_INTERVAL_SECONDS` 控制。
+- `NEWS_RSS_FEEDS` 支持直接混配 `direct://jin10` 这类快讯源和普通 RSS URL。
 
 说明：
 - AllTick 需要配置 `ALLTICK_TOKEN`（见 `config/.env.example`）。

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import curses
-import concurrent.futures
 import hashlib
 import html
 import json
@@ -12,23 +12,35 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-import time
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Iterable
 
 from common.scheduler import wait_seconds
 
 from .db import SignalRow, fetch_recent, parse_ts, probe
-from .news_db import StoredNewsArticle, fetch_recent_news_articles, resolve_news_database_url
-from .news_health import NewsHealthSnapshot, build_live_news_health, load_news_collector_health, resolve_news_health_log_path
+from .etf_profiles import (
+    get_all_domain_keys,
+    get_domain_label,
+    get_etf_domain_profile,
+    load_dynamic_auto_driving_symbols,
+)
+from .etf_selector import select_etf_candidates
+from .micro import Candle, MicroConfig, MicroEngine, MicroSnapshot
+from .news_db import (
+    StoredNewsArticle,
+    fetch_recent_news_articles,
+    resolve_news_database_schema,
+    resolve_news_database_url,
+)
 from .news_defaults import (
     CORE_GROUP,
     PRIMARY_TIER,
@@ -42,9 +54,12 @@ from .news_defaults import (
     news_source_tier,
 )
 from .news_events import NewsEvent, cluster_news_items
-from .etf_profiles import get_etf_domain_profile, get_all_domain_keys, get_domain_label, load_dynamic_auto_driving_symbols
-from .etf_selector import select_etf_candidates
-from .micro import Candle, MicroConfig, MicroEngine, MicroSnapshot
+from .news_health import (
+    NewsHealthSnapshot,
+    build_live_news_health,
+    load_news_collector_health,
+    resolve_news_health_log_path,
+)
 from .quote import Quote, fetch_daily_curve_1d, fetch_intraday_curve_1m, fetch_quote, fetch_quotes
 from .watchlists import (
     Watchlists,
@@ -1440,7 +1455,7 @@ def _news_item_from_stored_article(article: StoredNewsArticle) -> NewsItem:
 class RssNewsPoller:
     """Poll the unified news chain for the TUI.
 
-    Preferred path: read `alternative.news_articles` from the database.
+    Preferred path: read the configured `<schema>.news_articles` table from the database.
     Fallback path: fetch the configured direct/RSS feeds locally when the DB is
     unavailable or still empty.
     """
@@ -1453,6 +1468,7 @@ class RssNewsPoller:
         timeout_s: float = 5.0,
         max_items: int = 300,
         database_url: str = "",
+        database_schema: str = "alternative",
         database_window_h: int = 72,
         database_timeout_s: float = 5.0,
         database_stale_after_s: float = 60.0,
@@ -1463,6 +1479,7 @@ class RssNewsPoller:
         self._timeout_s = max(1.0, float(timeout_s))
         self._max_items = max(50, int(max_items))
         self._database_url = str(database_url or "").strip()
+        self._database_schema = str(database_schema or "alternative").strip() or "alternative"
         self._database_window_h = max(1, int(database_window_h))
         self._database_timeout_s = max(1.0, float(database_timeout_s))
         self._database_stale_after_s = max(15.0, float(database_stale_after_s))
@@ -1598,6 +1615,7 @@ class RssNewsPoller:
             limit=self._max_items,
             window_hours=self._database_window_h,
             timeout_s=self._database_timeout_s,
+            schema=self._database_schema,
         )
         items = [_news_item_from_stored_article(row) for row in rows]
         items.sort(key=lambda item: float(item.published_at), reverse=True)
@@ -3517,6 +3535,7 @@ def _main(
         raw_news_feeds = _default_tui_news_rss_feeds_value()
     news_feeds = _parse_rss_feeds_value(raw_news_feeds)
     news_database_url = resolve_news_database_url(_REPO_ROOT)
+    news_database_schema = resolve_news_database_schema(_REPO_ROOT)
     if news_feeds or news_database_url:
         try:
             news_refresh_s = float(os.getenv("TUI_NEWS_RSS_REFRESH_S", "2").strip() or "2")
@@ -3544,6 +3563,7 @@ def _main(
             timeout_s=news_timeout_s,
             max_items=news_max_items,
             database_url=news_database_url,
+            database_schema=news_database_schema,
             database_window_h=news_db_window_h,
             database_timeout_s=news_db_timeout_s,
         )

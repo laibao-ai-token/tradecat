@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.news_db import fetch_recent_news_articles, resolve_news_database_url
+from src.news_db import (
+    fetch_recent_news_articles,
+    resolve_news_database_schema,
+    resolve_news_database_url,
+)
 
 
 class TestNewsDb(unittest.TestCase):
@@ -42,6 +46,23 @@ class TestNewsDb(unittest.TestCase):
             "postgresql://postgres:postgres@localhost:5434/market_data",
         )
 
+    def test_resolve_news_database_schema_prefers_env(self) -> None:
+        env = {"ALTERNATIVE_DB_SCHEMA": "alt_news"}
+        root = Path("/tmp/tradecat-test-root")
+        self.assertEqual(resolve_news_database_schema(root, env=env), "alt_news")
+
+    def test_resolve_news_database_schema_reads_config_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config_dir = root / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / ".env").write_text("ALTERNATIVE_DB_SCHEMA=custom_alt\n", encoding="utf-8")
+            self.assertEqual(resolve_news_database_schema(root, env={}), "custom_alt")
+
+    def test_resolve_news_database_schema_falls_back_to_default(self) -> None:
+        root = Path("/tmp/tradecat-test-root-missing")
+        self.assertEqual(resolve_news_database_schema(root, env={}), "alternative")
+
     def test_fetch_recent_news_articles_parses_csv_rows(self) -> None:
         stdout = (
             "dedup_hash,published_at,source,url,title,summary,symbols,categories,language\n"
@@ -56,6 +77,7 @@ class TestNewsDb(unittest.TestCase):
                 limit=10,
                 window_hours=24,
                 timeout_s=3.0,
+                schema="custom_alt",
             )
 
         self.assertEqual(len(rows), 2)
@@ -64,6 +86,7 @@ class TestNewsDb(unittest.TestCase):
         self.assertEqual(rows[0].categories, ("macro", "policy"))
         self.assertEqual(rows[0].language, "zh")
         self.assertEqual(rows[1].source, "www.benzinga.com")
+        self.assertIn('FROM "custom_alt".news_articles', mock_run.call_args.args[0][-1])
 
     def test_fetch_recent_news_articles_retries_local_port_candidates(self) -> None:
         stdout = (
