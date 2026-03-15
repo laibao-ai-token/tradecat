@@ -17,6 +17,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -26,6 +27,15 @@ from pathlib import Path
 
 from common.scheduler import wait_seconds
 
+from .agent_events import (
+    AssistantMessageEvent,
+    SessionEndEvent,
+    SessionStartEvent,
+    SessionUserMessageEvent,
+    SystemLogEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+)
 from .db import SignalRow, fetch_recent, parse_ts, probe
 from .etf_profiles import (
     get_all_domain_keys,
@@ -178,6 +188,41 @@ class FundDomainRuntimeState:
 @dataclass
 class RuntimeState:
     fund_domain: FundDomainRuntimeState = field(default_factory=FundDomainRuntimeState)
+
+
+@dataclass(frozen=True)
+class AgentShellMessage:
+    role: str
+    text: str
+    timestamp: str = ""
+
+
+@dataclass(frozen=True)
+class AgentToolEvent:
+    tool_name: str
+    status: str
+    summary: str
+
+
+@dataclass
+class AgentShellState:
+    session_name: str = "tradecat-main"
+    session_id: str = ""
+    current_turn_id: str = ""
+    turn_count: int = 0
+    event_count: int = 0
+    model_name: str = "openclaw-shell"
+    connection_state: str = "shell-only"
+    status_text: str = "backend pending"
+    final_status: str = "idle"
+    last_event_type: str = ""
+    last_event_at: float = 0.0
+    events_log_enabled: bool = False
+    events_log_path: str = ""
+    input_buffer: str = ""
+    message_scroll: int = 10**9
+    messages: list[AgentShellMessage] = field(default_factory=list)
+    tool_events: list[AgentToolEvent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -403,6 +448,13 @@ _RENDER_FRAME_INTERVAL_S = 1.0 / 30.0
 _SWITCH_DEBOUNCE_S = 0.15
 _PRIMARY_MARKET_VIEWS = ("market_us", "market_cn", "market_hk", "market_fund_cn", "market_micro", "market_news")
 _BACKTEST_VIEW = "market_backtest"
+_WORKSPACE_LEFT_RATIO = 0.42
+_WORKSPACE_LEFT_MIN_WIDTH = 48
+_WORKSPACE_LEFT_COMPACT_MIN_WIDTH = 32
+_WORKSPACE_RIGHT_MIN_WIDTH = 36
+_AGENT_SHELL_MIN_HEIGHT = 10
+_AGENT_SCROLL_BOTTOM = 10**9
+_WORKSPACE_SHELL_VIEWS = (*_PRIMARY_MARKET_VIEWS, _BACKTEST_VIEW)
 _NEWS_CATEGORIES = ("全部", "宏观", "公司", "加密", "政策")
 _NEWS_SOURCE_FILTER_ALL = "全部"
 _NEWS_SOURCE_FILTER_PRIMARY = "主链"
@@ -441,6 +493,7 @@ _SIGNAL_FRESH_MAX_AGE_S = max(300, int(float(os.environ.get("TUI_SIGNAL_FRESH_MA
 _TRADING_FRESH_MAX_AGE_S = max(60, int(float(os.environ.get("TUI_TRADING_FRESH_MAX_AGE_SECONDS", "900"))))
 _BACKTEST_LATEST_DIR = _REPO_ROOT / "artifacts" / "backtest" / "latest"
 _BACKTEST_RUN_STATE_PATH = _REPO_ROOT / "artifacts" / "backtest" / "run_state.json"
+_AGENT_EVENTS_LOG_PATH = _REPO_ROOT / "services-preview" / "tui-service" / "logs" / "agent_events.jsonl"
 _BACKTEST_MAX_EQUITY_POINTS = 600
 _BACKTEST_RECENT_TRADES = 8
 _BACKTEST_SHOW_COMPARE = str(os.environ.get("TUI_BACKTEST_SHOW_COMPARE", "")).strip().lower() in {
@@ -2318,6 +2371,536 @@ def _fit_cell(text: str, width: int, *, align: str = "left") -> str:
     return clipped + (" " * pad)
 
 
+def _workspace_shell_enabled(view: str) -> bool:
+    enabled = str(os.environ.get("TUI_ENABLE_AGENT_PLACEHOLDER", "")).strip().lower() in {"1", "true", "yes", "on"}
+    return enabled and (view or "").strip().lower() in _WORKSPACE_SHELL_VIEWS
+
+
+def _workspace_panel_widths(total_width: int) -> tuple[int, int]:
+    width = max(2, int(total_width))
+    if width < 60:
+        divider = 1 if width > 2 else 0
+        left_w = max(1, int(width * _WORKSPACE_LEFT_RATIO))
+        right_w = max(1, width - left_w - divider)
+        if right_w < 16:
+            right_w = max(1, min(16, width // 2))
+            left_w = max(1, width - right_w - divider)
+        return left_w, right_w
+
+    roomy = width >= (_WORKSPACE_LEFT_MIN_WIDTH + _WORKSPACE_RIGHT_MIN_WIDTH + 1)
+    left_min = _WORKSPACE_LEFT_MIN_WIDTH if roomy else _WORKSPACE_LEFT_COMPACT_MIN_WIDTH
+    right_min = _WORKSPACE_RIGHT_MIN_WIDTH if roomy else 24
+
+    left_w = max(left_min, int(width * _WORKSPACE_LEFT_RATIO))
+    left_w = min(left_w, width - right_min - 1)
+    if left_w < left_min:
+        left_w = left_min
+    right_w = max(1, width - left_w - 1)
+    return left_w, right_w
+
+
+def _agent_body_height(panel_height: int) -> int:
+    if panel_height < _AGENT_SHELL_MIN_HEIGHT:
+        return max(1, panel_height - 2)
+    footer_summary_y = max(4, panel_height - 4)
+    sep_top = 4
+    sep_bottom = max(sep_top + 1, footer_summary_y - 1)
+    body_y = sep_top + 1
+    return max(1, sep_bottom - body_y)
+
+
+def _agent_message_scroll_max(state: AgentShellState, panel_width: int, panel_height: int) -> int:
+    body_w = max(1, panel_width - 4)
+    body_h = _agent_body_height(panel_height)
+    rendered = _render_agent_message_lines(state.messages, body_w)
+    return max(0, len(rendered) - body_h)
+
+
+def _tail_truncate(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+
+    raw = str(text or "")
+    if _text_display_width(raw) <= width:
+        return raw
+    if width == 1:
+        return "<"
+
+    budget = width - 1
+    used = 0
+    out: deque[str] = deque()
+    for ch in reversed(raw):
+        ch_w = _char_display_width(ch)
+        if used + ch_w > budget:
+            break
+        out.appendleft(ch)
+        used += ch_w
+    return "<" + "".join(out)
+
+
+def _wrap_display_text(text: str, width: int) -> list[str]:
+    if width <= 0:
+        return []
+
+    paragraphs = str(text or "").splitlines() or [""]
+    lines: list[str] = []
+    for paragraph in paragraphs:
+        if not paragraph:
+            lines.append("")
+            continue
+
+        buf: list[str] = []
+        used = 0
+        for ch in paragraph:
+            ch_w = _char_display_width(ch)
+            if used + ch_w > width and buf:
+                lines.append("".join(buf))
+                buf = [ch]
+                used = ch_w
+                continue
+            if used + ch_w > width:
+                lines.append(ch)
+                buf = []
+                used = 0
+                continue
+            buf.append(ch)
+            used += ch_w
+        if buf:
+            lines.append("".join(buf))
+    return lines or [""]
+
+
+def _agent_now_text() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def _new_agent_session_id() -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return f"sess_{stamp}_{uuid.uuid4().hex[:8]}"
+
+
+def _new_agent_session_name() -> str:
+    return f"tradecat-{datetime.now().strftime('%m%d-%H%M')}"
+
+
+def _short_agent_id(value: str, keep: int = 8) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "--"
+    if len(text) <= keep:
+        return text
+    return text[-keep:]
+
+
+def _append_agent_event_jsonl(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        fh.write("\n")
+
+
+def _next_agent_event_id(state: AgentShellState, event_type: str) -> str:
+    state.event_count += 1
+    anchor = state.current_turn_id or state.session_id or "agent"
+    safe_type = str(event_type or "event").replace(".", "_")
+    return f"{anchor}_{state.event_count:06d}_{safe_type}"
+
+
+def _record_agent_event(state: AgentShellState, event) -> None:
+    payload = event.to_dict()
+    state.last_event_type = str(payload.get("type", "") or "")
+    try:
+        state.last_event_at = float(payload.get("ts", 0.0) or 0.0)
+    except Exception:
+        state.last_event_at = 0.0
+    if state.events_log_enabled:
+        target = Path(state.events_log_path).expanduser().resolve() if state.events_log_path else _AGENT_EVENTS_LOG_PATH
+        try:
+            _append_agent_event_jsonl(target, payload)
+        except Exception as exc:
+            state.status_text = f"log write failed: {exc.__class__.__name__}"
+
+
+def _ensure_agent_session_started(state: AgentShellState) -> None:
+    if not (state.session_id or "").strip():
+        state.session_id = _new_agent_session_id()
+    if state.event_count > 0:
+        return
+    now_ts = time.time()
+    _record_agent_event(
+        state,
+        SessionStartEvent(
+            ts=now_ts,
+            event_id=_next_agent_event_id(state, "session.start"),
+            session_id=state.session_id,
+            source="tradecat",
+            config={
+                "session_name": state.session_name,
+                "model": state.model_name,
+                "connection_state": state.connection_state,
+            },
+        ),
+    )
+
+
+def _start_agent_turn(state: AgentShellState) -> str:
+    _ensure_agent_session_started(state)
+    state.turn_count += 1
+    state.current_turn_id = f"turn_{state.turn_count:05d}"
+    state.final_status = "running"
+    return state.current_turn_id
+
+
+def _seed_agent_shell_state() -> AgentShellState:
+    state = AgentShellState(
+        session_id=_new_agent_session_id(),
+        events_log_enabled=True,
+        events_log_path=str(_AGENT_EVENTS_LOG_PATH),
+        status_text="local demo ready",
+    )
+    state.messages = [
+        AgentShellMessage("system", "右侧 Agent Shell 已就绪；本期只落本地 UI 骨架，后续再接 openclaw backend。", "BOOT"),
+        AgentShellMessage("assistant", "可先用这里做分析草稿、命令入口与 tool 事件占位。", "READY"),
+        AgentShellMessage("tool", "预留工具桥: tr_get_quotes / tr_get_signals / tr_get_news", "TOOLS"),
+    ]
+    state.tool_events = [
+        AgentToolEvent("tr_get_quotes", "stub", "等待 #003-02 接线"),
+        AgentToolEvent("tr_get_signals", "stub", "等待 #003-02 接线"),
+        AgentToolEvent("tr_get_news", "stub", "等待 #003-02 接线"),
+    ]
+    return state
+
+
+def _append_agent_message(state: AgentShellState, role: str, text: str, *, timestamp: str = "") -> None:
+    msg = AgentShellMessage(
+        role=(role or "assistant").strip().lower(),
+        text=str(text or "").strip(),
+        timestamp=(timestamp or _agent_now_text()).strip(),
+    )
+    state.messages.append(msg)
+    if len(state.messages) > 120:
+        state.messages = state.messages[-120:]
+    state.message_scroll = _AGENT_SCROLL_BOTTOM
+
+
+def _append_agent_tool_event(state: AgentShellState, tool_name: str, status: str, summary: str) -> None:
+    event = AgentToolEvent(
+        tool_name=(tool_name or "tool").strip(),
+        status=(status or "--").strip(),
+        summary=str(summary or "").strip(),
+    )
+    state.tool_events.append(event)
+    if len(state.tool_events) > 8:
+        state.tool_events = state.tool_events[-8:]
+
+
+def _submit_agent_shell_input(state: AgentShellState) -> bool:
+    raw = (state.input_buffer or "").strip()
+    if not raw:
+        return False
+
+    turn_id = _start_agent_turn(state)
+    now_ts = time.time()
+    _record_agent_event(
+        state,
+        SessionUserMessageEvent(
+            ts=now_ts,
+            event_id=_next_agent_event_id(state, "session.user_message"),
+            session_id=state.session_id,
+            turn_id=turn_id,
+            source="tradecat",
+            message_id=f"user_{state.turn_count:05d}",
+            content=raw,
+        ),
+    )
+    _append_agent_message(state, "user", raw)
+
+    if raw.startswith("/new"):
+        old_session_id = state.session_id
+        _record_agent_event(
+            state,
+            SessionEndEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "session.end"),
+                session_id=old_session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                reason="restart",
+            ),
+        )
+        state.session_name = _new_agent_session_name()
+        state.session_id = _new_agent_session_id()
+        state.current_turn_id = ""
+        state.status_text = "local demo session reset"
+        state.final_status = "success"
+        _append_agent_message(state, "system", "已切到新的本地演示 session；真实 session 对接将在 #003-02 接入。")
+        _record_agent_event(
+            state,
+            SessionStartEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "session.start"),
+                session_id=state.session_id,
+                source="tradecat",
+                config={
+                    "session_name": state.session_name,
+                    "model": state.model_name,
+                    "connection_state": state.connection_state,
+                },
+            ),
+        )
+    elif raw.startswith("/model"):
+        state.status_text = "model placeholder"
+        state.final_status = "success"
+        _append_agent_message(state, "system", "model 切换已占位；当前仍使用本地演示模型 openclaw-shell。")
+        _record_agent_event(
+            state,
+            SystemLogEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "system.log"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                level="info",
+                message="local demo /model placeholder",
+                data={"input": raw, "model_name": state.model_name},
+            ),
+        )
+    elif raw.startswith("/tools"):
+        tool_call_id = f"tool_registry_{state.turn_count:05d}"
+        _record_agent_event(
+            state,
+            ToolStartEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "tool.start"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                tool_call_id=tool_call_id,
+                tool_name="tool_registry",
+                args={"command": raw},
+            ),
+        )
+        _append_agent_tool_event(state, "tool_registry", "stub", "展示预留的 TradeCat -> Agent 工具桥")
+        _record_agent_event(
+            state,
+            ToolEndEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "tool.end"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                tool_call_id=tool_call_id,
+                tool_name="tool_registry",
+                output={"text": "预留工具: tr_get_quotes / tr_get_signals / tr_get_news / tr_get_backtest。"},
+            ),
+        )
+        state.status_text = "tool registry placeholder"
+        state.final_status = "success"
+        _append_agent_message(state, "tool", "预留工具: tr_get_quotes / tr_get_signals / tr_get_news / tr_get_backtest。")
+    else:
+        tool_call_id = f"local_echo_{state.turn_count:05d}"
+        _record_agent_event(
+            state,
+            ToolStartEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "tool.start"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                tool_call_id=tool_call_id,
+                tool_name="local_echo",
+                args={"prompt": raw},
+            ),
+        )
+        _append_agent_tool_event(state, "local_echo", "ok", "本地 shell 已接住输入，等待真实 backend。")
+        _record_agent_event(
+            state,
+            ToolEndEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "tool.end"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                tool_call_id=tool_call_id,
+                tool_name="local_echo",
+                output={"text": "local demo accepted input"},
+            ),
+        )
+        reply = "输入已进入本地 Agent Shell；真实 openclaw backend、streaming 和 tool call 将在后续 issue 接入。"
+        _append_agent_message(
+            state,
+            "assistant",
+            reply,
+        )
+        _record_agent_event(
+            state,
+            AssistantMessageEvent(
+                ts=time.time(),
+                event_id=_next_agent_event_id(state, "assistant.message"),
+                session_id=state.session_id,
+                turn_id=turn_id,
+                source="tradecat",
+                message_id=f"assistant_{state.turn_count:05d}",
+                content=reply,
+                finish_reason="stop",
+            ),
+        )
+        state.status_text = "local demo reply ready"
+        state.final_status = "success"
+
+    state.input_buffer = ""
+    return True
+
+
+def _agent_shell_signature(state: AgentShellState) -> tuple:
+    return (
+        (state.session_name or "").strip(),
+        (state.session_id or "").strip(),
+        (state.current_turn_id or "").strip(),
+        int(state.turn_count),
+        int(state.event_count),
+        (state.model_name or "").strip(),
+        (state.connection_state or "").strip(),
+        (state.status_text or "").strip(),
+        (state.final_status or "").strip(),
+        (state.last_event_type or "").strip(),
+        float(state.last_event_at or 0.0),
+        bool(state.events_log_enabled),
+        (state.events_log_path or "").strip(),
+        (state.input_buffer or ""),
+        int(state.message_scroll),
+        tuple((msg.role, msg.text, msg.timestamp) for msg in state.messages),
+        tuple((event.tool_name, event.status, event.summary) for event in state.tool_events),
+    )
+
+
+def _render_agent_message_lines(messages: Iterable[AgentShellMessage], width: int) -> list[tuple[str, str]]:
+    if width <= 0:
+        return []
+
+    lines: list[tuple[str, str]] = []
+    labels = {"system": "sys", "user": "usr", "assistant": "ast", "tool": "tool"}
+    for message in messages:
+        role = (message.role or "assistant").strip().lower()
+        label = labels.get(role, role[:4] or "msg")
+        prefix = f"[{label}]"
+        if (message.timestamp or "").strip():
+            prefix += f" {message.timestamp.strip()}"
+        prefix += " "
+        body_width = max(8, width - len(prefix))
+        body_lines = _wrap_display_text(message.text, body_width)
+        if not body_lines:
+            lines.append((role, _truncate(prefix.rstrip(), width)))
+            continue
+        lines.append((role, _truncate(prefix + body_lines[0], width)))
+        indent = " " * len(prefix)
+        for extra in body_lines[1:]:
+            lines.append(("", _truncate(indent + extra, width)))
+        lines.append(("", ""))
+
+    if lines and not lines[-1][1]:
+        lines.pop()
+    return lines
+
+
+def _draw_workspace_left_banner(win, view: str, colors: dict[str, int], *, active: bool) -> None:
+    h, w = win.getmaxyx()
+    if h <= 0 or w <= 0:
+        return
+    marker = "*" if active else " "
+    text = f"[{marker}] {_view_display_name(view)} | 左侧保留 TradeCat 主区 | Tab切到Agent"
+    attr = curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD
+    _safe_addstr(win, 0, 0, _truncate(text, w), attr)
+
+
+def _draw_agent_shell_panel(win, state: AgentShellState, colors: dict[str, int], *, active: bool) -> None:
+    win.erase()
+    h, w = win.getmaxyx()
+    if h <= 0 or w <= 0:
+        return
+
+    box_attr = curses.color_pair(colors.get("SRC", 0))
+    title_attr = curses.color_pair(colors.get("ALERT", 0)) | curses.A_BOLD
+    info_attr = curses.color_pair(colors.get("SRC", 0))
+    input_attr = curses.A_REVERSE if active else info_attr
+
+    if h < _AGENT_SHELL_MIN_HEIGHT or w < 24:
+        marker = "*" if active else " "
+        compact = (
+            f"[{marker}] Agent | s={_short_agent_id(state.session_id)} | "
+            f"t={_short_agent_id(state.current_turn_id)} | {state.status_text}"
+        )
+        _safe_addstr(win, 0, 0, _truncate(compact, w), title_attr)
+        if h > 1:
+            compact_input = _tail_truncate(state.input_buffer or "/new /model /tools", w)
+            _safe_addstr(win, 1, 0, _truncate(compact_input, w), input_attr)
+        return
+
+    _draw_box(win, 0, 0, w, h, box_attr)
+    marker = "*" if active else " "
+    title = f"[{marker}] Agent Shell"
+    meta = (
+        f"session={state.session_name} | sid={_short_agent_id(state.session_id)} | "
+        f"turn={_short_agent_id(state.current_turn_id)} | model={state.model_name}"
+    )
+    status = (
+        f"conn={state.connection_state} | status={state.status_text} | "
+        f"final={state.final_status or '--'}"
+    )
+    _safe_addstr(win, 1, 2, _truncate(title, max(0, w - 4)), title_attr)
+    _safe_addstr(win, 2, 2, _truncate(meta, max(0, w - 4)))
+    _safe_addstr(win, 3, 2, _truncate(status, max(0, w - 4)), info_attr)
+
+    footer_summary_y = max(4, h - 4)
+    footer_help_y = max(5, h - 3)
+    footer_input_y = max(6, h - 2)
+    sep_top = 4
+    sep_bottom = max(sep_top + 1, footer_summary_y - 1)
+    _safe_hline(win, sep_top, 1, max(0, w - 2), box_attr)
+    _safe_hline(win, sep_bottom, 1, max(0, w - 2), box_attr)
+
+    body_x = 2
+    body_w = max(0, w - 4)
+    body_y = sep_top + 1
+    body_h = max(1, sep_bottom - body_y)
+    rendered = _render_agent_message_lines(state.messages, body_w)
+    if not rendered:
+        rendered = [("system", "[sys] waiting for local demo messages")]
+    max_start = max(0, len(rendered) - body_h)
+    if state.message_scroll >= _AGENT_SCROLL_BOTTOM:
+        start = max_start
+    else:
+        start = min(max(0, state.message_scroll), max_start)
+        state.message_scroll = start
+    visible = rendered[start : start + body_h]
+    role_attr_map = {
+        "system": info_attr,
+        "user": curses.color_pair(colors.get("BUY", 0)) | curses.A_BOLD,
+        "assistant": curses.color_pair(colors.get("ALERT", 0)),
+        "tool": curses.color_pair(colors.get("SRC", 0)) | curses.A_BOLD,
+        "": 0,
+    }
+    for idx, (role, line) in enumerate(visible):
+        attr = role_attr_map.get(role, 0)
+        _safe_addstr(win, body_y + idx, body_x, _truncate(line, body_w), attr)
+
+    tool_parts = [f"{event.tool_name}:{event.status}" for event in state.tool_events[-2:]]
+    event_stamp = _news_time_text(state.last_event_at) if state.last_event_at > 0 else "--:--:--"
+    summary = (
+        f"event={state.last_event_type or '--'} @{event_stamp} | "
+        + ("tools: " + " | ".join(tool_parts) if tool_parts else "tools: pending")
+    )
+    if active:
+        help_line = "Tab切左侧 | Enter发送 | ↑↓/Pg滚动 | /new /model /tools"
+    else:
+        help_line = "Tab切右侧 | 常驻Agent面板 | /new /model /tools"
+    prompt = state.input_buffer or "/new /model /tools 或直接输入分析任务"
+    input_line = "> " + _tail_truncate(prompt, max(0, body_w - 2))
+    _safe_addstr(win, footer_summary_y, 2, _truncate(summary, body_w), info_attr)
+    _safe_addstr(win, footer_help_y, 2, _truncate(help_line, body_w), info_attr)
+    _safe_addstr(win, footer_input_y, 2, _truncate(input_line, body_w), input_attr)
+
+
 @dataclass(frozen=True)
 class NewsWatchItem:
     symbol: str
@@ -3621,6 +4204,8 @@ def _main(
     service_status_refresh_s = 1.0
     render_state = RenderState()
     runtime_state = RuntimeState()
+    agent_state = _seed_agent_shell_state()
+    workspace_focus = "left"
     next_frame_at = time.time()
     pending_force_redraw = True
 
@@ -3982,6 +4567,8 @@ def _main(
             int(news_state.window_idx),
             (news_state.search_query or "").strip().lower(),
             bool(news_state.watch_filter_locked),
+            workspace_focus,
+            _agent_shell_signature(agent_state),
         )
 
     def _maybe_apply_switch_debounce(now_ts: float) -> bool:
@@ -4475,6 +5062,8 @@ def _main(
                         runtime_state,
                         news_state,
                         news_snapshot,
+                        agent_state,
+                        workspace_focus,
                     )
                 render_state.last_draw_at = now
                 next_frame_at = now + _RENDER_FRAME_INTERVAL_S
@@ -4486,6 +5075,51 @@ def _main(
                 continue
 
             pending_force_redraw = True
+            shell_enabled = _workspace_shell_enabled(view)
+
+            if shell_enabled and key in (ord("	"), curses.KEY_BTAB):
+                workspace_focus = "right" if workspace_focus == "left" else "left"
+                continue
+
+            if shell_enabled and workspace_focus == "right":
+                screen_h, screen_w = stdscr.getmaxyx()
+                _, agent_panel_w = _workspace_panel_widths(screen_w)
+                agent_panel_h = max(1, screen_h - 1)
+                max_message_scroll = _agent_message_scroll_max(agent_state, agent_panel_w, agent_panel_h)
+                current_scroll = (
+                    max_message_scroll
+                    if agent_state.message_scroll >= _AGENT_SCROLL_BOTTOM
+                    else int(agent_state.message_scroll)
+                )
+
+                if key == 27:
+                    workspace_focus = "left"
+                elif key in (10, 13, curses.KEY_ENTER):
+                    _submit_agent_shell_input(agent_state)
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    agent_state.input_buffer = agent_state.input_buffer[:-1]
+                elif key == curses.KEY_UP:
+                    agent_state.message_scroll = max(0, current_scroll - 1)
+                elif key == curses.KEY_DOWN:
+                    next_scroll = min(max_message_scroll, current_scroll + 1)
+                    agent_state.message_scroll = (
+                        _AGENT_SCROLL_BOTTOM if next_scroll >= max_message_scroll else next_scroll
+                    )
+                elif key == curses.KEY_PPAGE:
+                    agent_state.message_scroll = max(0, current_scroll - 10)
+                elif key == curses.KEY_NPAGE:
+                    next_scroll = min(max_message_scroll, current_scroll + 10)
+                    agent_state.message_scroll = (
+                        _AGENT_SCROLL_BOTTOM if next_scroll >= max_message_scroll else next_scroll
+                    )
+                elif key == ord("g"):
+                    agent_state.message_scroll = 0
+                elif key == ord("G"):
+                    agent_state.message_scroll = _AGENT_SCROLL_BOTTOM
+                elif 32 <= key <= 126:
+                    if len(agent_state.input_buffer) < 512:
+                        agent_state.input_buffer += chr(key)
+                continue
 
             if key in (ord("q"), 27):  # q or ESC
                 return
@@ -4868,6 +5502,275 @@ def _main(
             news_poller.stop()
 
 
+def _draw_view_panel(
+    win,
+    db_path: str,
+    rows: list[SignalRow],
+    rows_all: list[SignalRow],
+    filt: Filters,
+    scroll: int,
+    colors: dict[str, int],
+    refresh_s: float,
+    last_id: int,
+    quote_cfgs: QuoteConfigs,
+    quote_state_us: QuoteBookState,
+    quote_state_hk: QuoteBookState,
+    quote_state_cn: QuoteBookState,
+    quote_state_fund_cn: QuoteBookState,
+    quote_state_crypto: QuoteBookState,
+    quote_state_metals: QuoteBookState,
+    latest_sig_map_crypto: dict[str, SignalRow],
+    us_curve_map: dict[str, list[Candle]],
+    hk_curve_map: dict[str, list[Candle]],
+    cn_curve_map: dict[str, list[Candle]],
+    fund_cn_curve_map: dict[str, list[Candle]],
+    fund_cn_daily_curve_map: dict[str, list[Candle]],
+    crypto_curve_map: dict[str, list[Candle]],
+    us_micro_snapshots: dict[str, MicroSnapshot],
+    hk_micro_snapshots: dict[str, MicroSnapshot],
+    cn_micro_snapshots: dict[str, MicroSnapshot],
+    fund_cn_micro_snapshots: dict[str, MicroSnapshot],
+    micro_snapshot: MicroSnapshot,
+    micro_symbols: list[str],
+    view: str,
+    qscroll: int,
+    master_pane: MasterPaneState | None,
+    runtime_state: RuntimeState,
+    news_state: NewsPageState | None = None,
+    news_snapshot: NewsFeedSnapshot | None = None,
+) -> None:
+    h, w = win.getmaxyx()
+    if view == "quotes_us":
+        _draw_quotes(win, "US", quote_cfgs.us, quote_state_us, w, h, qscroll)
+    elif view == "market_us":
+        _draw_market_quad(
+            win,
+            label="US",
+            quote_cfg=quote_cfgs.us,
+            quote_state=quote_state_us,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=us_curve_map,
+            micro_snapshots=us_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+        )
+    elif view == "market_hk":
+        _draw_market_quad(
+            win,
+            label="HK",
+            quote_cfg=quote_cfgs.hk,
+            quote_state=quote_state_hk,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=hk_curve_map,
+            micro_snapshots=hk_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+        )
+    elif view == "quotes_hk":
+        _draw_quotes(win, "HK", quote_cfgs.hk, quote_state_hk, w, h, qscroll)
+    elif view == "quotes_cn":
+        _draw_quotes(win, "CN", quote_cfgs.cn, quote_state_cn, w, h, qscroll)
+    elif view == "market_cn":
+        _draw_market_quad(
+            win,
+            label="CN",
+            quote_cfg=quote_cfgs.cn,
+            quote_state=quote_state_cn,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=cn_curve_map,
+            micro_snapshots=cn_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+        )
+    elif view == "market_fund_cn":
+        _draw_market_fund_two_panel(
+            win,
+            quote_cfg=quote_cfgs.fund_cn,
+            quote_state=quote_state_fund_cn,
+            rows=rows_all,
+            pane=master_pane or MasterPaneState(),
+            colors=colors,
+            curve_map=fund_cn_curve_map,
+            daily_curve_map=fund_cn_daily_curve_map,
+            micro_snapshots=fund_cn_micro_snapshots,
+            w=w,
+            h=h,
+            refresh_s=refresh_s,
+            runtime_state=runtime_state,
+        )
+    elif view in {"quotes_crypto", "market_crypto"}:
+        _draw_market_micro(win, micro_snapshot, micro_symbols, rows_all, quote_state_crypto, crypto_curve_map, colors, w, h)
+    elif view == "market_micro":
+        _draw_market_micro(win, micro_snapshot, micro_symbols, rows_all, quote_state_crypto, crypto_curve_map, colors, w, h)
+    elif view == "market_backtest":
+        _draw_market_backtest(win, colors, w, h)
+    elif view == "market_news":
+        _draw_market_news(
+            win,
+            news_state or NewsPageState(),
+            news_snapshot,
+            quote_cfgs,
+            quote_state_us,
+            quote_state_hk,
+            quote_state_cn,
+            quote_state_crypto,
+            colors,
+            w,
+            h,
+        )
+    elif view == "quotes_metals":
+        _draw_quotes(win, "METALS", quote_cfgs.metals, quote_state_metals, w, h, qscroll)
+    else:
+        _draw_signals(win, db_path, rows, filt, scroll, colors, refresh_s, last_id, w, h, quote_state_crypto)
+
+
+def _draw_workspace_shell(
+    stdscr,
+    db_path: str,
+    rows: list[SignalRow],
+    rows_all: list[SignalRow],
+    filt: Filters,
+    scroll: int,
+    colors: dict[str, int],
+    refresh_s: float,
+    last_id: int,
+    quote_cfgs: QuoteConfigs,
+    quote_state_us: QuoteBookState,
+    quote_state_hk: QuoteBookState,
+    quote_state_cn: QuoteBookState,
+    quote_state_fund_cn: QuoteBookState,
+    quote_state_crypto: QuoteBookState,
+    quote_state_metals: QuoteBookState,
+    latest_sig_map_crypto: dict[str, SignalRow],
+    us_curve_map: dict[str, list[Candle]],
+    hk_curve_map: dict[str, list[Candle]],
+    cn_curve_map: dict[str, list[Candle]],
+    fund_cn_curve_map: dict[str, list[Candle]],
+    fund_cn_daily_curve_map: dict[str, list[Candle]],
+    crypto_curve_map: dict[str, list[Candle]],
+    us_micro_snapshots: dict[str, MicroSnapshot],
+    hk_micro_snapshots: dict[str, MicroSnapshot],
+    cn_micro_snapshots: dict[str, MicroSnapshot],
+    fund_cn_micro_snapshots: dict[str, MicroSnapshot],
+    micro_snapshot: MicroSnapshot,
+    micro_symbols: list[str],
+    service_status: ServiceStatus,
+    view: str,
+    qscroll: int,
+    master_pane: MasterPaneState | None,
+    runtime_state: RuntimeState,
+    news_state: NewsPageState | None,
+    news_snapshot: NewsFeedSnapshot | None,
+    agent_state: AgentShellState,
+    workspace_focus: str,
+) -> None:
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    _draw_header(stdscr, colors, filt, refresh_s, view, service_status, w)
+
+    content_y = 1
+    content_h = max(1, h - content_y)
+    left_w, right_w = _workspace_panel_widths(w)
+    divider_x = min(w - 1, left_w)
+
+    try:
+        left_win = stdscr.derwin(content_h, left_w, content_y, 0)
+        right_win = stdscr.derwin(content_h, right_w, content_y, min(w - 1, divider_x + 1))
+    except Exception:
+        _draw_view_panel(
+            stdscr,
+            db_path,
+            rows,
+            rows_all,
+            filt,
+            scroll,
+            colors,
+            refresh_s,
+            last_id,
+            quote_cfgs,
+            quote_state_us,
+            quote_state_hk,
+            quote_state_cn,
+            quote_state_fund_cn,
+            quote_state_crypto,
+            quote_state_metals,
+            latest_sig_map_crypto,
+            us_curve_map,
+            hk_curve_map,
+            cn_curve_map,
+            fund_cn_curve_map,
+            fund_cn_daily_curve_map,
+            crypto_curve_map,
+            us_micro_snapshots,
+            hk_micro_snapshots,
+            cn_micro_snapshots,
+            fund_cn_micro_snapshots,
+            micro_snapshot,
+            micro_symbols,
+            view,
+            qscroll,
+            master_pane,
+            runtime_state,
+            news_state,
+            news_snapshot,
+        )
+        return
+
+    left_win.erase()
+    right_win.erase()
+    box_attr = curses.color_pair(colors.get("SRC", 0))
+    _safe_vline(stdscr, content_y, divider_x, content_h, box_attr)
+
+    _draw_view_panel(
+        left_win,
+        db_path,
+        rows,
+        rows_all,
+        filt,
+        scroll,
+        colors,
+        refresh_s,
+        last_id,
+        quote_cfgs,
+        quote_state_us,
+        quote_state_hk,
+        quote_state_cn,
+        quote_state_fund_cn,
+        quote_state_crypto,
+        quote_state_metals,
+        latest_sig_map_crypto,
+        us_curve_map,
+        hk_curve_map,
+        cn_curve_map,
+        fund_cn_curve_map,
+        fund_cn_daily_curve_map,
+        crypto_curve_map,
+        us_micro_snapshots,
+        hk_micro_snapshots,
+        cn_micro_snapshots,
+        fund_cn_micro_snapshots,
+        micro_snapshot,
+        micro_symbols,
+        view,
+        qscroll,
+        master_pane,
+        runtime_state,
+        news_state,
+        news_snapshot,
+    )
+    _draw_workspace_left_banner(left_win, view, colors, active=workspace_focus == "left")
+    _draw_agent_shell_panel(right_win, agent_state, colors, active=workspace_focus == "right")
+
+
 def _draw(
     stdscr,
     db_path: str,
@@ -4905,106 +5808,94 @@ def _draw(
     runtime_state: RuntimeState,
     news_state: NewsPageState | None = None,
     news_snapshot: NewsFeedSnapshot | None = None,
+    agent_state: AgentShellState | None = None,
+    workspace_focus: str = "left",
 ) -> None:
-    stdscr.erase()
-    h, w = stdscr.getmaxyx()
-    _draw_header(stdscr, colors, filt, refresh_s, view, service_status, w)
-    if view == "quotes_us":
-        _draw_quotes(stdscr, "US", quote_cfgs.us, quote_state_us, w, h, qscroll)
-    elif view == "market_us":
-        _draw_market_quad(
+    if _workspace_shell_enabled(view):
+        _draw_workspace_shell(
             stdscr,
-            label="US",
-            quote_cfg=quote_cfgs.us,
-            quote_state=quote_state_us,
-            rows=rows_all,
-            pane=master_pane or MasterPaneState(),
-            colors=colors,
-            curve_map=us_curve_map,
-            micro_snapshots=us_micro_snapshots,
-            w=w,
-            h=h,
-            refresh_s=refresh_s,
-        )
-    elif view == "market_hk":
-        _draw_market_quad(
-            stdscr,
-            label="HK",
-            quote_cfg=quote_cfgs.hk,
-            quote_state=quote_state_hk,
-            rows=rows_all,
-            pane=master_pane or MasterPaneState(),
-            colors=colors,
-            curve_map=hk_curve_map,
-            micro_snapshots=hk_micro_snapshots,
-            w=w,
-            h=h,
-            refresh_s=refresh_s,
-        )
-    elif view == "quotes_hk":
-        _draw_quotes(stdscr, "HK", quote_cfgs.hk, quote_state_hk, w, h, qscroll)
-    elif view == "quotes_cn":
-        _draw_quotes(stdscr, "CN", quote_cfgs.cn, quote_state_cn, w, h, qscroll)
-    elif view == "market_cn":
-        _draw_market_quad(
-            stdscr,
-            label="CN",
-            quote_cfg=quote_cfgs.cn,
-            quote_state=quote_state_cn,
-            rows=rows_all,
-            pane=master_pane or MasterPaneState(),
-            colors=colors,
-            curve_map=cn_curve_map,
-            micro_snapshots=cn_micro_snapshots,
-            w=w,
-            h=h,
-            refresh_s=refresh_s,
-        )
-    elif view == "market_fund_cn":
-        _draw_market_fund_two_panel(
-            stdscr,
-            quote_cfg=quote_cfgs.fund_cn,
-            quote_state=quote_state_fund_cn,
-            rows=rows_all,
-            pane=master_pane or MasterPaneState(),
-            colors=colors,
-            curve_map=fund_cn_curve_map,
-            daily_curve_map=fund_cn_daily_curve_map,
-            micro_snapshots=fund_cn_micro_snapshots,
-            w=w,
-            h=h,
-            refresh_s=refresh_s,
-            runtime_state=runtime_state,
-        )
-    elif view in {"quotes_crypto", "market_crypto"}:
-        # Back-compat: old crypto quote pages are folded into market_micro.
-        _draw_market_micro(stdscr, micro_snapshot, micro_symbols, rows_all, quote_state_crypto, crypto_curve_map, colors, w, h)
-    elif view == "market_micro":
-        _draw_market_micro(stdscr, micro_snapshot, micro_symbols, rows_all, quote_state_crypto, crypto_curve_map, colors, w, h)
-    elif view == "market_backtest":
-        _draw_market_backtest(stdscr, colors, w, h)
-    elif view == "market_news":
-        _draw_market_news(
-            stdscr,
-            news_state or NewsPageState(),
-            news_snapshot,
+            db_path,
+            rows,
+            rows_all,
+            filt,
+            scroll,
+            colors,
+            refresh_s,
+            last_id,
             quote_cfgs,
             quote_state_us,
             quote_state_hk,
             quote_state_cn,
+            quote_state_fund_cn,
             quote_state_crypto,
-            colors,
-            w,
-            h,
+            quote_state_metals,
+            latest_sig_map_crypto,
+            us_curve_map,
+            hk_curve_map,
+            cn_curve_map,
+            fund_cn_curve_map,
+            fund_cn_daily_curve_map,
+            crypto_curve_map,
+            us_micro_snapshots,
+            hk_micro_snapshots,
+            cn_micro_snapshots,
+            fund_cn_micro_snapshots,
+            micro_snapshot,
+            micro_symbols,
+            service_status,
+            view,
+            qscroll,
+            master_pane,
+            runtime_state,
+            news_state,
+            news_snapshot,
+            agent_state or AgentShellState(),
+            workspace_focus,
         )
-    elif view == "quotes_metals":
-        _draw_quotes(stdscr, "METALS", quote_cfgs.metals, quote_state_metals, w, h, qscroll)
     else:
-        _draw_signals(stdscr, db_path, rows, filt, scroll, colors, refresh_s, last_id, w, h, quote_state_crypto)
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        _draw_header(stdscr, colors, filt, refresh_s, view, service_status, w)
+        _draw_view_panel(
+            stdscr,
+            db_path,
+            rows,
+            rows_all,
+            filt,
+            scroll,
+            colors,
+            refresh_s,
+            last_id,
+            quote_cfgs,
+            quote_state_us,
+            quote_state_hk,
+            quote_state_cn,
+            quote_state_fund_cn,
+            quote_state_crypto,
+            quote_state_metals,
+            latest_sig_map_crypto,
+            us_curve_map,
+            hk_curve_map,
+            cn_curve_map,
+            fund_cn_curve_map,
+            fund_cn_daily_curve_map,
+            crypto_curve_map,
+            us_micro_snapshots,
+            hk_micro_snapshots,
+            cn_micro_snapshots,
+            fund_cn_micro_snapshots,
+            micro_snapshot,
+            micro_symbols,
+            view,
+            qscroll,
+            master_pane,
+            runtime_state,
+            news_state,
+            news_snapshot,
+        )
 
     stdscr.noutrefresh()
     curses.doupdate()
-
 
 def _draw_header(
     stdscr,
@@ -5037,7 +5928,7 @@ def _draw_market_master(
     show_signals: bool = True,
 ) -> None:
     key_hint = (
-        "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | 7资讯 | tab切焦点 | +/-加减自选 | ↑↓滚动"
+        "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | 7资讯 | Tab切Agent | +/-加减自选 | ↑↓滚动"
         if show_signals
         else "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | 7资讯 | +/-加减自选 | ↑↓滚动"
     )
@@ -7389,7 +8280,7 @@ def _draw_market_news(
     h: int,
 ) -> None:
     key_hint = (
-        "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | 7资讯 | Tab切焦点 | "
+        "按键: q退出 | t主页面切换 | 1美股 | 2A股 | 3加密 | 5基金 | 6港股 | 7资讯 | Tab切Agent | "
         "/搜索 | f分类 | s来源 | w时间窗 | c清空"
     )
     _safe_addstr(stdscr, h - 1, 0, _truncate(key_hint, w))

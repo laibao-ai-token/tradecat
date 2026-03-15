@@ -18,6 +18,7 @@ cd services-preview/tui-service
 默认：
 - 退出 TUI 后 1 小时自动停止“由 TUI 启动”的 data-service。
 - 退出 TUI 后 1 小时自动停止“由 TUI 启动”的 signal-service。
+- 内置右侧 `Agent Shell` 占位已默认关闭，避免与真实 `openclaw tui` 语义混淆。
 
 可选：
 - 仅看行情，不自动启动 data/signal：`TUI_AUTO_START_DATA=0 TUI_AUTO_START_SIGNAL=0 ./scripts/start.sh run`
@@ -25,6 +26,7 @@ cd services-preview/tui-service
 - 退出 TUI 立即停止 signal：`TUI_SIGNAL_STOP_DELAY_SECONDS=0 ./scripts/start.sh run`
 - 退出 TUI 后保留自动启动的 data：`TUI_KEEP_DATA_ON_EXIT=1 ./scripts/start.sh run`
 - 退出 TUI 后保留自动启动的 signal：`TUI_KEEP_SIGNAL_ON_EXIT=1 ./scripts/start.sh run`
+- 如需临时打开旧的内置 Agent 占位壳层做对照，可显式设置：`TUI_ENABLE_AGENT_PLACEHOLDER=1 ./scripts/start.sh run`
 
 Show real-time quotes (no API key, Tencent):
 
