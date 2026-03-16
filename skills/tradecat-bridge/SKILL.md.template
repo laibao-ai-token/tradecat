@@ -1,0 +1,94 @@
+---
+name: tradecat-bridge
+description: "Use TradeCat read-only bridge commands for fresh quotes, recent signals, recent news, and saved backtest summaries in this workspace."
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🐈",
+        "requires": { "bins": ["python3"] },
+      },
+  }
+---
+
+# TradeCat Bridge
+
+Use this skill when the user asks for fresh data that already exists inside the local TradeCat workspace.
+
+## When to Use
+
+- Latest quote or market snapshot for one or more symbols
+- Recent TradeCat rule signals
+- Recent TradeCat news / event feed
+- A saved backtest summary that already exists on disk
+
+## When NOT to Use
+
+- General market knowledge or explanations that do not need fresh local data
+- Running a new backtest
+- Automatic trading or write actions
+- Reading the terminal UI instead of the underlying data sources
+
+## Workspace Root
+
+TradeCat repo root for this installed skill:
+
+```text
+__TRADECAT_ROOT__
+```
+
+## Rules
+
+1. Prefer exactly one bridge command per turn unless the user explicitly asks for a combined view.
+2. If the symbol, timeframe, or run id is required and missing, ask one short follow-up question.
+3. Never invent values when a command returns empty data, times out, or fails.
+4. In the final answer, include the bridge command name and summarize the returned timestamp/source when present.
+5. Do not use `web_search` when the user is clearly asking for TradeCat-local quotes, signals, news, or backtest artifacts.
+
+## Commands
+
+### Latest Quotes
+
+Use for latest price, quote snapshot, or multi-symbol comparison.
+
+```bash
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_quotes.py" NVDA --market us_stock
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_quotes.py" BTCUSDT ETHUSDT --market crypto_spot
+```
+
+### Recent Signals
+
+Use for recent rule signals for one symbol.
+
+```bash
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_signals.py" --symbol BTCUSDT --timeframe 1m --limit 5
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_signals.py" --symbol NVDA --limit 5
+```
+
+### Recent News
+
+Use for recent symbol news or keyword-filtered news.
+
+```bash
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_news.py" --symbol BTCUSDT --since-minutes 120 --limit 5
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_news.py" --query NVDA --since-minutes 240 --limit 5
+```
+
+### Saved Backtest Summary
+
+Use only to read an existing saved run.
+
+```bash
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_backtest_summary.py" --run-id fixdb-risk-L1.5-P025-151147
+python3 "__TRADECAT_ROOT__/scripts/tradecat_get_backtest_summary.py" --run-id fixdb-risk-L1.5-P025-151147 --symbols BTCUSDT,ETHUSDT
+```
+
+## Result Handling
+
+- Success: exit code `0`, valid JSON, `ok=true`, non-empty `data`
+- Empty result: exit code `0`, valid JSON, `ok=true`, empty `data`
+- Failure: non-zero exit, invalid JSON, or `ok=false`
+- Timeout: command does not return within a reasonable local read timeout
+
+If the result is empty, say TradeCat did not return matching data. Do not present it as a system failure.
+
