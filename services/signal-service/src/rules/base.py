@@ -2,6 +2,7 @@
 信号规则基础定义
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -97,6 +98,21 @@ def _log_rule_error_limited(rule_name: str, error: Exception) -> None:
         logger.warning("规则检查异常 %s: %s (same_error_count=%d)", rule_name, msg, count)
 
 
+def _slug_part(value: str, default: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower())
+    text = text.strip("_")
+    return text or default
+
+
+def build_rule_id(*, category: str, subcategory: str, table: str, name: str, direction: str) -> str:
+    """Build a stable ASCII id for each rule."""
+    cat = _slug_part(category, "rule")
+    sub = _slug_part(subcategory, "default")
+    payload = "|".join([str(category or ""), str(subcategory or ""), str(table or ""), str(name or ""), str(direction or "")])
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+    return f"{cat}.{sub}.{digest}"
+
+
 class ConditionType(Enum):
     """条件类型枚举"""
 
@@ -129,7 +145,18 @@ class SignalRule:
     condition_config: dict[str, Any] = field(default_factory=dict)
     message_template: str = ""
     fields: dict[str, str] = field(default_factory=dict)
+    rule_id: str = ""
     enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.rule_id:
+            self.rule_id = build_rule_id(
+                category=self.category,
+                subcategory=self.subcategory,
+                table=self.table,
+                name=self.name,
+                direction=self.direction,
+            )
 
     def check_condition(self, prev: dict | None, curr: dict) -> bool:
         """检查条件是否满足"""

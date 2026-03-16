@@ -28,6 +28,7 @@ class SignalEvent:
     source: str = "sqlite"  # sqlite / pg
 
     # 规则信息
+    rule_id: str = ""
     rule_name: str = ""
     category: str = ""
     subcategory: str = ""
@@ -49,6 +50,7 @@ class SignalEvent:
             "timeframe": self.timeframe,
             "price": self.price,
             "source": self.source,
+            "rule_id": self.rule_id,
             "rule_name": self.rule_name,
             "category": self.category,
             "subcategory": self.subcategory,
@@ -76,6 +78,7 @@ class SignalEvent:
             timeframe=data.get("timeframe", "1h"),
             price=data.get("price", 0.0),
             source=data.get("source", "sqlite"),
+            rule_id=data.get("rule_id", ""),
             rule_name=data.get("rule_name", ""),
             category=data.get("category", ""),
             subcategory=data.get("subcategory", ""),

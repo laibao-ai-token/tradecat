@@ -9,6 +9,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
+LIBS_DIR = PROJECT_ROOT.parent.parent / "libs"
+
+if str(LIBS_DIR) not in sys.path:
+    sys.path.insert(0, str(LIBS_DIR))
 
 
 def _bootstrap_src_package() -> None:

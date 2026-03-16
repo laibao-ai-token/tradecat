@@ -17,8 +17,10 @@ from common.scheduler import wait_seconds
 
 try:
     from ..config import get_history_db_path
+    from ..rules import format_signal_display_key, resolve_rule_name
 except ImportError:
     from config import get_history_db_path
+    from rules import format_signal_display_key, resolve_rule_name
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +109,17 @@ class SignalHistory:
         else:
             timestamp = datetime.now().isoformat()
 
-        signal_type = getattr(signal, "signal_type", None) or getattr(signal, "rule_name", "")
+        signal_type = (
+            getattr(signal, "signal_type", None)
+            or getattr(signal, "rule_id", None)
+            or getattr(signal, "rule_name", "")
+        )
         direction = getattr(signal, "direction", "ALERT")
         strength = getattr(signal, "strength", 0)
         timeframe = getattr(signal, "timeframe", "1h")
         price = getattr(signal, "price", 0)
+        rule_id = getattr(signal, "rule_id", "") or ""
+        rule_name = getattr(signal, "rule_name", "") or ""
 
         message = getattr(signal, "message", None)
         message_key = getattr(signal, "message_key", None)
@@ -129,6 +137,10 @@ class SignalHistory:
             extra["message_params"] = msg_params
         if message_key:
             extra.setdefault("message_key", message_key)
+        if rule_id:
+            extra.setdefault("rule_id", str(rule_id))
+        if rule_name:
+            extra.setdefault("rule_name", str(rule_name))
 
         return {
             "timestamp": timestamp,
@@ -317,7 +329,17 @@ class SignalHistory:
             ts = r.get("timestamp", "")[:16].replace("T", " ")
             symbol = r.get("symbol", "").replace("USDT", "")
             direction = r.get("direction", "")
-            signal_type = r.get("signal_type", "")
+            signal_type = str(r.get("signal_type", "") or "")
+            extra_raw = r.get("extra")
+            extra = {}
+            if isinstance(extra_raw, str) and extra_raw.strip():
+                with suppress(Exception):
+                    payload = json.loads(extra_raw)
+                    if isinstance(payload, dict):
+                        extra = payload
+            signal_type = str(extra.get("rule_name") or "") or format_signal_display_key(signal_type) or resolve_rule_name(
+                signal_type
+            )
             strength = r.get("strength", 0)
             icon = dir_icons.get(direction, "📊")
 

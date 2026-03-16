@@ -293,15 +293,19 @@ class SQLiteSignalEngine(BaseEngine):
                 result[table] = data[symbol]
         return result
 
+    @staticmethod
+    def _rule_key(rule: SignalRule) -> str:
+        return str(getattr(rule, "rule_id", "") or getattr(rule, "name", ""))
+
     def _is_cooled_down(self, rule: SignalRule, symbol: str, timeframe: str) -> bool:
         """检查是否在冷却期"""
-        key = f"{rule.name}_{symbol}_{timeframe}"
+        key = f"{self._rule_key(rule)}_{symbol}_{timeframe}"
         last = self.cooldown.get(key, 0)
         return time.time() - last > rule.cooldown
 
     def _set_cooldown(self, rule: SignalRule, symbol: str, timeframe: str) -> bool:
         """设置冷却（同时持久化）。失败返回 False。"""
-        key = f"{rule.name}_{symbol}_{timeframe}"
+        key = f"{self._rule_key(rule)}_{symbol}_{timeframe}"
         ts = time.time()
         try:
             self._cooldown_storage.set(key, ts)
@@ -358,6 +362,7 @@ class SQLiteSignalEngine(BaseEngine):
                                     direction=rule.direction,
                                     strength=rule.strength,
                                     rule_name=rule.name,
+                                    rule_id=rule.rule_id,
                                     timeframe=timeframe,
                                     price=price,
                                     message=rule_msg,
@@ -417,7 +422,7 @@ class SQLiteSignalEngine(BaseEngine):
         """发布信号事件"""
         event = SignalEvent(
             symbol=signal.symbol,
-            signal_type=rule.name,
+            signal_type=rule.rule_id,
             direction=signal.direction,
             strength=signal.strength,
             message_key=f"signal.{rule.category}.{rule.subcategory}",
@@ -430,6 +435,7 @@ class SQLiteSignalEngine(BaseEngine):
             timeframe=signal.timeframe,
             price=signal.price,
             source="sqlite",
+            rule_id=rule.rule_id,
             rule_name=rule.name,
             category=rule.category,
             subcategory=rule.subcategory,

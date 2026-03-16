@@ -212,7 +212,7 @@ VOLUME_ANOMALY_RULES = [
                 (c.get("主动买卖比") or 1) > 1.2
             )
         },
-        message_template="放量上涨! 成交额放大{ratio:.1f}倍 涨幅:{chg:.2f}%",
+        message_template="放量上涨! 成交额放大2倍以上 涨幅:{chg:.2f}%",
         fields={"chg": "变化率"},
     ),
     # 放量下跌

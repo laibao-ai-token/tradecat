@@ -20,6 +20,7 @@ class Signal:
     timeframe: str
     price: float
     message: str
+    rule_id: str = ""
     full_message: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
     category: str = ""
