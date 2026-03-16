@@ -197,6 +197,7 @@ def test_build_input_quality_report_tracks_gaps_and_no_next_open() -> None:
     )
 
     assert report.signal_count == 2
+    assert report.signal_days == 1
     assert report.aggregated_signal_bucket_count == 2
     assert report.candle_count == 3
     assert report.expected_candle_count == 4
@@ -204,6 +205,8 @@ def test_build_input_quality_report_tracks_gaps_and_no_next_open() -> None:
     assert report.dropped_signal_count == 1
     assert report.quality_score == pytest.approx(48.5)
     assert report.quality_status == "fail"
+    assert report.score_status == "fail"
+    assert report.gate_status == "not_evaluated"
     assert report.quality_breakdown["missing_candle_penalty"] == pytest.approx(5.0)
     assert report.quality_breakdown["gap_penalty"] == pytest.approx(1.5)
     assert report.quality_breakdown["no_next_open_penalty"] == pytest.approx(12.5)
@@ -248,7 +251,55 @@ def test_build_input_quality_report_treats_gap_before_later_bar_as_missing_next_
     )
 
     assert report.aggregated_signal_bucket_count == 1
+    assert report.signal_days == 1
     assert report.no_next_open_bucket_count == 1
     assert report.dropped_signal_count == 1
     assert report.symbol_rows[0].no_next_open_bucket_count == 1
     assert report.symbol_rows[0].dropped_signal_count == 1
+
+
+def test_build_input_quality_report_merges_precheck_gate_with_score_status() -> None:
+    from src.backtest.models import BacktestConfig, Bar, DateRange, SignalEvent
+
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=1)
+    t2 = t1 + timedelta(minutes=1)
+
+    cfg = BacktestConfig(
+        symbols=["BTCUSDT"],
+        timeframe="1m",
+        date_range=DateRange(start="2026-01-01 00:00:00", end="2026-01-01 00:02:00"),
+    )
+    signals = [
+        SignalEvent(1, t0, "BTCUSDT", "BUY", 80, "test", "1m", "sqlite", 100.0),
+    ]
+    bars = {
+        "BTCUSDT": [
+            Bar("BTCUSDT", t0, 100, 101, 99, 100, 1),
+            Bar("BTCUSDT", t1, 101, 102, 100, 101, 1),
+            Bar("BTCUSDT", t2, 102, 103, 101, 102, 1),
+        ]
+    }
+
+    report = build_input_quality_report(
+        cfg,
+        run_id="iq-gate-unit",
+        mode="history_signal",
+        signals=signals,
+        bars_by_symbol=bars,
+        signal_days=4,
+        gate_failures=["signal day coverage too low: 4 < 7"],
+        gate_thresholds={
+            "min_signal_days": 7,
+            "min_signal_count": 1,
+            "min_candle_coverage_pct": 95.0,
+        },
+    )
+
+    assert report.quality_score == pytest.approx(100.0)
+    assert report.score_status == "pass"
+    assert report.signal_days == 4
+    assert report.aggregated_signal_bucket_count == 1
+    assert report.gate_status == "fail"
+    assert report.quality_status == "fail"
+    assert report.gate_failures == ["signal day coverage too low: 4 < 7"]

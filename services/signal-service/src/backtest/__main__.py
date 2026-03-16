@@ -2,16 +2,31 @@
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import logging
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Keep backtests reproducible unless the caller explicitly opts into a
+# rule-timeframe override in the current process environment.
+if "SIGNAL_RULE_TIMEFRAMES" not in os.environ:
+    os.environ["SIGNAL_RULE_TIMEFRAMES"] = ""
+
 from ..config import REPO_ROOT
-from .config_loader import load_config
-from .precheck import BacktestCoverageReport, compute_coverage_report, format_coverage_lines
 from .comparison import build_comparison_summary, write_comparison_artifacts
+from .config_loader import load_config
+from .data_loader import floor_minute, parse_timestamp, resolve_range
+from .models import BacktestConfig, DateRange
+from .precheck import (
+    BacktestCoverageReport,
+    build_coverage_guard_thresholds,
+    collect_coverage_guard_failures,
+    compute_coverage_report,
+    format_coverage_lines,
+)
 from .runner import run_backtest
 from .state import mark_done, mark_error, mark_running
 from .walkforward import run_walk_forward
@@ -93,31 +108,17 @@ def _collect_precheck_failures(
     min_signal_count: int,
     min_candle_coverage_pct: float,
 ) -> list[str]:
-    failures: list[str] = []
-
-    if coverage.candle_count <= 0:
-        failures.append("no candle rows in selected window")
-
-    pct_threshold = max(0.0, float(min_candle_coverage_pct))
-    if coverage.expected_candle_count > 0 and coverage.candle_coverage_pct < pct_threshold:
-        failures.append(
-            "candle coverage too low: "
-            f"{coverage.candle_coverage_pct:.2f}% < {pct_threshold:.2f}%"
-        )
-
-    if mode == "history_signal":
-        if int(min_signal_days) > 0 and coverage.signal_days < int(min_signal_days):
-            failures.append(
-                "signal day coverage too low: "
-                f"{coverage.signal_days} < {int(min_signal_days)}"
-            )
-        if int(min_signal_count) > 0 and coverage.signal_count < int(min_signal_count):
-            failures.append(
-                "signal count too low: "
-                f"{coverage.signal_count} < {int(min_signal_count)}"
-            )
-
-    return failures
+    return collect_coverage_guard_failures(
+        mode=mode,
+        signal_days=coverage.signal_days,
+        signal_count=coverage.signal_count,
+        candle_count=coverage.candle_count,
+        expected_candle_count=coverage.expected_candle_count,
+        candle_coverage_pct=coverage.candle_coverage_pct,
+        min_signal_days=min_signal_days,
+        min_signal_count=min_signal_count,
+        min_candle_coverage_pct=min_candle_coverage_pct,
+    )
 
 
 
@@ -128,6 +129,28 @@ def _normalize_mode(raw_mode: str) -> str:
         "offline_129_replay": "offline_rule_replay",
     }
     return alias.get(mode, mode)
+
+
+def _shrink_compare_cfg_to_history_window(cfg: BacktestConfig, coverage: BacktestCoverageReport) -> BacktestConfig:
+    """Clamp compare-mode runs to the actual history-signal overlap window when available."""
+
+    signal_start = parse_timestamp(coverage.signal_min_ts)
+    signal_end = parse_timestamp(coverage.signal_max_ts)
+    if signal_start is None or signal_end is None:
+        return cfg
+
+    requested_start, requested_end = resolve_range(cfg.date_range)
+    overlap_start = max(requested_start, floor_minute(signal_start))
+    overlap_end = min(requested_end, floor_minute(signal_end) + timedelta(minutes=1))
+    if overlap_end <= overlap_start:
+        return cfg
+
+    start_text = overlap_start.isoformat(sep=" ")
+    end_text = overlap_end.isoformat(sep=" ")
+    if start_text == str(cfg.date_range.start or "").strip() and end_text == str(cfg.date_range.end or "").strip():
+        return cfg
+
+    return replace(cfg, date_range=DateRange(start=start_text, end=end_text))
 
 
 def main() -> int:
@@ -282,6 +305,11 @@ def main() -> int:
     for line in format_coverage_lines(coverage):
         logger.info("precheck: %s", line)
 
+    input_quality_gate_thresholds = build_coverage_guard_thresholds(
+        min_signal_days=args.min_signal_days,
+        min_signal_count=args.min_signal_count,
+        min_candle_coverage_pct=args.min_candle_coverage_pct,
+    )
     failures = _collect_precheck_failures(
         coverage,
         mode=mode,
@@ -325,6 +353,13 @@ def main() -> int:
     if mode == "compare_history_rule":
         base_run_id = run_id or datetime.now(tz=timezone.utc).strftime("cmp-%Y%m%d-%H%M%S")
         state_path = backtest_root / "run_state.json"
+        compare_cfg = _shrink_compare_cfg_to_history_window(cfg, coverage)
+        if compare_cfg is not cfg:
+            logger.info(
+                "compare window narrowed to history overlap: %s -> %s",
+                compare_cfg.date_range.start,
+                compare_cfg.date_range.end,
+            )
 
         mark_running(
             state_path,
@@ -336,13 +371,13 @@ def main() -> int:
 
         try:
             history_result = run_backtest(
-                cfg,
+                compare_cfg,
                 mode="history_signal",
                 run_id=f"{base_run_id}-history",
                 output_dir=session_dir / f"{base_run_id}-history",
             )
             rule_result = run_backtest(
-                cfg,
+                compare_cfg,
                 mode="offline_rule_replay",
                 run_id=f"{base_run_id}-rules",
                 output_dir=session_dir / f"{base_run_id}-rules",
@@ -477,6 +512,9 @@ def main() -> int:
         mode=mode,
         run_id=run_id,
         output_dir=session_dir,
+        input_quality_signal_days=coverage.signal_days,
+        input_quality_gate_failures=failures,
+        input_quality_gate_thresholds=input_quality_gate_thresholds,
     )
 
     logger.info("run_id=%s", result.run_id)

@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$(dirname "$PROJECT_DIR")")"
 CALLER_INDICATOR_SQLITE_PATH="${INDICATOR_SQLITE_PATH:-}"
+CALLER_SIGNAL_RULE_TIMEFRAMES_SET=0
+if [[ -n "${SIGNAL_RULE_TIMEFRAMES+x}" ]]; then
+    CALLER_SIGNAL_RULE_TIMEFRAMES_SET=1
+fi
 
 resolve_default_backtest_indicator_db() {
     local dir="$REPO_ROOT/artifacts/indicator_db"
@@ -85,6 +89,12 @@ safe_load_env() {
 }
 
 safe_load_env "$REPO_ROOT/config/.env"
+
+# Preserve reproducible replay semantics unless the caller explicitly exports
+# SIGNAL_RULE_TIMEFRAMES for this backtest process.
+if [[ "$CALLER_SIGNAL_RULE_TIMEFRAMES_SET" -eq 0 ]]; then
+    export SIGNAL_RULE_TIMEFRAMES=""
+fi
 
 # Backtest default: prefer the latest 30d indicator snapshot in artifacts/indicator_db.
 # If caller explicitly provides INDICATOR_SQLITE_PATH, keep caller value unchanged.

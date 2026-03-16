@@ -79,6 +79,9 @@ def test_replay_signals_from_rules_threshold_cross(monkeypatch, tmp_path: Path) 
     assert events[0].source == "offline_rule_replay"
     assert events[0].timeframe == "1m"
     assert events[0].symbol == "BTCUSDT"
+    assert events[0].signal_type == rule.rule_id
+    assert events[0].rule_id == rule.rule_id
+    assert events[0].rule_name == rule.name
 
 
 def test_replay_signals_from_rules_works_without_volume_column(monkeypatch, tmp_path: Path) -> None:
@@ -116,7 +119,7 @@ def test_replay_signals_from_rules_works_without_volume_column(monkeypatch, tmp_
 
     # Missing volume field should not hard-block the replay.
     assert len(events) == 1
-    assert events[0].signal_type == "demo_cross_up_no_vol"
+    assert events[0].signal_type == rule.rule_id
 
 
 def test_replay_signals_from_rules_uses_preferred_for_default_rule_timeframes(monkeypatch, tmp_path: Path) -> None:
@@ -277,3 +280,58 @@ def test_replay_signals_from_rules_strict_timeframe_filter_without_overlap(monke
     assert profile.configured_timeframes == ("1m",)
     assert profile.observed_timeframes == ("1h",)
     assert profile.overlap_timeframes == ()
+
+
+def test_replay_signals_from_rules_skips_missing_tables(monkeypatch, tmp_path: Path) -> None:
+    from src.backtest.rule_replay import replay_signals_from_rules
+
+    db = tmp_path / "demo_missing_table.db"
+    _mk_db(db, with_volume=True)
+
+    existing_rule = SignalRule(
+        name="demo_existing_table",
+        table="demo_table",
+        category="unit",
+        subcategory="unit",
+        direction="BUY",
+        strength=66,
+        timeframes=["1m"],
+        cooldown=0,
+        condition_type=ConditionType.THRESHOLD_CROSS_UP,
+        condition_config={"field": "指标值", "threshold": 10.0},
+    )
+    missing_rule = SignalRule(
+        name="demo_missing_table",
+        table="missing_table",
+        category="unit",
+        subcategory="unit",
+        direction="BUY",
+        strength=66,
+        timeframes=["1m"],
+        cooldown=0,
+        condition_type=ConditionType.THRESHOLD_CROSS_UP,
+        condition_config={"field": "指标值", "threshold": 10.0},
+    )
+
+    monkeypatch.setattr("src.backtest.rule_replay.ALL_RULES", [existing_rule, missing_rule], raising=False)
+    monkeypatch.setattr(
+        "src.backtest.rule_replay.RULES_BY_TABLE",
+        {"demo_table": [existing_rule], "missing_table": [missing_rule]},
+        raising=False,
+    )
+
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 1, 0, 3, tzinfo=timezone.utc)
+    events, stats = replay_signals_from_rules(
+        str(db),
+        symbols=["BTCUSDT"],
+        start=start,
+        end=end,
+        preferred_timeframe="1m",
+    )
+
+    assert len(events) == 1
+    source_profile = stats.rule_source_profiles["demo_missing_table"]
+    assert source_profile.table == "missing_table"
+    assert source_profile.table_present is False
+    assert source_profile.row_count == 0

@@ -130,12 +130,32 @@ def _write_rule_replay_diagnostics(output_dir: Path, replay_stats: object) -> No
             "has_overlap": bool(overlap),
         }
 
+    source_profiles_raw = getattr(replay_stats, "rule_source_profiles", {})
+    source_profiles_map = source_profiles_raw if isinstance(source_profiles_raw, dict) else {}
+    payload_source_profiles: dict[str, dict[str, object]] = {}
+    for rule_name, profile in source_profiles_map.items():
+        if isinstance(profile, dict):
+            table = str(profile.get("table") or "")
+            table_present = bool(profile.get("table_present", True))
+            row_count = _as_int(profile.get("row_count"))
+        else:
+            table = str(getattr(profile, "table", "") or "")
+            table_present = bool(getattr(profile, "table_present", True))
+            row_count = _as_int(getattr(profile, "row_count", 0))
+
+        payload_source_profiles[str(rule_name)] = {
+            "table": table,
+            "table_present": table_present,
+            "row_count": row_count,
+        }
+
     payload = {
         "table_count": _as_int(getattr(replay_stats, "table_count", 0)),
         "row_count": _as_int(getattr(replay_stats, "row_count", 0)),
         "signal_count": _as_int(getattr(replay_stats, "signal_count", 0)),
         "rule_counters": payload_rows,
         "rule_timeframe_profiles": payload_profiles,
+        "rule_source_profiles": payload_source_profiles,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "rule_replay_diagnostics.json").write_text(
@@ -387,6 +407,9 @@ def run_backtest(
     run_id: str | None = None,
     output_dir: Path | None = None,
     ephemeral: bool = False,
+    input_quality_signal_days: int | None = None,
+    input_quality_gate_failures: list[str] | None = None,
+    input_quality_gate_thresholds: dict[str, int | float] | None = None,
 ) -> RunnerResult:
     """Run one backtest; optionally skip state/artifact side effects for ephemeral evaluation."""
 
@@ -460,6 +483,9 @@ def run_backtest(
             signals=signals,
             bars_by_symbol=bars_by_symbol,
             score_map=score_map,
+            signal_days=input_quality_signal_days,
+            gate_failures=input_quality_gate_failures,
+            gate_thresholds=input_quality_gate_thresholds,
         )
 
         current_stage = "executing"

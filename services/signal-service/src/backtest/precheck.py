@@ -76,14 +76,19 @@ class InputQualityReport:
     timeframe: str
     generated_at: str
     signal_count: int
-    aggregated_signal_bucket_count: int
-    candle_count: int
-    expected_candle_count: int
-    candle_coverage_pct: float
-    no_next_open_bucket_count: int
-    dropped_signal_count: int
-    quality_score: float
+    signal_days: int = 0
+    aggregated_signal_bucket_count: int = 0
+    candle_count: int = 0
+    expected_candle_count: int = 0
+    candle_coverage_pct: float = 0.0
+    no_next_open_bucket_count: int = 0
+    dropped_signal_count: int = 0
+    quality_score: float = 0.0
     quality_status: str = "unknown"
+    score_status: str = "unknown"
+    gate_status: str = "not_evaluated"
+    gate_failures: list[str] = field(default_factory=list)
+    gate_thresholds: dict[str, int | float] = field(default_factory=dict)
     quality_breakdown: dict[str, float | int] = field(default_factory=dict)
     symbol_rows: list[InputQualitySymbol] = field(default_factory=list)
 
@@ -172,6 +177,88 @@ def _calc_quality_score_components(
         "quality_score": round(quality_score, 2),
     }
     return float(quality_score), status, breakdown
+
+
+def _count_signal_days(signals: list[SignalEvent]) -> int:
+    days: set[str] = set()
+    for event in signals:
+        try:
+            days.add(event.timestamp.astimezone(timezone.utc).date().isoformat())
+        except Exception:
+            days.add(str(event.timestamp.date()))
+    return len(days)
+
+
+def build_coverage_guard_thresholds(
+    *,
+    min_signal_days: int,
+    min_signal_count: int,
+    min_candle_coverage_pct: float,
+) -> dict[str, int | float]:
+    """Normalize coverage guard thresholds for JSON/report payloads."""
+
+    return {
+        "min_signal_days": max(0, int(min_signal_days)),
+        "min_signal_count": max(0, int(min_signal_count)),
+        "min_candle_coverage_pct": max(0.0, float(min_candle_coverage_pct)),
+    }
+
+
+def collect_coverage_guard_failures(
+    *,
+    mode: str,
+    signal_days: int,
+    signal_count: int,
+    candle_count: int,
+    expected_candle_count: int,
+    candle_coverage_pct: float,
+    min_signal_days: int,
+    min_signal_count: int,
+    min_candle_coverage_pct: float,
+) -> list[str]:
+    """Evaluate the shared precheck guard against coverage-style counters."""
+
+    failures: list[str] = []
+
+    if int(candle_count) <= 0:
+        failures.append("no candle rows in selected window")
+
+    pct_threshold = max(0.0, float(min_candle_coverage_pct))
+    if int(expected_candle_count) > 0 and float(candle_coverage_pct) < pct_threshold:
+        failures.append(
+            "candle coverage too low: "
+            f"{float(candle_coverage_pct):.2f}% < {pct_threshold:.2f}%"
+        )
+
+    if str(mode or "").strip().lower() == "history_signal":
+        day_threshold = max(0, int(min_signal_days))
+        if day_threshold > 0 and int(signal_days) < day_threshold:
+            failures.append(
+                "signal day coverage too low: "
+                f"{int(signal_days)} < {day_threshold}"
+            )
+
+        count_threshold = max(0, int(min_signal_count))
+        if count_threshold > 0 and int(signal_count) < count_threshold:
+            failures.append(
+                "signal count too low: "
+                f"{int(signal_count)} < {count_threshold}"
+            )
+
+    return failures
+
+
+def _merge_quality_status(score_status: str, gate_status: str) -> str:
+    score = str(score_status or "unknown").strip().lower() or "unknown"
+    gate = str(gate_status or "not_evaluated").strip().lower() or "not_evaluated"
+
+    if gate == "fail":
+        return "fail"
+    if score in {"pass", "warn", "fail"}:
+        return score
+    if gate == "pass":
+        return "pass"
+    return "unknown"
 
 
 def _minute_span(start_dt: datetime, end_dt: datetime) -> int:
@@ -437,6 +524,9 @@ def build_input_quality_report(
     signals: list[SignalEvent],
     bars_by_symbol: dict[str, list[Bar]],
     score_map: dict[str, dict[datetime, int]] | None = None,
+    signal_days: int | None = None,
+    gate_failures: list[str] | None = None,
+    gate_thresholds: dict[str, int | float] | None = None,
 ) -> InputQualityReport:
     """Build input-quality diagnostics from loaded bars and signals."""
 
@@ -534,6 +624,14 @@ def build_input_quality_report(
         signal_count=total_signal_count,
         dropped_signal_count=total_dropped_signal_count,
     )
+    resolved_signal_days = int(signal_days) if signal_days is not None else _count_signal_days(signals)
+    resolved_gate_thresholds = dict(gate_thresholds or {})
+    resolved_gate_failures = [str(item).strip() for item in (gate_failures or []) if str(item).strip()]
+    gate_status = "not_evaluated"
+    overall_quality_status = str(quality_status)
+    if resolved_gate_thresholds:
+        gate_status = "fail" if resolved_gate_failures else "pass"
+        overall_quality_status = _merge_quality_status(str(quality_status), gate_status)
 
     return InputQualityReport(
         run_id=str(run_id or ""),
@@ -543,6 +641,7 @@ def build_input_quality_report(
         timeframe=str(config.timeframe or "").strip(),
         generated_at=_utc_now_iso(),
         signal_count=total_signal_count,
+        signal_days=resolved_signal_days,
         aggregated_signal_bucket_count=total_aggregated_bucket_count,
         candle_count=total_candle_count,
         expected_candle_count=total_expected_candle_count,
@@ -550,7 +649,11 @@ def build_input_quality_report(
         no_next_open_bucket_count=total_no_next_open_bucket_count,
         dropped_signal_count=total_dropped_signal_count,
         quality_score=float(quality_score),
-        quality_status=str(quality_status),
+        quality_status=str(overall_quality_status),
+        score_status=str(quality_status),
+        gate_status=gate_status,
+        gate_failures=resolved_gate_failures,
+        gate_thresholds=resolved_gate_thresholds,
         quality_breakdown=quality_breakdown,
         symbol_rows=symbol_rows,
     )

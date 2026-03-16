@@ -114,6 +114,8 @@ class SignalEvent:
     timeframe: str
     source: str
     price: float | None
+    rule_id: str = ""
+    rule_name: str = ""
 
 
 @dataclass(frozen=True)

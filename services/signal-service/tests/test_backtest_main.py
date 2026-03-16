@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from src.backtest.models import BacktestConfig, Metrics
+from src.backtest.models import BacktestConfig, DateRange, Metrics
 from src.backtest.precheck import BacktestCoverageReport
 from src.backtest.runner import RunnerResult
 from src.backtest.state import read_state
@@ -92,6 +92,38 @@ def test_collect_alignment_gate_failures_for_score_and_risk() -> None:
     assert len(failures) == 2
     assert "alignment score gate failed" in failures[0]
     assert "alignment risk gate failed" in failures[1]
+
+
+def test_shrink_compare_cfg_to_history_window() -> None:
+    from src.backtest.__main__ import _shrink_compare_cfg_to_history_window
+
+    cfg = BacktestConfig(
+        date_range=DateRange(
+            start="2026-01-01 00:00:00+00:00",
+            end="2026-01-10 00:00:00+00:00",
+        )
+    )
+    coverage = BacktestCoverageReport(
+        start="2026-01-01 00:00:00+00:00",
+        end="2026-01-10 00:00:00+00:00",
+        timeframe="1m",
+        symbols=["BTCUSDT"],
+        signal_count=10,
+        signal_days=3,
+        signal_min_ts="2026-01-04 12:03:12+00:00",
+        signal_max_ts="2026-01-07 01:02:03+00:00",
+        candle_count=100,
+        candle_min_ts="2026-01-01 00:00:00+00:00",
+        candle_max_ts="2026-01-10 00:00:00+00:00",
+        expected_candle_count=100,
+        candle_coverage_pct=100.0,
+        symbol_rows=[],
+    )
+
+    shrunk = _shrink_compare_cfg_to_history_window(cfg, coverage)
+
+    assert shrunk.date_range.start == "2026-01-04 12:03:00+00:00"
+    assert shrunk.date_range.end == "2026-01-07 01:03:00+00:00"
 
 
 def test_main_compare_mode_returns_gate_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

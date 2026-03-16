@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from ..rules import resolve_rule_id, resolve_rule_name
 from .models import Bar, DateRange, SignalEvent
 
 logger = logging.getLogger(__name__)
@@ -88,7 +90,7 @@ def load_signals_from_sqlite(
     events: list[SignalEvent] = []
 
     query = """
-        SELECT id, timestamp, symbol, direction, strength, signal_type, timeframe, source, price
+        SELECT id, timestamp, symbol, direction, strength, signal_type, timeframe, source, price, extra
         FROM signal_history
         WHERE timestamp >= ? AND timestamp <= ?
         ORDER BY timestamp ASC, id ASC
@@ -127,6 +129,37 @@ def load_signals_from_sqlite(
             except Exception:
                 price = None
 
+        extra_raw = row["extra"]
+        extra: dict[str, object] = {}
+        if isinstance(extra_raw, str) and extra_raw.strip():
+            try:
+                payload = json.loads(extra_raw)
+                if isinstance(payload, dict):
+                    extra = payload
+            except Exception:
+                extra = {}
+
+        message_key = str(extra.get("message_key") or "").strip()
+        category = ""
+        subcategory = ""
+        if message_key.startswith("signal."):
+            parts = message_key.split(".")
+            if len(parts) >= 3:
+                category = str(parts[1]).strip()
+                subcategory = str(parts[2]).strip()
+
+        raw_signal_type = str(row["signal_type"] or "").strip()
+        rule_id = str(extra.get("rule_id") or "").strip() or resolve_rule_id(
+            raw_signal_type,
+            category=category,
+            subcategory=subcategory,
+        )
+        rule_name = str(extra.get("rule_name") or "").strip() or resolve_rule_name(
+            rule_id or raw_signal_type,
+            category=category,
+            subcategory=subcategory,
+        )
+
         events.append(
             SignalEvent(
                 event_id=int(row["id"]),
@@ -134,10 +167,12 @@ def load_signals_from_sqlite(
                 symbol=symbol,
                 direction=direction,
                 strength=strength,
-                signal_type=str(row["signal_type"] or ""),
+                signal_type=rule_id or raw_signal_type,
                 timeframe=str(row["timeframe"] or ""),
                 source=str(row["source"] or "sqlite"),
                 price=price,
+                rule_id=rule_id,
+                rule_name=rule_name,
             )
         )
 

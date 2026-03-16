@@ -201,6 +201,7 @@ def test_write_artifacts_persists_baseline_fields(tmp_path: Path) -> None:
         timeframe="1m",
         generated_at=t1.isoformat(sep=" "),
         signal_count=1,
+        signal_days=1,
         aggregated_signal_bucket_count=1,
         candle_count=2,
         expected_candle_count=2,
@@ -209,6 +210,13 @@ def test_write_artifacts_persists_baseline_fields(tmp_path: Path) -> None:
         dropped_signal_count=0,
         quality_score=100.0,
         quality_status="pass",
+        score_status="pass",
+        gate_status="pass",
+        gate_thresholds={
+            "min_signal_days": 1,
+            "min_signal_count": 1,
+            "min_candle_coverage_pct": 95.0,
+        },
         quality_breakdown={
             "coverage_score": 100.0,
             "missing_candle_penalty": 0.0,
@@ -256,11 +264,16 @@ def test_write_artifacts_persists_baseline_fields(tmp_path: Path) -> None:
     input_quality_payload = json.loads((tmp_path / "input_quality.json").read_text(encoding="utf-8"))
     assert input_quality_payload["quality_score"] == 100.0
     assert input_quality_payload["quality_status"] == "pass"
+    assert input_quality_payload["score_status"] == "pass"
+    assert input_quality_payload["gate_status"] == "pass"
+    assert input_quality_payload["signal_days"] == 1
     assert input_quality_payload["quality_breakdown"]["coverage_score"] == 100.0
     assert input_quality_payload["symbol_rows"][0]["quality_status"] == "pass"
     report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "## Input Quality" in report_md
     assert "Quality Status" in report_md
+    assert "- Signal Days: `1`" in report_md
+    assert "- Gate Status: `PASS`" in report_md
     assert "Penalties" in report_md
     assert "Risk Parity Return" in report_md
     assert "Simple Momentum Return" in report_md

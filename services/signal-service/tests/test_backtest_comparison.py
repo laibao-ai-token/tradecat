@@ -134,7 +134,7 @@ def test_write_comparison_artifacts(tmp_path: Path) -> None:
     assert payload["history_timeframe_profile"]["dominant"] == "1m"
     assert payload["rule_timeframe_profile"]["dominant"] == "1m"
     assert payload["missing_history_rules_diagnostics"] == []
-    assert round(payload["alignment_score"], 2) == 49.71
+    assert round(payload["alignment_score"], 2) == 51.21
     assert payload["alignment_status"] == "fail"
     assert payload["alignment_risk_level"] == "critical"
     assert payload["alignment_risk_summary"] == (
@@ -145,7 +145,9 @@ def test_write_comparison_artifacts(tmp_path: Path) -> None:
     assert payload["alignment_warning_counts"]["info"] == 0
     assert round(payload["alignment_breakdown"]["rule_overlap_score"], 2) == 52.22
     assert round(payload["alignment_breakdown"]["top_rule_score"], 2) == 38.10
-    assert round(payload["alignment_inputs"]["signal_count_delta_pct"], 2) == 40.00
+    assert round(payload["alignment_inputs"]["signal_count_delta_pct"], 2) == 30.00
+    assert round(payload["alignment_inputs"]["total_signal_count_delta_pct"], 2) == 40.00
+    assert payload["alignment_inputs"]["comparable_rule_signal_count"] == 70
     assert round(payload["timeframe_overlap_pct"], 2) == 33.33
     assert any(
         row["kind"] == "top_rule_missing_in_rule_replay" and row["subject"] == "rule_c"
@@ -368,5 +370,88 @@ def test_write_comparison_artifacts_marks_timeframe_no_data_reason(tmp_path: Pat
     assert payload["alignment_warning_counts"]["error"] >= 1
     assert any(
         warning["kind"] == "top_rule_timeframe_no_data" and warning["subject"] == "rule_missing"
+        for warning in payload["alignment_warnings"]
+    )
+
+
+def test_write_comparison_artifacts_marks_source_table_missing_reason(tmp_path: Path) -> None:
+    history = RunnerResult(
+        run_id="cmp-004-history",
+        output_dir=tmp_path / "history",
+        latest_dir=tmp_path / "latest",
+        metrics=_mk_metrics(
+            "cmp-004-history",
+            "history_signal",
+            ret=-1.0,
+            dd=6.0,
+            trades=10,
+            excess=1.0,
+            signal_count=40,
+            signal_type_counts={"rule_missing": 40},
+            direction_counts={"BUY": 20, "SELL": 20},
+            timeframe_counts={"1m": 40},
+        ),
+    )
+
+    rule_output = tmp_path / "rules"
+    rule_output.mkdir(parents=True, exist_ok=True)
+    (rule_output / "rule_replay_diagnostics.json").write_text(
+        json.dumps(
+            {
+                "table_count": 1,
+                "row_count": 0,
+                "signal_count": 0,
+                "rule_counters": {
+                    "rule_missing": {
+                        "evaluated": 0,
+                        "timeframe_filtered": 0,
+                        "volume_filtered": 0,
+                        "condition_failed": 0,
+                        "cooldown_blocked": 0,
+                        "triggered": 0,
+                    }
+                },
+                "rule_source_profiles": {
+                    "rule_missing": {
+                        "table": "missing_table",
+                        "table_present": False,
+                        "row_count": 0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rule = RunnerResult(
+        run_id="cmp-004-rules",
+        output_dir=rule_output,
+        latest_dir=tmp_path / "latest",
+        metrics=_mk_metrics(
+            "cmp-004-rules",
+            "offline_rule_replay",
+            ret=-0.2,
+            dd=3.0,
+            trades=8,
+            excess=1.8,
+            signal_count=0,
+            signal_type_counts={},
+            direction_counts={},
+            timeframe_counts={},
+        ),
+    )
+
+    summary = build_comparison_summary("cmp-004", history, rule)
+    out_dir = write_comparison_artifacts(tmp_path, summary, rule_run_dir=rule_output)
+
+    payload = json.loads((out_dir / "comparison.json").read_text(encoding="utf-8"))
+    rows = payload["missing_history_rules_diagnostics"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["primary_block_reason"] == "source_table_missing"
+    assert row["source_table"] == "missing_table"
+    assert row["source_table_present"] == "false"
+    assert any(
+        warning["kind"] == "top_rule_source_table_missing" and warning["subject"] == "rule_missing"
         for warning in payload["alignment_warnings"]
     )

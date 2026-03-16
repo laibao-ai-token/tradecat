@@ -1,7 +1,8 @@
-"""Offline replay based on the full SQLite rule set.
+"""Offline replay based on the SQLite BUY/SELL rule set.
 
-This module replays `src.rules.ALL_RULES` on historical indicator rows in
-`market_data.db`, then emits a deterministic signal stream for backtests.
+This module replays the BUY/SELL subset of `src.rules.ALL_RULES` on
+historical indicator rows in `market_data.db`, then emits a deterministic
+signal stream for backtests.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable
 
-from ..rules import ALL_RULES, RULES_BY_TABLE, SignalRule
+from ..rules import ALL_RULES, RULES_BY_TABLE, SignalRule, format_rule_display_key
 from .data_loader import floor_minute, normalize_symbol, parse_timestamp
 from .models import SignalEvent
 
@@ -56,12 +57,20 @@ class RuleTimeframeProfile:
 
 
 @dataclass(frozen=True)
+class RuleSourceProfile:
+    table: str = ""
+    table_present: bool = True
+    row_count: int = 0
+
+
+@dataclass(frozen=True)
 class RuleReplayStats:
     table_count: int = 0
     row_count: int = 0
     signal_count: int = 0
     rule_counters: dict[str, RuleReplayCounter] = field(default_factory=dict)
     rule_timeframe_profiles: dict[str, RuleTimeframeProfile] = field(default_factory=dict)
+    rule_source_profiles: dict[str, RuleSourceProfile] = field(default_factory=dict)
 
 
 
@@ -146,6 +155,11 @@ def _new_counter() -> dict[str, int]:
         "cooldown_blocked": 0,
         "triggered": 0,
     }
+
+
+def _load_available_tables(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()
+    return {str(row[0]) for row in rows if row and str(row[0]).strip()}
 
 
 
@@ -239,15 +253,22 @@ def replay_signals_from_rules(
     rule_timeframes: dict[int, set[str]] = {}
     rule_timeframe_locked: dict[int, bool] = {}
     rule_profile_raw: dict[str, dict[str, set[str]]] = {}
+    rule_source_raw: dict[str, dict[str, object]] = {}
 
     for rule in active_rules:
         rules_by_table[rule.table].append(rule)
         resolved_tfs, locked = _resolve_rule_timeframes(rule, preferred_timeframe)
         rule_timeframes[id(rule)] = resolved_tfs
         rule_timeframe_locked[id(rule)] = locked
-        rule_profile_raw[str(rule.name)] = {
+        profile_key = format_rule_display_key(rule)
+        rule_profile_raw[profile_key] = {
             "configured_timeframes": set(resolved_tfs),
             "observed_timeframes": set(),
+        }
+        rule_source_raw[profile_key] = {
+            "table": str(rule.table),
+            "table_present": True,
+            "row_count": 0,
         }
 
     event_id = max(1, int(start_event_id))
@@ -261,9 +282,21 @@ def replay_signals_from_rules(
     conn = sqlite3.connect(sqlite_path, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
+        available_tables = _load_available_tables(conn)
         for table in sorted(RULES_BY_TABLE.keys()):
             table_rules = rules_by_table.get(table, [])
             if not table_rules:
+                continue
+            if table not in available_tables:
+                logger.warning("Rule replay skipped missing table: %s", table)
+                for rule in table_rules:
+                    profile_key = format_rule_display_key(rule)
+                    source_profile = rule_source_raw.setdefault(
+                        profile_key,
+                        {"table": str(rule.table), "table_present": True, "row_count": 0},
+                    )
+                    source_profile["table_present"] = False
+                    rule_counter_raw.setdefault(profile_key, _new_counter())
                 continue
 
             rows = _load_rows_for_table(
@@ -282,11 +315,18 @@ def replay_signals_from_rules(
             observed_timeframes = {_normalize_tf(item.get("周期"), preferred_timeframe) for item in rows}
             observed_timeframes = {tf for tf in observed_timeframes if tf}
             for rule in table_rules:
+                profile_key = format_rule_display_key(rule)
                 profile = rule_profile_raw.setdefault(
-                    str(rule.name),
+                    profile_key,
                     {"configured_timeframes": set(), "observed_timeframes": set()},
                 )
                 profile["observed_timeframes"].update(observed_timeframes)
+                source_profile = rule_source_raw.setdefault(
+                    profile_key,
+                    {"table": str(rule.table), "table_present": True, "row_count": 0},
+                )
+                source_profile["table_present"] = True
+                source_profile["row_count"] = int(source_profile.get("row_count") or 0) + len(rows)
 
             for row in rows:
                 symbol = str(row.get("交易对") or "").strip().upper()
@@ -309,7 +349,8 @@ def replay_signals_from_rules(
                 volume = _extract_volume(row)
 
                 for rule in table_rules:
-                    counter = rule_counter_raw.setdefault(rule.name, _new_counter())
+                    profile_key = format_rule_display_key(rule)
+                    counter = rule_counter_raw.setdefault(profile_key, _new_counter())
                     counter["evaluated"] += 1
 
                     rule_tfs = rule_timeframes.get(id(rule), set())
@@ -333,7 +374,7 @@ def replay_signals_from_rules(
                         counter["condition_failed"] += 1
                         continue
 
-                    cooldown_key = f"{rule.name}_{symbol}_{timeframe}"
+                    cooldown_key = f"{rule.rule_id}_{symbol}_{timeframe}"
                     last_ts = cooldown_last_ts.get(cooldown_key)
                     if last_ts is not None:
                         if (row_ts - last_ts).total_seconds() <= max(0, int(rule.cooldown)):
@@ -349,10 +390,12 @@ def replay_signals_from_rules(
                             symbol=symbol,
                             direction=str(rule.direction).upper(),
                             strength=int(rule.strength),
-                            signal_type=str(rule.name),
+                            signal_type=str(rule.rule_id),
                             timeframe=timeframe or preferred_timeframe,
                             source="offline_rule_replay",
                             price=_extract_price(row),
+                            rule_id=str(rule.rule_id),
+                            rule_name=str(rule.name),
                         )
                     )
                     event_id += 1
@@ -372,6 +415,7 @@ def replay_signals_from_rules(
     }
 
     rule_timeframe_profiles: dict[str, RuleTimeframeProfile] = {}
+    rule_source_profiles: dict[str, RuleSourceProfile] = {}
     for rule_name, profile in sorted(rule_profile_raw.items(), key=lambda item: item[0]):
         configured = tuple(
             sorted(
@@ -401,6 +445,12 @@ def replay_signals_from_rules(
             observed_timeframes=observed,
             overlap_timeframes=overlap,
         )
+        raw_source = rule_source_raw.get(str(rule_name), {})
+        rule_source_profiles[str(rule_name)] = RuleSourceProfile(
+            table=str(raw_source.get("table") or ""),
+            table_present=bool(raw_source.get("table_present", True)),
+            row_count=int(raw_source.get("row_count") or 0),
+        )
 
     stats = RuleReplayStats(
         table_count=sum(1 for table in rules_by_table if rules_by_table.get(table)),
@@ -408,6 +458,7 @@ def replay_signals_from_rules(
         signal_count=len(events),
         rule_counters=rule_counters,
         rule_timeframe_profiles=rule_timeframe_profiles,
+        rule_source_profiles=rule_source_profiles,
     )
     logger.info(
         "Rule replay generated %d signals from %d rows across %d tables",

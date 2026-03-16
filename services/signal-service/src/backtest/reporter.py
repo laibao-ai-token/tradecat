@@ -8,6 +8,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..rules import format_signal_display_key
 from .models import Bar, EquityPoint, Metrics, SignalEvent, SymbolContribution, Trade
 from .precheck import InputQualityReport, input_quality_to_payload
 from .retention import collect_recent_comparable_metrics
@@ -137,7 +138,8 @@ def _build_signal_profile(signals: list[SignalEvent] | None) -> tuple[dict[str, 
     timeframe_counts: dict[str, int] = {}
 
     for ev in signals:
-        signal_type = str(ev.signal_type or "UNKNOWN").strip() or "UNKNOWN"
+        raw_signal_type = str(ev.rule_id or ev.signal_type or "UNKNOWN").strip() or "UNKNOWN"
+        signal_type = format_signal_display_key(raw_signal_type) or raw_signal_type
         direction = str(ev.direction or "UNKNOWN").upper().strip() or "UNKNOWN"
         timeframe = str(ev.timeframe or "UNKNOWN").strip() or "UNKNOWN"
 
@@ -972,6 +974,11 @@ def _render_markdown_report(
     stability_report: dict[str, object] | None = None,
 ) -> str:
     recent = sorted(trades, key=lambda x: x.exit_ts, reverse=True)[:10]
+    execution_ctx = metrics.strategy_context.get("execution", {}) if isinstance(metrics.strategy_context, dict) else {}
+    entry_mode = str(execution_ctx.get("entry") or "next_open").strip().lower()
+    fee_assumption = "Current execution path prices fills with taker fees."
+    if entry_mode == "next_open":
+        fee_assumption = "Current next_open execution prices fills with taker fees; maker_fee_bps is reserved for future passive fills."
     lines = [
         "# Backtest Report",
         "",
@@ -1005,6 +1012,7 @@ def _render_markdown_report(
         f"- Cost Drag vs Initial Equity: `{metrics.cost_drag_pct_of_initial:+.2f}%`",
         f"- Cost Status: `{metrics.cost_status}`",
         f"- Cost Summary: `{metrics.cost_summary}`",
+        f"- Fee Assumption: `{fee_assumption}`",
         f"- Embedded Slippage Cost: `{metrics.slippage_cost:+.4f}`",
         f"- Slippage Cost vs Initial Equity: `{metrics.slippage_cost_pct_of_initial:+.2f}%`",
         f"- Embedded Impact Cost: `{metrics.impact_cost:+.4f}`",
@@ -1022,12 +1030,25 @@ def _render_markdown_report(
 
     if input_quality is not None:
         breakdown = input_quality.quality_breakdown or {}
+        gate_thresholds = input_quality.gate_thresholds or {}
+        gate_threshold_text = ""
+        if gate_thresholds:
+            gate_threshold_text = (
+                f"signal_days>={int(gate_thresholds.get('min_signal_days', 0))} | "
+                f"signal_count>={int(gate_thresholds.get('min_signal_count', 0))} | "
+                f"candle_coverage>={float(gate_thresholds.get('min_candle_coverage_pct', 0.0)):.2f}%"
+            )
+        gate_failures_text = "; ".join(input_quality.gate_failures) if input_quality.gate_failures else "none"
         lines.extend(
             [
                 "## Input Quality",
                 "",
                 f"- Quality Score: `{input_quality.quality_score:.2f}`",
                 f"- Quality Status: `{str(input_quality.quality_status or '--').upper()}`",
+                f"- Score Status: `{str(input_quality.score_status or '--').upper()}`",
+                f"- Gate Status: `{str(input_quality.gate_status or '--').upper()}`",
+                f"- Signal Days: `{input_quality.signal_days}`",
+                f"- Signal Count: `{input_quality.signal_count}`",
                 f"- Candle Coverage: `{input_quality.candle_coverage_pct:.2f}%`",
                 f"- Aggregated Signal Buckets: `{input_quality.aggregated_signal_bucket_count}`",
                 f"- No Next Open Buckets: `{input_quality.no_next_open_bucket_count}`",
@@ -1039,6 +1060,8 @@ def _render_markdown_report(
                     f"no_next_open=`{float(breakdown.get('no_next_open_penalty', 0.0)):.2f}` | "
                     f"dropped=`{float(breakdown.get('dropped_signal_penalty', 0.0)):.2f}`"
                 ),
+                f"- Gate Thresholds: `{gate_threshold_text or '--'}`",
+                f"- Gate Failures: `{gate_failures_text}`",
                 "",
                 "| symbol | score | status | coverage | gaps | missing_candles | no_next_open | dropped |",
                 "|---|---:|---|---:|---:|---:|---:|---:|",

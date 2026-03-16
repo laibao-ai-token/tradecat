@@ -98,6 +98,11 @@ def _counter_delta(history: dict[str, int], rule: dict[str, int], *, top_n: int)
     return trimmed
 
 
+def _shared_rule_signal_count(history: dict[str, int], rule: dict[str, int]) -> int:
+    shared_keys = set(history.keys()) & set(rule.keys())
+    return sum(int(rule.get(key) or 0) for key in shared_keys)
+
+
 def _top_missing_history_rules(
     history: dict[str, int],
     rule: dict[str, int],
@@ -220,21 +225,25 @@ def _normalize_tf_list(raw: object) -> list[str]:
 
 def _load_rule_replay_diagnostics(
     rule_run_dir: Path | None,
-) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, list[str] | bool]]]:
+) -> tuple[
+    dict[str, dict[str, int]],
+    dict[str, dict[str, list[str] | bool]],
+    dict[str, dict[str, str | int | bool]],
+]:
     if rule_run_dir is None:
-        return {}, {}
+        return {}, {}, {}
 
     payload_path = Path(rule_run_dir) / "rule_replay_diagnostics.json"
     if not payload_path.exists():
-        return {}, {}
+        return {}, {}, {}
 
     try:
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
     except Exception:
-        return {}, {}
+        return {}, {}, {}
 
     if not isinstance(payload, dict):
-        return {}, {}
+        return {}, {}, {}
 
     counters_raw = payload.get("rule_counters")
     counters_map = counters_raw if isinstance(counters_raw, dict) else {}
@@ -279,15 +288,34 @@ def _load_rule_replay_diagnostics(
             "has_overlap": bool(overlap),
         }
 
-    return out_counters, out_profiles
+    source_profiles_raw = payload.get("rule_source_profiles")
+    source_profiles_map = source_profiles_raw if isinstance(source_profiles_raw, dict) else {}
+
+    out_source_profiles: dict[str, dict[str, str | int | bool]] = {}
+    for key, row in source_profiles_map.items():
+        if not isinstance(row, dict):
+            continue
+        name = str(key).strip()
+        if not name:
+            continue
+        out_source_profiles[name] = {
+            "table": str(row.get("table") or ""),
+            "table_present": bool(row.get("table_present", True)),
+            "row_count": int(row.get("row_count") or 0),
+        }
+
+    return out_counters, out_profiles, out_source_profiles
 
 
 def _resolve_primary_block_reason(
     diag: dict[str, int],
     profile: dict[str, list[str] | bool] | None = None,
+    source_profile: dict[str, str | int | bool] | None = None,
 ) -> str:
     timeframe_filtered = int(diag.get("timeframe_filtered") or 0)
     triggered = int(diag.get("triggered") or 0)
+    if source_profile and not bool(source_profile.get("table_present", True)) and triggered <= 0:
+        return "source_table_missing"
     if timeframe_filtered > 0 and triggered <= 0 and profile:
         configured = _normalize_tf_list(profile.get("configured_timeframes"))
         observed = _normalize_tf_list(profile.get("observed_timeframes"))
@@ -313,6 +341,7 @@ def _build_missing_rule_diagnostics(
     missing_rows: list[dict[str, int | str]],
     rule_diagnostics: dict[str, dict[str, int]],
     rule_timeframe_profiles: dict[str, dict[str, list[str] | bool]],
+    rule_source_profiles: dict[str, dict[str, str | int | bool]],
 ) -> list[dict[str, int | float | str | list[str]]]:
     out: list[dict[str, int | float | str | list[str]]] = []
     for row in missing_rows:
@@ -322,6 +351,7 @@ def _build_missing_rule_diagnostics(
 
         diag = rule_diagnostics.get(key, {})
         profile = rule_timeframe_profiles.get(key, {})
+        source_profile = rule_source_profiles.get(key, {})
         configured_tfs = _normalize_tf_list(profile.get("configured_timeframes"))
         observed_tfs = _normalize_tf_list(profile.get("observed_timeframes"))
         overlap_tfs = _normalize_tf_list(profile.get("overlap_timeframes"))
@@ -347,8 +377,11 @@ def _build_missing_rule_diagnostics(
                 "configured_timeframes": configured_tfs,
                 "observed_timeframes": observed_tfs,
                 "overlap_timeframes": overlap_tfs,
+                "source_table": str(source_profile.get("table") or ""),
+                "source_table_present": "true" if bool(source_profile.get("table_present", True)) else "false",
+                "source_row_count": int(source_profile.get("row_count") or 0),
                 "trigger_rate_pct": _safe_pct(triggered, evaluated),
-                "primary_block_reason": _resolve_primary_block_reason(diag, profile),
+                "primary_block_reason": _resolve_primary_block_reason(diag, profile, source_profile),
             }
         )
 
@@ -499,9 +532,18 @@ def _build_alignment_assessment(
     missing_history_rules_diagnostics: list[dict[str, int | float | str | list[str]]],
     timeframe_overlap_pct: float,
 ) -> dict[str, object]:
-    signal_count_delta_pct = _relative_delta_pct(
+    total_signal_count_delta_pct = _relative_delta_pct(
         summary.history_signal_count,
         summary.rule_signal_count,
+        baseline=max(summary.history_signal_count, 1),
+    )
+    comparable_rule_signal_count = _shared_rule_signal_count(
+        summary.history_signal_type_counts,
+        summary.rule_signal_type_counts,
+    )
+    signal_count_delta_pct = _relative_delta_pct(
+        summary.history_signal_count,
+        comparable_rule_signal_count,
         baseline=max(summary.history_signal_count, 1),
     )
     top_rule_alignment = _build_top_rule_alignment(
@@ -568,7 +610,7 @@ def _build_alignment_assessment(
             subject="signal_count",
             actual=signal_count_delta_pct,
             threshold=float(_ALIGNMENT_THRESHOLDS["max_signal_count_delta_pct"]),
-            message="Total signal count drift is above the acceptable threshold.",
+            message="Comparable shared-rule signal count drift is above the acceptable threshold.",
         )
 
     buy_ratio_delta_abs = abs(float(delta_buy_ratio_pct))
@@ -633,16 +675,25 @@ def _build_alignment_assessment(
     for row in missing_history_rules_diagnostics:
         key = str(row.get("key") or "--")
         reason = str(row.get("primary_block_reason") or "")
-        if reason != "timeframe_no_data":
+        if reason == "timeframe_no_data":
+            _append_alignment_warning(
+                warnings,
+                seen,
+                kind="top_rule_timeframe_no_data",
+                severity="error",
+                subject=key,
+                message="Rule replay lacks overlapping timeframe data for a key history rule.",
+            )
             continue
-        _append_alignment_warning(
-            warnings,
-            seen,
-            kind="top_rule_timeframe_no_data",
-            severity="error",
-            subject=key,
-            message="Rule replay lacks overlapping timeframe data for a key history rule.",
-        )
+        if reason == "source_table_missing":
+            _append_alignment_warning(
+                warnings,
+                seen,
+                kind="top_rule_source_table_missing",
+                severity="error",
+                subject=key,
+                message="Rule replay source table is missing in the indicator SQLite DB for a key history rule.",
+            )
 
     if any(str(row.get("severity") or "") == "error" for row in warnings):
         status = "fail"
@@ -666,6 +717,8 @@ def _build_alignment_assessment(
         "alignment_breakdown": breakdown,
         "alignment_inputs": {
             "signal_count_delta_pct": _round2(signal_count_delta_pct),
+            "total_signal_count_delta_pct": _round2(total_signal_count_delta_pct),
+            "comparable_rule_signal_count": int(comparable_rule_signal_count),
             "buy_ratio_delta_pct": _round2(buy_ratio_delta_abs),
             "timeframe_overlap_pct": _round2(timeframe_score),
         },
@@ -745,13 +798,14 @@ def write_comparison_artifacts(
         set(summary.history_timeframe_counts.keys()) & set(summary.rule_timeframe_counts.keys())
     )
 
-    rule_diagnostics, rule_timeframe_profiles = _load_rule_replay_diagnostics(rule_run_dir)
+    rule_diagnostics, rule_timeframe_profiles, rule_source_profiles = _load_rule_replay_diagnostics(rule_run_dir)
     missing_history_rules_diagnostics = []
-    if rule_diagnostics or rule_timeframe_profiles:
+    if rule_diagnostics or rule_timeframe_profiles or rule_source_profiles:
         missing_history_rules_diagnostics = _build_missing_rule_diagnostics(
             missing_history_rules_top,
             rule_diagnostics,
             rule_timeframe_profiles,
+            rule_source_profiles,
         )
 
     delta_buy_ratio_pct = float(rule_direction_mix["buy_ratio_pct"] - history_direction_mix["buy_ratio_pct"])
@@ -859,7 +913,8 @@ def write_comparison_artifacts(
             f"rule overlap: `{float(rule_overlap['rule_overlap_pct']):.2f}%`"
         ),
         (
-            f"- Signal Count Delta Pct: `{float(alignment_inputs['signal_count_delta_pct']):.2f}%` | "
+            f"- Comparable Signal Count Delta Pct: `{float(alignment_inputs['signal_count_delta_pct']):.2f}%` | "
+            f"Raw Total Signal Delta Pct: `{float(alignment_inputs.get('total_signal_count_delta_pct', 0.0)):.2f}%` | "
             f"Buy Ratio Delta: `{float(alignment_inputs['buy_ratio_delta_pct']):.2f}%` | "
             f"Timeframe Set Overlap: `{float(payload['timeframe_overlap_pct']):.2f}%`"
         ),

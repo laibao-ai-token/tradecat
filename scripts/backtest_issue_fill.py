@@ -123,6 +123,7 @@ def _sample_trade(row: dict[str, str] | None) -> str:
 def _quality_summary(input_quality: dict[str, Any]) -> dict[str, str]:
     symbol_rows = input_quality.get("symbol_rows") or []
     lowest_quality: list[tuple[str, float]] = []
+    gate_failures = input_quality.get("gate_failures") or []
     if isinstance(symbol_rows, list):
         for row in symbol_rows:
             if not isinstance(row, dict):
@@ -130,14 +131,22 @@ def _quality_summary(input_quality: dict[str, Any]) -> dict[str, str]:
             lowest_quality.append((str(row.get("symbol") or "--"), float(row.get("quality_score") or 0.0)))
         lowest_quality.sort(key=lambda item: item[1])
 
+    gate_failure_text = "未找到"
+    if isinstance(gate_failures, list):
+        gate_failure_text = "; ".join(str(item) for item in gate_failures if str(item).strip()) or "none"
+
     return {
         "quality_score": _fmt(input_quality.get("quality_score")),
         "quality_status": str(input_quality.get("quality_status") or "未找到"),
-        "signal_days": _fmt(input_quality.get("signal_days") or input_quality.get("aggregated_signal_bucket_count")),
+        "score_status": str(input_quality.get("score_status") or "未找到"),
+        "gate_status": str(input_quality.get("gate_status") or "未找到"),
+        "signal_days": _fmt(input_quality.get("signal_days")),
         "signal_count": _fmt(input_quality.get("signal_count")),
+        "aggregated_signal_bucket_count": _fmt(input_quality.get("aggregated_signal_bucket_count")),
         "candle_coverage_pct": _fmt(input_quality.get("candle_coverage_pct"), suffix="%"),
         "no_next_open_bucket_count": _fmt(input_quality.get("no_next_open_bucket_count")),
         "dropped_signal_count": _fmt(input_quality.get("dropped_signal_count")),
+        "gate_failures": gate_failure_text,
         "lowest_quality_symbols": _top_text(lowest_quality),
         "quality_breakdown": json.dumps(input_quality.get("quality_breakdown") or {}, ensure_ascii=False),
     }
@@ -330,11 +339,15 @@ def _build_issue_009_section(ctx: dict[str, Any]) -> str:
         "",
         f"- `quality_score`：`{quality['quality_score']}`",
         f"- `quality_status`：`{quality['quality_status']}`",
+        f"- `score_status`：`{quality['score_status']}`",
+        f"- `gate_status`：`{quality['gate_status']}`",
         f"- `signal_days`：`{quality['signal_days']}`",
         f"- `signal_count`：`{quality['signal_count']}`",
+        f"- `aggregated_signal_bucket_count`：`{quality['aggregated_signal_bucket_count']}`",
         f"- `candle_coverage_pct`：`{quality['candle_coverage_pct']}`",
         f"- 缺失 bar 是否集中在少数 symbol：`{quality['lowest_quality_symbols']}`",
         f"- 无 `next_open` 可成交次数是否异常：`{quality['no_next_open_bucket_count']}`",
+        f"- gate 失败原因：`{quality['gate_failures']}`",
         "",
         "### 重点产物摘录",
         "",

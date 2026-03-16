@@ -213,6 +213,72 @@ def test_run_backtest_writes_artifacts_and_done_state(tmp_path: Path, monkeypatc
     assert scores["BTCUSDT"][t0] == 80
 
 
+def test_run_backtest_persists_precheck_gate_context_in_input_quality(tmp_path: Path, monkeypatch) -> None:
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=1)
+    t2 = t1 + timedelta(minutes=1)
+
+    signals = [
+        SignalEvent(
+            event_id=1,
+            timestamp=t0,
+            symbol="BTCUSDT",
+            direction="BUY",
+            strength=80,
+            signal_type="test",
+            timeframe="1m",
+            source="sqlite",
+            price=100,
+        )
+    ]
+    bars = {
+        "BTCUSDT": [
+            Bar("BTCUSDT", t0, 100, 101, 99, 100, 1),
+            Bar("BTCUSDT", t1, 101, 102, 100, 101.5, 1),
+            Bar("BTCUSDT", t2, 102, 103, 101, 102.5, 1),
+        ]
+    }
+
+    monkeypatch.setattr("src.backtest.runner.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("src.backtest.runner.get_history_db_path", lambda: tmp_path / "signal_history.db")
+    monkeypatch.setattr("src.backtest.runner.get_database_url", lambda: "postgresql://unused")
+    monkeypatch.setattr("src.backtest.runner.load_signals_from_sqlite", lambda *args, **kwargs: signals)
+    monkeypatch.setattr("src.backtest.runner.load_candles_from_pg", lambda *args, **kwargs: bars)
+
+    cfg = BacktestConfig(
+        symbols=["BTCUSDT"],
+        timeframe="1m",
+        date_range=DateRange(start="2026-01-01 00:00:00", end="2026-01-01 00:02:00"),
+        execution=ExecutionConfig(slippage_bps=0, fee_bps=0),
+        risk=RiskConfig(leverage=1, initial_equity=1000, position_size_pct=1.0),
+        aggregation=AggregationConfig(long_open_threshold=70, short_open_threshold=70, close_threshold=20),
+    )
+
+    out = run_backtest(
+        cfg,
+        run_id="unit-gated",
+        input_quality_signal_days=4,
+        input_quality_gate_failures=["signal day coverage too low: 4 < 7"],
+        input_quality_gate_thresholds={
+            "min_signal_days": 7,
+            "min_signal_count": 1,
+            "min_candle_coverage_pct": 95.0,
+        },
+    )
+
+    quality_payload = json.loads((out.output_dir / "input_quality.json").read_text(encoding="utf-8"))
+    assert quality_payload["signal_days"] == 4
+    assert quality_payload["quality_score"] == pytest.approx(100.0)
+    assert quality_payload["score_status"] == "pass"
+    assert quality_payload["gate_status"] == "fail"
+    assert quality_payload["quality_status"] == "fail"
+    assert quality_payload["gate_failures"] == ["signal day coverage too low: 4 < 7"]
+
+    report_text = (out.output_dir / "report.md").read_text(encoding="utf-8")
+    assert "- Signal Days: `4`" in report_text
+    assert "- Gate Failures: `signal day coverage too low: 4 < 7`" in report_text
+
+
 def test_run_backtest_error_marks_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("src.backtest.runner.REPO_ROOT", tmp_path)
     monkeypatch.setattr("src.backtest.runner.get_history_db_path", lambda: tmp_path / "signal_history.db")
@@ -862,6 +928,8 @@ def test_run_backtest_writes_cost_breakdown_fields(tmp_path: Path, monkeypatch) 
     report_md = (out.output_dir / "report.md").read_text(encoding="utf-8")
     assert "Cost Status" in report_md
     assert "Cost Summary" in report_md
+    assert "Fee Assumption" in report_md
+    assert "next_open execution prices fills with taker fees" in report_md
     assert "Gross→Net Retention" in report_md
 
     with (out.output_dir / "trades.csv").open(encoding="utf-8", newline="") as fh:
