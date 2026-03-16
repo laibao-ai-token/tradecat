@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -87,7 +88,7 @@ def fetch_recent(
             params.extend(dir_list)
 
     sql = f"""
-        SELECT id, timestamp, symbol, signal_type, direction, strength, message, timeframe, price, source
+        SELECT id, timestamp, symbol, signal_type, direction, strength, message, timeframe, price, source, extra
         FROM signal_history
         WHERE {' AND '.join(where)}
         ORDER BY id DESC
@@ -100,12 +101,21 @@ def fetch_recent(
             rows = conn.execute(sql, params).fetchall()
         out = []
         for r in rows:
+            display_signal_type = str(r["signal_type"])
+            extra_raw = r["extra"]
+            if isinstance(extra_raw, str) and extra_raw.strip():
+                try:
+                    payload = json.loads(extra_raw)
+                    if isinstance(payload, dict):
+                        display_signal_type = str(payload.get("rule_name") or display_signal_type)
+                except Exception:
+                    pass
             out.append(
                 SignalRow(
                     id=_safe_int(r["id"]),
                     timestamp=str(r["timestamp"]),
                     symbol=str(r["symbol"]),
-                    signal_type=str(r["signal_type"]),
+                    signal_type=display_signal_type,
                     direction=str(r["direction"]),
                     strength=_safe_int(r["strength"]),
                     message=r["message"],
