@@ -111,7 +111,7 @@ python3 scripts/backtest_issue_fill.py --run-prefix <run_prefix> --apply-issues
 - `fold_count`
 - `avg_return_pct / avg_max_drawdown_pct / avg_excess_return_pct`
 - `avg_buy_hold_return_pct / avg_risk_parity_return_pct / avg_momentum_return_pct`
-- `best_baseline_name / best_baseline_return_pct`
+- `best_baseline_name / best_baseline_return_pct`（按 compounded baseline 回报选最优，不是 `avg_*` 口径）
 - 各折 `selected_params`
 
 重点检查：

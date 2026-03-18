@@ -8,14 +8,14 @@
 
 - 锚点字段、TUI 投影、日志投影已经收敛。
 - TradeCat 本地 Agent Shell 已有最小 `jsonl` 事件落点。
-- openclaw repo 内已能确认 session transcript 默认路径、Gateway history 入口与 run 终态锚点。
+- openclaw repo 内已能确认 session transcript 默认路径、Gateway history 入口与 run 终态锚点（若本地未初始化 `repository/openclaw`，需先同步子仓库）。
 - 因此当前状态可视为 `contract-ready / local-landing-done`；真实产品链路 smoke 由 `#003-06` 继续承接。
 
 ## Repository Evidence
 
 | 证据 | 位置 | 结论 |
 | --- | --- | --- |
-| parent issue 已把三端可观测列为主线目标 | `.issues/open/003-trade-agent/003-feature-trade-agent-development.md` | 这不是额外需求，而是 `#003` 既定范围 |
+| parent issue 已把三端可观测列为主线目标 | `.issues/open/003-trade-agent/closed-003-feature-trade-agent-development.md` | 这不是额外需求，而是 `#003` 既定范围 |
 | TUI 已有可扩展的顶栏 | `services-preview/tui-service/src/tui.py` 中 `_build_header_line()` / `_draw_header()` | 可以放 `session/turn/model/status` |
 | TUI 已有右侧细节面板模式 | `services-preview/tui-service/src/tui.py` 中 `_draw_market_master()` | 可以放事件摘要流，而不必先做复杂卡片 |
 | 仓库已有 JSON 结构化日志方案 | `services/trading-service/src/observability/logger.py` | agent 日志不需要重新发明格式 |
