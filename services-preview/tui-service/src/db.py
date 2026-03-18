@@ -60,6 +60,19 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(default)
 
 
+def _signal_history_has_extra_column(conn: sqlite3.Connection) -> bool:
+    """Check whether legacy DB schema already has `extra` column."""
+    try:
+        rows = conn.execute("PRAGMA table_info(signal_history)").fetchall()
+    except Exception:
+        return False
+    for row in rows:
+        name = str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
+        if name == "extra":
+            return True
+    return False
+
+
 def fetch_recent(
     db_path: str,
     limit: int = 200,
@@ -87,17 +100,18 @@ def fetch_recent(
             where.append(f"direction IN ({','.join(['?'] * len(dir_list))})")
             params.extend(dir_list)
 
-    sql = f"""
-        SELECT id, timestamp, symbol, signal_type, direction, strength, message, timeframe, price, source, extra
-        FROM signal_history
-        WHERE {' AND '.join(where)}
-        ORDER BY id DESC
-        LIMIT ?
-    """
     params.append(int(limit))
 
     try:
         with _connect(db_path) as conn:
+            extra_expr = "extra" if _signal_history_has_extra_column(conn) else "NULL AS extra"
+            sql = f"""
+                SELECT id, timestamp, symbol, signal_type, direction, strength, message, timeframe, price, source, {extra_expr}
+                FROM signal_history
+                WHERE {' AND '.join(where)}
+                ORDER BY id DESC
+                LIMIT ?
+            """
             rows = conn.execute(sql, params).fetchall()
         out = []
         for r in rows:
