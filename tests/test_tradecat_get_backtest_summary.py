@@ -188,3 +188,18 @@ def test_returns_structured_error_when_run_is_missing(tmp_path: Path) -> None:
     assert payload["ok"] is False
     assert payload["error"]["code"] == "artifact_not_found"
     assert payload["data"] is None
+
+
+def test_returns_structured_error_for_invalid_arguments() -> None:
+    rc, payload = _run_tool("--bad-flag")
+
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_request"
+    assert payload["request"] == {
+        "run_id": None,
+        "strategy": None,
+        "symbols": [],
+        "artifacts_root": str(REPO_ROOT / "artifacts" / "backtest"),
+    }
+    assert payload["data"] is None

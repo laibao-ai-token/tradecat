@@ -16,6 +16,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACTS_ROOT = REPO_ROOT / "artifacts" / "backtest"
 
 
+class InvalidRequestError(ValueError):
+    """Raised when CLI arguments are invalid."""
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that surfaces validation errors as exceptions."""
+
+    def error(self, message: str) -> None:
+        raise InvalidRequestError(message)
+
+    def exit(self, status: int = 0, message: str | None = None) -> None:
+        if status == 0:
+            raise SystemExit(status)
+        detail = (message or "").strip() or f"argument parsing failed (status={status})"
+        raise InvalidRequestError(detail)
+
+
 @dataclass(frozen=True)
 class SummaryCandidate:
     """Loaded summary candidate from an existing artifact directory."""
@@ -500,8 +517,20 @@ def _response(
     }
 
 
+def _default_request_payload(artifacts_root: Path) -> dict[str, Any]:
+    return {
+        "run_id": None,
+        "strategy": None,
+        "symbols": [],
+        "artifacts_root": str(artifacts_root),
+    }
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read an existing TradeCat backtest summary artifact.")
+    parser = JsonArgumentParser(
+        description="Read an existing TradeCat backtest summary artifact.",
+        allow_abbrev=False,
+    )
     parser.add_argument("--run-id", required=True, help="Backtest run_id to resolve from existing artifacts")
     parser.add_argument(
         "--strategy",
@@ -522,21 +551,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(list(argv or sys.argv[1:]))
-    artifacts_root = Path(str(args.artifacts_root)).expanduser().resolve()
-    requested_symbols = _normalize_symbols(args.symbols)
-    request = {
-        "run_id": _clean_text(args.run_id),
-        "strategy": _clean_text(args.strategy),
-        "symbols": list(requested_symbols),
-        "artifacts_root": str(artifacts_root),
-    }
+    artifacts_root = DEFAULT_ARTIFACTS_ROOT.resolve()
+    request = _default_request_payload(artifacts_root)
     source = {
         "kind": "artifacts/backtest",
         "artifacts_root": str(artifacts_root),
     }
+    requested_symbols: tuple[str, ...] = ()
 
     try:
+        args = _parse_args(list(argv or sys.argv[1:]))
+        artifacts_root = Path(str(args.artifacts_root)).expanduser().resolve()
+        requested_symbols = _normalize_symbols(args.symbols)
+        request = {
+            "run_id": _clean_text(args.run_id),
+            "strategy": _clean_text(args.strategy),
+            "symbols": list(requested_symbols),
+            "artifacts_root": str(artifacts_root),
+        }
+        source = {
+            "kind": "artifacts/backtest",
+            "artifacts_root": str(artifacts_root),
+        }
+
         if not artifacts_root.exists() or not artifacts_root.is_dir():
             payload = _response(
                 ok=False,
@@ -600,6 +637,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(payload, ensure_ascii=True, indent=2))
         return 0
+    except InvalidRequestError as exc:
+        payload = _response(
+            ok=False,
+            source=source,
+            request=request,
+            data=None,
+            error={
+                "code": "invalid_request",
+                "message": str(exc),
+                "details": {},
+            },
+        )
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
+        return 1
     except Exception as exc:
         payload = _response(
             ok=False,
