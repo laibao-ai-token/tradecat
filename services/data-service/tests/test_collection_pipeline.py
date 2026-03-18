@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import zipfile
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -11,7 +12,8 @@ from typing import Any
 
 import pytest
 
-def _install_collector_import_stubs() -> None:
+
+def _install_collector_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     """为 collectors 模块安装最小依赖桩，避免测试依赖外部组件。"""
     config_mod = types.ModuleType("config")
     config_mod.INTERVAL_TO_MS = {"1m": 60_000}
@@ -21,16 +23,16 @@ def _install_collector_import_stubs() -> None:
         ccxt_exchange="binance",
         data_dir=Path("."),
     )
-    sys.modules["config"] = config_mod
+    monkeypatch.setitem(sys.modules, "config", config_mod)
 
     adapters_pkg = types.ModuleType("adapters")
-    sys.modules["adapters"] = adapters_pkg
+    monkeypatch.setitem(sys.modules, "adapters", adapters_pkg)
 
     ccxt_mod = types.ModuleType("adapters.ccxt")
     ccxt_mod.fetch_ohlcv = lambda *args, **kwargs: []
     ccxt_mod.load_symbols = lambda *args, **kwargs: []
     ccxt_mod.to_rows = lambda *args, **kwargs: []
-    sys.modules["adapters.ccxt"] = ccxt_mod
+    monkeypatch.setitem(sys.modules, "adapters.ccxt", ccxt_mod)
 
     class _NoopMetrics:
         def inc(self, *args: Any, **kwargs: Any) -> None:
@@ -56,14 +58,14 @@ def _install_collector_import_stubs() -> None:
     adapters_metrics_mod = types.ModuleType("adapters.metrics")
     adapters_metrics_mod.Timer = _NoopTimer
     adapters_metrics_mod.metrics = _NoopMetrics()
-    sys.modules["adapters.metrics"] = adapters_metrics_mod
+    monkeypatch.setitem(sys.modules, "adapters.metrics", adapters_metrics_mod)
 
     rate_limiter_mod = types.ModuleType("adapters.rate_limiter")
     rate_limiter_mod.acquire = lambda *args, **kwargs: None
     rate_limiter_mod.release = lambda *args, **kwargs: None
     rate_limiter_mod.set_ban = lambda *args, **kwargs: None
     rate_limiter_mod.parse_ban = lambda *args, **kwargs: 0.0
-    sys.modules["adapters.rate_limiter"] = rate_limiter_mod
+    monkeypatch.setitem(sys.modules, "adapters.rate_limiter", rate_limiter_mod)
 
     class _StubTimescaleAdapter:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -74,14 +76,17 @@ def _install_collector_import_stubs() -> None:
 
     timescale_mod = types.ModuleType("adapters.timescale")
     timescale_mod.TimescaleAdapter = _StubTimescaleAdapter
-    sys.modules["adapters.timescale"] = timescale_mod
+    monkeypatch.setitem(sys.modules, "adapters.timescale", timescale_mod)
 
 
-_install_collector_import_stubs()
-
-import src.collectors.backfill as backfill_mod
-import src.collectors.metrics as metrics_mod
-
+@pytest.fixture
+def collector_modules(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    _install_collector_import_stubs(monkeypatch)
+    sys.modules.pop("src.collectors.backfill", None)
+    sys.modules.pop("src.collectors.metrics", None)
+    backfill_mod = importlib.import_module("src.collectors.backfill")
+    metrics_mod = importlib.import_module("src.collectors.metrics")
+    return backfill_mod, metrics_mod
 
 class _FakeTimescale:
     def __init__(self) -> None:
@@ -100,7 +105,10 @@ class _FakeTimescale:
 
 
 @pytest.mark.integration
-def test_metrics_collector_collect_parse_save_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_metrics_collector_collect_parse_save_roundtrip(
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, metrics_mod = collector_modules
     fake_ts = _FakeTimescale()
     monkeypatch.setattr(metrics_mod, "TimescaleAdapter", lambda: fake_ts)
     collector = metrics_mod.MetricsCollector(workers=1)
@@ -152,8 +160,9 @@ def _write_zip_csv(zip_path: Path, csv_name: str, rows: list[list[str]]) -> None
 
 @pytest.mark.integration
 def test_zip_backfiller_import_kline_zip_parses_and_persists(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    backfill_mod, _ = collector_modules
     fake_ts = _FakeTimescale()
     monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
     backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
@@ -192,8 +201,9 @@ def test_zip_backfiller_import_kline_zip_parses_and_persists(
 
 @pytest.mark.integration
 def test_zip_backfiller_import_metrics_zip_aligns_time_and_persists(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    backfill_mod, _ = collector_modules
     fake_ts = _FakeTimescale()
     monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
     backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
@@ -223,3 +233,75 @@ def test_zip_backfiller_import_metrics_zip_aligns_time_and_persists(
     assert row["sum_taker_long_short_vol_ratio"] == Decimal("1.4")
     assert row["source"] == "binance_zip"
     assert row["is_closed"] is True
+
+
+@pytest.mark.integration
+def test_zip_backfiller_import_kline_zip_returns_zero_for_bad_zip(
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backfill_mod, _ = collector_modules
+    fake_ts = _FakeTimescale()
+    monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
+    backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
+
+    bad_zip = tmp_path / "bad-kline.zip"
+    bad_zip.write_bytes(b"this-is-not-a-zip")
+
+    inserted = backfiller._import_kline_zip(bad_zip, "btcusdt", "1m")
+    assert inserted == 0
+    assert fake_ts.saved_candles == []
+    assert fake_ts.last_interval is None
+
+
+@pytest.mark.integration
+def test_zip_backfiller_import_kline_zip_returns_zero_for_empty_zip(
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backfill_mod, _ = collector_modules
+    fake_ts = _FakeTimescale()
+    monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
+    backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
+
+    empty_zip = tmp_path / "empty-kline.zip"
+    with zipfile.ZipFile(empty_zip, "w", compression=zipfile.ZIP_DEFLATED):
+        pass
+
+    inserted = backfiller._import_kline_zip(empty_zip, "btcusdt", "1m")
+    assert inserted == 0
+    assert fake_ts.saved_candles == []
+    assert fake_ts.last_interval is None
+
+
+@pytest.mark.integration
+def test_zip_backfiller_import_metrics_zip_returns_zero_for_bad_zip(
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backfill_mod, _ = collector_modules
+    fake_ts = _FakeTimescale()
+    monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
+    backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
+
+    bad_zip = tmp_path / "bad-metrics.zip"
+    bad_zip.write_bytes(b"this-is-not-a-zip")
+
+    inserted = backfiller._import_metrics_zip(bad_zip, "btcusdt")
+    assert inserted == 0
+    assert fake_ts.saved_metrics == []
+
+
+@pytest.mark.integration
+def test_zip_backfiller_import_metrics_zip_ignores_non_csv_entries(
+    collector_modules: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backfill_mod, _ = collector_modules
+    fake_ts = _FakeTimescale()
+    monkeypatch.setattr(backfill_mod.settings, "data_dir", tmp_path)
+    backfiller = backfill_mod.ZipBackfiller(fake_ts, workers=1)
+
+    non_csv_zip = tmp_path / "non-csv-metrics.zip"
+    with zipfile.ZipFile(non_csv_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README.txt", "not a metrics csv")
+
+    inserted = backfiller._import_metrics_zip(non_csv_zip, "btcusdt")
+    assert inserted == 0
+    assert fake_ts.saved_metrics == []
