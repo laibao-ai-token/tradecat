@@ -112,8 +112,9 @@ cd services-preview/tui-service
 ```
 
 News page note:
-- TUI news is now DB-first: it reads `alternative.news_articles` first, and only falls back to local direct/RSS fetching when the unified news DB is unavailable or still empty. The news header now separates `同步=...前`, `最新=...前`, and `健=H/F/C` (healthy/failing/cooldown).
+- TUI news is now DB-first: it reads `<ALTERNATIVE_DB_SCHEMA>.news_articles` first (default `alternative.news_articles`), and only falls back to local direct/RSS fetching when the unified news DB is unavailable or still empty. The news header now separates `同步=...前`, `最新=...前`, and `健=H/F/C` (healthy/failing/cooldown).
 - Database URL resolution order is `TUI_NEWS_DATABASE_URL` -> `MARKETS_SERVICE_DATABASE_URL` -> `DATABASE_URL` -> `config/.env` -> built-in default `postgresql://postgres:postgres@localhost:5434/market_data`. For local URLs, the reader will also retry common local ports `5434/5433/5432` automatically.
+- Schema resolution order is `ALTERNATIVE_DB_SCHEMA` (env) -> `config/.env` -> default `alternative`.
 - By default, the fallback live-source set uses mixed fast/news coverage: direct fast-news connectors (`direct://jin10`, `direct://10jqka/realtimenews`, `direct://sina/7x24`, `direct://eastmoney/kuaixun`, `direct://cls/telegraph`, `direct://gelonghui/live`, `direct://wallstreetcn/live`, `direct://eeo/kuaixun`) plus public RSS feeds such as GlobeNewswire / SEC press releases / FXStreet / Cointelegraph, and the curated `worldmonitor_trading` RSS subset (known unstable feeds are excluded from the default preset).
 - To override the fallback live sources, set `TUI_NEWS_RSS_FEEDS` before launch; it accepts both RSS URLs and direct specs such as `direct://jin10`. `NEWS_RSS_FEEDS` still works for plain RSS URLs. TUI fetches these feeds in parallel and the default per-source timeout is 5 seconds (`TUI_NEWS_RSS_TIMEOUT_S`).
 - To keep only the original fast-news layer, set `TUI_NEWS_RSS_PRESET="core"` (or `NEWS_RSS_PRESET="core"` if you want the same preset shared with `markets-service`).

@@ -278,7 +278,7 @@ python3 scripts/tradecat_get_backtest_summary.py --run-id <run_id>
 - 四个命令都输出稳定 JSON，顶层固定包含 `ok`、`tool`、`ts`、`source`、`request`、`data`、`error`
 - `tradecat_get_quotes` 支持单/多 symbol；A 股/基金纯数字代码若存在歧义，请显式传 `--market`
 - `tradecat_get_signals` 只读 `signal_history.db`，无命中时返回 `ok=true` + `data=[]`
-- `tradecat_get_news` 只读 `alternative.news_articles`，支持 `symbol` / `query` / `limit` / `since_minutes`
+- `tradecat_get_news` 只读 `<ALTERNATIVE_DB_SCHEMA>.news_articles`（默认 `alternative.news_articles`），支持 `symbol` / `query` / `limit` / `since_minutes`
 - `tradecat_get_backtest_summary` 仅读取 `artifacts/backtest/` 现有产物，支持附加 `--strategy` / `--symbols` 过滤
 
 ### 📦 下载历史数据（可选）

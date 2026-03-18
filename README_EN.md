@@ -289,7 +289,7 @@ Notes:
 - All four commands emit stable JSON with top-level `ok`, `tool`, `ts`, `source`, `request`, `data`, and `error`
 - `tradecat_get_quotes` supports single/multi-symbol queries; pass `--market` explicitly for ambiguous numeric CN fund/stock codes
 - `tradecat_get_signals` reads `signal_history.db` in read-only mode and returns `ok=true` + `data=[]` when no rows match
-- `tradecat_get_news` reads `alternative.news_articles` and supports `symbol` / `query` / `limit` / `since_minutes`
+- `tradecat_get_news` reads `<ALTERNATIVE_DB_SCHEMA>.news_articles` (default: `alternative.news_articles`) and supports `symbol` / `query` / `limit` / `since_minutes`
 - `tradecat_get_backtest_summary` only reads existing `artifacts/backtest/` outputs and also supports `--strategy` / `--symbols` filters
 
 ### 📦 Download Historical Data (Optional)

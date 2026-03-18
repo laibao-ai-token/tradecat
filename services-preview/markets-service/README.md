@@ -425,7 +425,7 @@ python -m src equity-poll \
 
 ### 新闻 7x24 采集
 
-`collect-news-poll` 会持续拉取高频直连快讯源 + RSS/Atom 补充源，并写入 `alternative.news_articles`。
+`collect-news-poll` 会持续拉取高频直连快讯源 + RSS/Atom 补充源，并写入 `<ALTERNATIVE_DB_SCHEMA>.news_articles`（默认 `alternative.news_articles`）。
 
 ```bash
 # 使用默认新闻源（高频直连 + 精选 RSS + worldmonitor 交易/宏观补充子集）
@@ -446,7 +446,7 @@ python -m src collect-news-poll --provider rss --sleep 2
 - `worldmonitor_trading` 是从 `repository/worldmonitor` 已验证源池中挑出的交易/宏观补充源集合。
 - provider 现在会记录按源健康状态：连续失败达到 `NEWS_RSS_FAILURE_THRESHOLD` 后进入 `NEWS_RSS_FAILURE_COOLDOWN_SECONDS` 秒冷却，坏源不会在每一轮都反复重试。
 - `collect-news-poll` 日志会额外输出 `collect-news health` 与 `collect-news unhealthy sample`，便于观察哪些源正在失败或冷却。
-- 原始新闻默认只保留最近 `24h`：`TimescaleNewsWriter` 会按 `NEWS_RETENTION_HOURS=24` 定期删除过期行，避免 `alternative.news_articles` 无限膨胀；清理节奏由 `NEWS_RETENTION_CLEANUP_INTERVAL_SECONDS` 控制。
+- 原始新闻默认只保留最近 `24h`：`TimescaleNewsWriter` 会按 `NEWS_RETENTION_HOURS=24` 定期删除过期行，避免 `<ALTERNATIVE_DB_SCHEMA>.news_articles`（默认 `alternative.news_articles`）无限膨胀；清理节奏由 `NEWS_RETENTION_CLEANUP_INTERVAL_SECONDS` 控制。
 - `NEWS_RSS_FEEDS` 支持直接混配 `direct://jin10` 这类快讯源和普通 RSS URL。
 
 说明：
