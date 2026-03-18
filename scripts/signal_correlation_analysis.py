@@ -129,13 +129,19 @@ def _load_rule_meta() -> dict[str, dict]:
         all_rules = getattr(rules_module, "ALL_RULES", [])
 
         for r in all_rules:
-            rule_meta[r.name] = {
+            entry = {
+                "rule_id": r.rule_id,
+                "rule_name": r.name,
                 "direction": r.direction,
                 "category": r.category,
                 "subcategory": r.subcategory,
                 "timeframes": r.timeframes,
                 "table": r.table,
             }
+            # 新数据链路中 signal_type/cooldown key 可能是 rule_id。
+            rule_meta[r.rule_id] = entry
+            # 兼容旧数据链路中 signal_type 使用规则名称。
+            rule_meta.setdefault(r.name, entry)
     except Exception as exc:
         logger.warning("规则元数据加载失败: %s", exc)
     return rule_meta
@@ -193,8 +199,9 @@ def _load_cooldown_events(db_path: Path, rule_meta: dict[str, dict]) -> list[Sig
             continue
         timeframe = parts[-1]
         symbol = parts[-2]
-        rule_name = "_".join(parts[:-2])
-        meta = rule_meta.get(rule_name, {})
+        rule_key = "_".join(parts[:-2])
+        meta = rule_meta.get(rule_key, {})
+        rule_name = str(meta.get("rule_name") or rule_key)
         direction = meta.get("direction")
         category = meta.get("category")
         table = meta.get("table")
@@ -239,8 +246,9 @@ def _load_history_events(db_path: Path, rule_meta: dict[str, dict]) -> list[Sign
         except ValueError:
             ts = datetime.now(timezone.utc)
 
-        rule_name = row["signal_type"]
-        meta = rule_meta.get(rule_name, {})
+        signal_type = str(row["signal_type"] or "")
+        meta = rule_meta.get(signal_type, {})
+        rule_name = str(meta.get("rule_name") or signal_type)
         events.append(
             SignalEvent(
                 key=str(row["id"]),
@@ -248,7 +256,7 @@ def _load_history_events(db_path: Path, rule_meta: dict[str, dict]) -> list[Sign
                 rule_name=rule_name,
                 symbol=row["symbol"],
                 timeframe=row["timeframe"] or "1h",
-                direction=row["direction"],
+                direction=row["direction"] or meta.get("direction"),
                 category=meta.get("category"),
                 table=meta.get("table"),
                 event_ts=ts,
